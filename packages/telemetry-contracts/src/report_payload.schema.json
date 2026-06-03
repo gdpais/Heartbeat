@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heartbeat.local/schemas/report_payload.schema.json",
+  "title": "Heartbeat Report Payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["application_id", "period", "sections"],
+  "properties": {
+    "application_id": {"type": "string", "format": "uuid"},
+    "period": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": {"type": "string", "format": "date-time"},
+        "end": {"type": "string", "format": "date-time"}
+      }
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title"],
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "data": {}
+        }
+      }
+    }
+  }
+}

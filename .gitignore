@@ -1,0 +1,9 @@
+.DS_Store
+.env
+*.log
+.tmp/
+coverage/
+__pycache__/
+.venv/
+.pytest_cache/
+infra/data/

@@ -1,0 +1,5 @@
+groups:
+  - name: heartbeat-bootstrap
+    rules:
+      - record: heartbeat:up:count
+        expr: count(up)

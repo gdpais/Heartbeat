@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heartbeat.local/schemas/integrations.schema.json",
+  "title": "Heartbeat Integrations Config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["grafana", "loki", "alertmanager", "collectors"],
+  "properties": {
+    "grafana": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_url", "dashboard_templates"],
+      "properties": {
+        "base_url": {"type": "string", "format": "uri"},
+        "dashboard_templates": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        }
+      }
+    },
+    "loki": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_url"],
+      "properties": {
+        "base_url": {"type": "string", "format": "uri"}
+      }
+    },
+    "alertmanager": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_url"],
+      "properties": {
+        "base_url": {"type": "string", "format": "uri"}
+      }
+    },
+    "notification_channels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "channel_type", "target_ref"],
+        "properties": {
+          "id": {"type": "string"},
+          "channel_type": {"type": "string"},
+          "target_ref": {"type": "string"},
+          "credential_ref": {"type": "string"}
+        }
+      }
+    },
+    "collectors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "enabled"],
+        "properties": {
+          "id": {"type": "string"},
+          "kind": {"type": "string"},
+          "enabled": {"type": "boolean"},
+          "credential_ref": {"type": "string"},
+          "config": {"type": "object"}
+        }
+      }
+    }
+  }
+}

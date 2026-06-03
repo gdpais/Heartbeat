@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heartbeat.local/schemas/alert_evidence.schema.json",
+  "title": "Heartbeat Alert Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source_type", "title", "url"],
+  "properties": {
+    "source_type": {"type": "string"},
+    "title": {"type": "string"},
+    "url": {"type": "string", "format": "uri"},
+    "time_start": {"type": "string", "format": "date-time"},
+    "time_end": {"type": "string", "format": "date-time"},
+    "metadata": {"type": "object"}
+  }
+}

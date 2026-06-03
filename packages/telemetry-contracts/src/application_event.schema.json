@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heartbeat.local/schemas/application_event.schema.json",
+  "title": "Heartbeat Application Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["timestamp", "environment", "application", "severity", "message"],
+  "properties": {
+    "timestamp": {"type": "string", "format": "date-time"},
+    "environment": {"type": "string"},
+    "application": {"type": "string"},
+    "component": {"type": "string"},
+    "platform": {"type": "string"},
+    "severity": {"type": "string"},
+    "message": {"type": "string"},
+    "user_id": {"type": "string"},
+    "session_id": {"type": "string"},
+    "request_id": {"type": "string"},
+    "client_ip": {"type": "string"},
+    "labels": {
+      "type": "object",
+      "additionalProperties": {"type": ["string", "number", "boolean"]}
+    }
+  }
+}

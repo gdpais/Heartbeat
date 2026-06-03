@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heartbeat.local/schemas/session_investigation.schema.json",
+  "title": "Heartbeat Session Investigation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["application_id", "time_start", "time_end"],
+  "properties": {
+    "application_id": {"type": "string", "format": "uuid"},
+    "environment_id": {"type": "string", "format": "uuid"},
+    "user_id": {"type": "string"},
+    "ip": {"type": "string"},
+    "session_id": {"type": "string"},
+    "request_id": {"type": "string"},
+    "time_start": {"type": "string", "format": "date-time"},
+    "time_end": {"type": "string", "format": "date-time"}
+  }
+}
