@@ -1,0 +1,19 @@
+name: db-collector-ci
+
+on:
+  push:
+    branches: [master, db-collectors]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Validate docker compose
+        run: docker compose -f infra/docker-compose.yml config
+      - name: Run Go tests
+        run: go test ./...

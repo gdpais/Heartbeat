@@ -1,0 +1,17 @@
+grafana:
+  base_url: http://localhost:3000
+  dashboard_templates:
+    sqlserver-overview: /d/sqlserver-overview
+loki:
+  base_url: http://localhost:3100
+alertmanager:
+  base_url: http://localhost:9093
+collectors:
+  - id: sqlserver-default
+    kind: sqlserver
+    enabled: true
+    credential_ref: kv/sqlserver-default
+    config:
+      environment: local
+      scrape_interval: 30s
+      target_names: []

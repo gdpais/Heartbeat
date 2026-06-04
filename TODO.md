@@ -30,6 +30,7 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
   - [x] Alertmanager
   - [x] OpenTelemetry Collector
 - [x] Document local dev health checks in `docs/runbooks/local-dev.md`
+- [x] Add GitHub Actions CI for Go tests and Docker Compose validation
 
 ### 0.3 Shared contracts and conventions
 - [x] Create `packages/config-schema/`
@@ -239,35 +240,35 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 ## 5. Core system: DB collector (`services/db-collector`)
 
 ### 5.1 Service bootstrap
-- [ ] Create Go service entrypoint `services/db-collector/cmd/db-collector/`
-- [ ] Create internal packages for config, collectors, SQL Server connectors, probes, export
-- [ ] Add health/metrics/logging/graceful shutdown
+- [x] Create Go service entrypoint `services/db-collector/cmd/db-collector/`
+- [x] Create internal packages for config, collectors, SQL Server connectors, probes, export
+- [x] Add health/metrics/logging/graceful shutdown
 
 ### 5.2 SQL Server connectivity and safety
-- [ ] Implement secure SQL Server connector manager
+- [x] Implement secure SQL Server connector manager
 - [ ] Enforce least-privilege credentials
-- [ ] Enforce query timeout/budget guards
+- [x] Enforce query timeout/budget guards
 - [ ] Review all production queries for non-blocking behavior
 - [ ] Define safe probe review/versioning process
 
 ### 5.3 Probe implementation
-- [ ] Implement waits probes
-- [ ] Implement locks/blocking probes
-- [ ] Implement sessions/connections probes
-- [ ] Implement memory pressure probes
-- [ ] Implement storage probes
-- [ ] Implement throughput/latency probes as needed
+- [x] Implement waits probes
+- [x] Implement locks/blocking probes
+- [x] Implement sessions/connections probes
+- [x] Implement memory pressure probes
+- [x] Implement storage probes
+- [x] Implement throughput/latency probes as needed
 
 ### 5.4 Metrics and evidence output
-- [ ] Normalize SQL Server outputs into Prometheus-friendly metrics
-- [ ] Expose scrape endpoint
-- [ ] Publish investigation evidence snapshots where useful
+- [x] Normalize SQL Server outputs into Prometheus-friendly metrics
+- [x] Expose scrape endpoint
+- [x] Publish investigation evidence snapshots where useful
 - [ ] Add collector self-observability
 
 ### 5.5 Runtime config model
-- [ ] Read desired runtime collector config from `config/integrations.yaml`
-- [ ] Read target/probe metadata from API/PostgreSQL
-- [ ] Keep desired state out of PostgreSQL
+- [x] Read desired runtime collector config from `config/integrations.yaml`
+- [x] Read target/probe metadata from API/PostgreSQL
+- [x] Keep desired state out of PostgreSQL
 
 ---
 
