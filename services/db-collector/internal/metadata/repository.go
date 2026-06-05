@@ -35,14 +35,24 @@ where dt.engine = $1
 order by e.slug, dt.name, pd.name
 `
 
+// Repository provides read access to the collector metadata stored in a
+// relational database.
 type Repository struct {
 	db *sql.DB
 }
 
+// NewRepository returns a Repository backed by the given database connection.
 func NewRepository(db *sql.DB) Repository {
 	return Repository{db: db}
 }
 
+// ListScheduledProbes returns all active [ScheduledProbe] values that match
+// filter.  A probe is active when the target status is "active" and both the
+// probe assignment and probe definition are enabled.
+//
+// Optional filter fields (EnvironmentSlug, TargetNames) are applied in Go
+// after the SQL query returns; the SQL query itself filters on Engine and
+// CollectorID only.
 func (r Repository) ListScheduledProbes(ctx context.Context, filter QueryFilter) ([]ScheduledProbe, error) {
 	rows, err := r.db.QueryContext(ctx, scheduledProbesQuery, filter.Engine, filter.CollectorID)
 	if err != nil {

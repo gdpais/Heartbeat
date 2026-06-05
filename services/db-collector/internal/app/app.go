@@ -1,3 +1,9 @@
+// Package app wires together all db-collector subsystems and runs the service
+// until the context is cancelled.
+//
+// Run is the single entry-point: it loads configuration, starts per-collector
+// pollers, and serves the Prometheus /metrics endpoint along with liveness and
+// readiness probes.
 package app
 
 import (
@@ -14,11 +20,27 @@ import (
 	collectorexport "heartbeat/services/db-collector/internal/export"
 )
 
+// Config holds the top-level runtime parameters for the db-collector service.
 type Config struct {
-	ListenAddr       string
+	// ListenAddr is the TCP address on which the HTTP server will listen
+	// (e.g. ":8082").
+	ListenAddr string
+	// IntegrationsPath is the path to the YAML file that declares collectors,
+	// targets, and probes (e.g. "config/integrations.yaml").
 	IntegrationsPath string
 }
 
+// Run initialises the service, starts all enabled collectors as background
+// goroutines, and serves HTTP until ctx is cancelled or a fatal error occurs.
+//
+// Each enabled "sqlserver" collector in the integrations file is launched as
+// an independent [collectors.Poller]. All pollers share the same
+// [collectors.Runner] and write metrics to a single Prometheus registry that
+// is exposed at /metrics.
+//
+// Run returns nil on a clean shutdown (context cancelled) and a non-nil error
+// if the HTTP server fails to start or a collector returns an unrecoverable
+// error.
 func Run(ctx context.Context, cfg Config) error {
 	runtimeCfg, err := collectorconfig.LoadRuntimeConfig(cfg.IntegrationsPath)
 	if err != nil {
@@ -73,6 +95,12 @@ func Run(ctx context.Context, cfg Config) error {
 	return nil
 }
 
+// routes builds the HTTP handler tree for the service.
+//
+// Endpoints:
+//   - GET /metrics  – Prometheus metrics scrape endpoint.
+//   - GET /healthz  – Liveness probe; always returns 200 OK.
+//   - GET /readyz   – Readiness probe; always returns 200 OK.
 func routes(registry *prometheus.Registry) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))

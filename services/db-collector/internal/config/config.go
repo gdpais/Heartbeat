@@ -1,3 +1,10 @@
+// Package config loads and normalises the integrations YAML file into typed
+// runtime configuration structs consumed by the collector subsystem.
+//
+// The integrations file declares one or more collectors, each with a set of
+// database targets and probes to execute.  LoadRuntimeConfig is the single
+// public entry-point; it reads the file, validates required fields, fills in
+// defaults, and returns a [RuntimeConfig].
 package config
 
 import (
@@ -11,8 +18,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Endpoint holds the connection details for an external service integration
+// (Grafana, Loki, or Alertmanager).
 type Endpoint struct {
-	BaseURL            string            `yaml:"base_url"`
+	// BaseURL is the root HTTP URL of the service.
+	BaseURL string `yaml:"base_url"`
+	// DashboardTemplates maps logical template names to their dashboard URLs or
+	// identifiers within the service.
 	DashboardTemplates map[string]string `yaml:"dashboard_templates"`
 }
 
@@ -55,43 +67,86 @@ type document struct {
 	Collectors   []collectorDocument `yaml:"collectors"`
 }
 
+// CollectorRuntimeConfig is the normalised, ready-to-use representation of a
+// single collector declaration from the integrations file.
 type CollectorRuntimeConfig struct {
-	ID             string
-	Kind           string
-	Enabled        bool
-	CredentialRef  string
-	Environment    string
-	TargetNames    []string
+	// ID is the unique identifier for this collector (required).
+	ID string
+	// Kind specifies the database engine, e.g. "sqlserver".
+	Kind string
+	// Enabled indicates whether this collector should be started.
+	Enabled bool
+	// CredentialRef is the default credential reference applied to targets that
+	// do not specify their own.
+	CredentialRef string
+	// Environment is the default environment slug for targets that do not
+	// specify their own.
+	Environment string
+	// TargetNames optionally filters the active targets to a named subset; an
+	// empty slice means all targets are active.
+	TargetNames []string
+	// ScrapeInterval is how often the collector polls its targets.
 	ScrapeInterval time.Duration
-	Targets        []TargetRuntimeConfig
-	Probes         []ProbeRuntimeConfig
+	// Targets is the list of database targets this collector will probe.
+	Targets []TargetRuntimeConfig
+	// Probes is the default probe set inherited by targets that define no
+	// probes of their own.
+	Probes []ProbeRuntimeConfig
 }
 
+// TargetRuntimeConfig holds the connection parameters and probe assignments
+// for a single database target.
 type TargetRuntimeConfig struct {
-	Name            string
+	// Name is the human-readable identifier for this target.
+	Name string
+	// EnvironmentSlug categorises the target (e.g. "production", "staging").
 	EnvironmentSlug string
-	Engine          string
-	Host            string
-	Port            int
-	DatabaseName    string
-	CredentialRef   string
-	Probes          []ProbeRuntimeConfig
+	// Engine is the database engine type inherited from the parent collector.
+	Engine string
+	// Host is the network hostname or IP address of the database server.
+	Host string
+	// Port is the TCP port of the database server.
+	Port int
+	// DatabaseName is the logical database to connect to.
+	DatabaseName string
+	// CredentialRef references the credential used to authenticate; falls back
+	// to the collector-level credential when empty.
+	CredentialRef string
+	// Probes is the set of probes to execute against this target.
+	Probes []ProbeRuntimeConfig
 }
 
+// ProbeRuntimeConfig describes a single probe to execute against a target.
 type ProbeRuntimeConfig struct {
-	Name          string
+	// Name identifies the probe and must match a key in the probe catalog.
+	Name string
+	// QueryTemplate overrides the catalog's default SQL query when non-empty.
 	QueryTemplate string
-	TimeoutMS     int
+	// TimeoutMS is the per-execution deadline in milliseconds; 0 means use the
+	// catalog or interval default.
+	TimeoutMS int
 }
 
+// RuntimeConfig is the fully parsed and validated representation of the
+// integrations file.  It is the root value returned by [LoadRuntimeConfig].
 type RuntimeConfig struct {
+	// Version is the SHA-256 hex digest of the raw file content, used to
+	// detect configuration changes at runtime.
 	Version      string
 	Grafana      Endpoint
 	Loki         Endpoint
 	Alertmanager Endpoint
-	Collectors   []CollectorRuntimeConfig
+	// Collectors lists all collector declarations, both enabled and disabled.
+	Collectors []CollectorRuntimeConfig
 }
 
+// LoadRuntimeConfig reads the YAML integrations file at path, validates its
+// contents, and returns the normalised [RuntimeConfig].
+//
+// The returned Version field is the SHA-256 digest of the raw file bytes so
+// callers can detect configuration changes without re-parsing the file.
+// An error is returned if the file cannot be read, cannot be parsed, or
+// contains invalid collector declarations.
 func LoadRuntimeConfig(path string) (RuntimeConfig, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -117,6 +172,8 @@ func LoadRuntimeConfig(path string) (RuntimeConfig, error) {
 	return cfg, nil
 }
 
+// EnabledCollectors returns a deterministically sorted slice of collectors
+// that are both enabled and match the given engine kind (e.g. "sqlserver").
 func (c RuntimeConfig) EnabledCollectors(kind string) []CollectorRuntimeConfig {
 	var out []CollectorRuntimeConfig
 	for _, collector := range c.Collectors {

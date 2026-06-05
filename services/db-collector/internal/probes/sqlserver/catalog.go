@@ -1,23 +1,59 @@
+// Package sqlserver defines the built-in SQL Server probe catalog used by the
+// db-collector service.
+//
+// A [Catalog] maps probe names to [Probe] definitions.  Each [Probe] bundles
+// a default SQL query template with the set of [Metric] descriptors that
+// describe how to decode the result set into Prometheus gauge samples.
+//
+// The [DefaultCatalog] function returns a pre-populated catalog with the
+// following built-in probes:
+//
+//   - waits          – cumulative wait statistics from sys.dm_os_wait_stats
+//   - blocking       – current blocked-request count from sys.dm_exec_requests
+//   - sessions       – session counts by status from sys.dm_exec_sessions
+//   - memory_pressure – server memory counters from sys.dm_os_performance_counters
+//   - storage        – database file sizes from sys.master_files
+//   - throughput     – batch/transaction rate counters from sys.dm_os_performance_counters
 package sqlserver
 
+// Probe describes a named SQL Server probe: the SQL to execute and the metrics
+// to extract from the result set.
 type Probe struct {
-	Name          string
-	Category      string
+	// Name is the unique key used to look up this probe in a [Catalog].
+	Name string
+	// Category groups related probes and determines whether evidence records
+	// are produced (e.g. "blocking", "sessions").
+	Category string
+	// QueryTemplate is the default SQL query.  Individual collector
+	// configurations may override this per probe.
 	QueryTemplate string
-	Metrics       []Metric
+	// Metrics lists the gauge descriptors that decode columns from the query
+	// result set into labelled Prometheus samples.
+	Metrics []Metric
 }
 
+// Metric describes how to extract a single Prometheus gauge from one column of
+// a probe's SQL result set.
 type Metric struct {
-	Name         string
-	Help         string
-	ValueColumn  string
+	// Name is the fully-qualified Prometheus metric name
+	// (e.g. "heartbeat_sqlserver_sessions").
+	Name string
+	// Help is the human-readable description registered with Prometheus.
+	Help string
+	// ValueColumn is the result-set column whose value becomes the gauge value.
+	ValueColumn string
+	// LabelColumns are additional result-set columns whose values become
+	// Prometheus label values (column name becomes the label key).
 	LabelColumns []string
 }
 
+// Catalog is an immutable, name-indexed collection of [Probe] definitions.
 type Catalog struct {
 	byName map[string]Probe
 }
 
+// DefaultCatalog returns a [Catalog] pre-populated with all built-in SQL
+// Server probes.  See the package documentation for the full list.
 func DefaultCatalog() Catalog {
 	probes := []Probe{
 		{
@@ -94,6 +130,8 @@ func DefaultCatalog() Catalog {
 	return catalog
 }
 
+// Get returns the [Probe] registered under name and true, or the zero value
+// and false if no probe with that name exists.
 func (c Catalog) Get(name string) (Probe, bool) {
 	probe, ok := c.byName[name]
 	return probe, ok
