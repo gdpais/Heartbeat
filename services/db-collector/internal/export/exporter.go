@@ -11,6 +11,7 @@ import (
 
 type Sample struct {
 	Metric string
+	Help   string
 	Value  float64
 	Labels map[string]string
 }
@@ -41,7 +42,11 @@ func (e *PrometheusExporter) Record(samples []Sample) error {
 		labelNames := sortedKeys(sample.Labels)
 		gauge, ok := e.gauges[sample.Metric]
 		if !ok {
-			gauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: sample.Metric, Help: sample.Metric}, labelNames)
+			help := sample.Help
+			if help == "" {
+				help = sample.Metric
+			}
+			gauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: sample.Metric, Help: help}, labelNames)
 			if err := e.reg.Register(gauge); err != nil {
 				return fmt.Errorf("register gauge %s: %w", sample.Metric, err)
 			}

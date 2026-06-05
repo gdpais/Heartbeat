@@ -24,7 +24,7 @@ This repo is in early MVP construction, not feature-complete.
 Implemented now:
 
 - monorepo scaffolding for apps, services, packages, infra, tests, and migrations
-- local Docker Compose stack for PostgreSQL, Redis, Prometheus, Loki, Grafana, Alertmanager, and OpenTelemetry Collector
+- local Docker Compose stack for PostgreSQL and `db-collector`
 - product and architecture docs under `docs/`
 - shared JSON-schema contracts under `packages/`
 - PostgreSQL foundation migrations for Heartbeat control-plane metadata
@@ -118,13 +118,8 @@ docker compose -f infra/docker-compose.yml up -d
 
 Exposed local endpoints from the compose stack:
 
-- Grafana -> http://localhost:3000 (`admin` / `admin`)
-- Prometheus -> http://localhost:9090
-- Alertmanager -> http://localhost:9093
-- Loki -> http://localhost:3100
-- OTel Collector health -> http://localhost:13133/
 - PostgreSQL -> localhost:5432
-- Redis -> localhost:6379
+- db-collector -> localhost:8082
 
 The DB collector also has a real Go entrypoint at:
 
@@ -132,7 +127,6 @@ The DB collector also has a real Go entrypoint at:
 
 It reads:
 
-- metadata Postgres DSN from `HEARTBEAT_METADATA_POSTGRES_DSN`
 - integration config from `config/integrations.yaml`
 - listen address from `HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR`
 
@@ -146,49 +140,76 @@ Prereqs:
 1. Start the local stack
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d
+make up
 ```
 
 2. Validate the compose config
 
 ```bash
-docker compose -f infra/docker-compose.yml config
+make config
 ```
 
 3. Apply the foundation migration
 
 ```bash
-docker compose -f infra/docker-compose.yml exec -T postgres psql -U heartbeat -d heartbeat < /migrations/0001_foundations.up.sql
+make migrate
 ```
 
 4. Run health checks
 
 ```bash
-docker compose -f infra/docker-compose.yml exec postgres pg_isready -U heartbeat -d heartbeat
-docker compose -f infra/docker-compose.yml exec redis redis-cli ping
-curl http://localhost:9090/-/ready
-curl http://localhost:3100/ready
-curl http://localhost:3000/api/health
-curl http://localhost:9093/-/ready
-curl http://localhost:13133/
+make health
 ```
 
 5. Run tests
 
 ```bash
-go test ./...
+make test
+```
+
+## Kubernetes local stack
+
+If you prefer Kubernetes locally, the repo includes a minimal bundle for the only implemented workload: `db-collector`, plus the PostgreSQL instance it needs.
+
+Build the image and apply the bundle:
+
+```bash
+make k8s-up
+```
+
+If you are using `kind`, load the image first:
+
+```bash
+make kind-load-db-collector-image
+```
+
+Then expose the services to your laptop:
+
+```bash
+make k8s-port-forward
 ```
 
 ## Local config
 
-Current sample integration config lives at `config/integrations.yaml` and includes:
+`config/integrations.yaml`
 
-- Grafana base URL
-- Loki base URL
-- Alertmanager base URL
-- a sample SQL Server collector definition
+- This file is read by the `db-collector` application itself - runtime settings
+- It tells the collector where related systems live and which collectors should be enabled
+- In the current code, the most important part is the `collectors:` section because that describes SQL Server collector runtime settings, enabled probes, and target connection details
 
-This follows the repo rule that integration/runtime desired state lives in YAML, not PostgreSQL.
+`infra/k8s/local/*.yaml`
+
+- These files tell Kubernetes what to create in the cluster
+- Kubernetes reads the file and creates objects from it such as a deployment, service, secret, or config map
+
+The local Kubernetes files now mean:
+
+- `namespace.yaml`: creates a separate space named `heartbeat` so these resources stay grouped together
+- `secret-postgres.yaml`: stores the Postgres username, password, database name, and connection string
+- `configmap-config.yaml`: stores `integrations.yaml` so Kubernetes can mount it into the `db-collector` container
+- `postgres.yaml`: starts a PostgreSQL container in Kubernetes and exposes it to other workloads
+- `db-collector.yaml`: starts the `db-collector` container, passes its environment variables, mounts the config file, and exposes port `8082`
+- `kustomization.yaml`: acts like a small manifest list that says "apply these YAML files together"
 
 ## Delivery phases
 

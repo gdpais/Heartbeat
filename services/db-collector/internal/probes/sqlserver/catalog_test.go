@@ -13,8 +13,16 @@ func TestCatalogContainsRequiredProbes(t *testing.T) {
 		if probe.QueryTemplate == "" {
 			t.Fatalf("probe %q has empty query template", name)
 		}
-		if len(probe.MetricNames) == 0 {
+		if len(probe.Metrics) == 0 {
 			t.Fatalf("probe %q has no metric names", name)
+		}
+		for _, metric := range probe.Metrics {
+			if metric.Name == "" {
+				t.Fatalf("probe %q has metric with empty name", name)
+			}
+			if metric.ValueColumn == "" {
+				t.Fatalf("probe %q metric %q has empty value column", name, metric.Name)
+			}
 		}
 	}
 }

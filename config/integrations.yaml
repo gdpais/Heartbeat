@@ -15,3 +15,11 @@ collectors:
       environment: local
       scrape_interval: 30s
       target_names: []
+      probes:
+        - name: waits
+        - name: blocking
+        - name: sessions
+        - name: memory_pressure
+        - name: storage
+        - name: throughput
+      targets: []

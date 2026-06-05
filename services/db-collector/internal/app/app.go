@@ -2,12 +2,9 @@ package app
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 	"net/http"
 	"sync"
 
-	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -15,12 +12,10 @@ import (
 	collectorconfig "heartbeat/services/db-collector/internal/config"
 	connector "heartbeat/services/db-collector/internal/connectors/sqlserver"
 	collectorexport "heartbeat/services/db-collector/internal/export"
-	collectormetadata "heartbeat/services/db-collector/internal/metadata"
 )
 
 type Config struct {
 	ListenAddr       string
-	MetadataPostgres string
 	IntegrationsPath string
 }
 
@@ -29,17 +24,11 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	db, err := sql.Open("postgres", cfg.MetadataPostgres)
-	if err != nil {
-		return fmt.Errorf("open metadata postgres: %w", err)
-	}
-	defer db.Close()
 
 	registry := prometheus.NewRegistry()
 	exporter := collectorexport.NewPrometheusExporter(registry)
-	repo := collectormetadata.NewRepository(db)
 	executor := collectors.NewSQLExecutor(connector.NewManager(connector.EnvCredentialResolver{}))
-	runner := collectors.NewRunner(repo, executor, exporter, collectors.LoggingEvidenceSink{})
+	runner := collectors.NewRunner(executor, exporter, collectors.LoggingEvidenceSink{})
 
 	errCh := make(chan error, 1)
 	var wg sync.WaitGroup

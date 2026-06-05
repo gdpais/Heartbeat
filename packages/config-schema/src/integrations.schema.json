@@ -59,7 +59,55 @@
           "kind": {"type": "string"},
           "enabled": {"type": "boolean"},
           "credential_ref": {"type": "string"},
-          "config": {"type": "object"}
+          "config": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "environment": {"type": "string"},
+              "scrape_interval": {"type": "string"},
+              "target_names": {
+                "type": "array",
+                "items": {"type": "string"}
+              },
+              "probes": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/probe"}
+              },
+              "targets": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/target"}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string"},
+        "query_template": {"type": "string"},
+        "timeout_ms": {"type": "integer", "minimum": 1}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "host", "port"],
+      "properties": {
+        "name": {"type": "string"},
+        "environment": {"type": "string"},
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "database_name": {"type": "string"},
+        "credential_ref": {"type": "string"},
+        "probes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/probe"}
         }
       }
     }

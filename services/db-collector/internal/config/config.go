@@ -17,11 +17,35 @@ type Endpoint struct {
 }
 
 type collectorDocument struct {
-	ID            string         `yaml:"id"`
-	Kind          string         `yaml:"kind"`
-	Enabled       bool           `yaml:"enabled"`
-	CredentialRef string         `yaml:"credential_ref"`
-	Config        map[string]any `yaml:"config"`
+	ID            string                  `yaml:"id"`
+	Kind          string                  `yaml:"kind"`
+	Enabled       bool                    `yaml:"enabled"`
+	CredentialRef string                  `yaml:"credential_ref"`
+	Config        collectorConfigDocument `yaml:"config"`
+}
+
+type collectorConfigDocument struct {
+	Environment    string           `yaml:"environment"`
+	ScrapeInterval string           `yaml:"scrape_interval"`
+	TargetNames    []string         `yaml:"target_names"`
+	Targets        []targetDocument `yaml:"targets"`
+	Probes         []probeDocument  `yaml:"probes"`
+}
+
+type targetDocument struct {
+	Name          string          `yaml:"name"`
+	Environment   string          `yaml:"environment"`
+	Host          string          `yaml:"host"`
+	Port          int             `yaml:"port"`
+	DatabaseName  string          `yaml:"database_name"`
+	CredentialRef string          `yaml:"credential_ref"`
+	Probes        []probeDocument `yaml:"probes"`
+}
+
+type probeDocument struct {
+	Name          string `yaml:"name"`
+	QueryTemplate string `yaml:"query_template"`
+	TimeoutMS     int    `yaml:"timeout_ms"`
 }
 
 type document struct {
@@ -39,6 +63,25 @@ type CollectorRuntimeConfig struct {
 	Environment    string
 	TargetNames    []string
 	ScrapeInterval time.Duration
+	Targets        []TargetRuntimeConfig
+	Probes         []ProbeRuntimeConfig
+}
+
+type TargetRuntimeConfig struct {
+	Name            string
+	EnvironmentSlug string
+	Engine          string
+	Host            string
+	Port            int
+	DatabaseName    string
+	CredentialRef   string
+	Probes          []ProbeRuntimeConfig
+}
+
+type ProbeRuntimeConfig struct {
+	Name          string
+	QueryTemplate string
+	TimeoutMS     int
 }
 
 type RuntimeConfig struct {
@@ -93,22 +136,37 @@ func normalizeCollector(doc collectorDocument) (CollectorRuntimeConfig, error) {
 		CredentialRef:  doc.CredentialRef,
 		ScrapeInterval: 30 * time.Second,
 	}
-	if env, ok := doc.Config["environment"].(string); ok {
-		cfg.Environment = env
-	}
-	if rawInterval, ok := doc.Config["scrape_interval"].(string); ok && rawInterval != "" {
-		interval, err := time.ParseDuration(rawInterval)
+	cfg.Environment = doc.Config.Environment
+	cfg.TargetNames = append(cfg.TargetNames, doc.Config.TargetNames...)
+	cfg.Probes = normalizeProbes(doc.Config.Probes)
+	if doc.Config.ScrapeInterval != "" {
+		interval, err := time.ParseDuration(doc.Config.ScrapeInterval)
 		if err != nil {
 			return CollectorRuntimeConfig{}, fmt.Errorf("invalid scrape_interval for collector %s: %w", doc.ID, err)
 		}
 		cfg.ScrapeInterval = interval
 	}
-	if rawTargets, ok := doc.Config["target_names"].([]any); ok {
-		for _, raw := range rawTargets {
-			if value, ok := raw.(string); ok {
-				cfg.TargetNames = append(cfg.TargetNames, value)
-			}
+	for _, target := range doc.Config.Targets {
+		runtimeTarget := TargetRuntimeConfig{
+			Name:            target.Name,
+			EnvironmentSlug: target.Environment,
+			Engine:          doc.Kind,
+			Host:            target.Host,
+			Port:            target.Port,
+			DatabaseName:    target.DatabaseName,
+			CredentialRef:   target.CredentialRef,
 		}
+		if runtimeTarget.EnvironmentSlug == "" {
+			runtimeTarget.EnvironmentSlug = cfg.Environment
+		}
+		if runtimeTarget.CredentialRef == "" {
+			runtimeTarget.CredentialRef = cfg.CredentialRef
+		}
+		runtimeTarget.Probes = normalizeProbes(target.Probes)
+		if len(runtimeTarget.Probes) == 0 {
+			runtimeTarget.Probes = append(runtimeTarget.Probes, cfg.Probes...)
+		}
+		cfg.Targets = append(cfg.Targets, runtimeTarget)
 	}
 	if cfg.ID == "" {
 		return CollectorRuntimeConfig{}, fmt.Errorf("collector id is required")
@@ -120,6 +178,21 @@ func normalizeCollector(doc collectorDocument) (CollectorRuntimeConfig, error) {
 		return CollectorRuntimeConfig{}, fmt.Errorf("collector %s must have positive scrape interval", cfg.ID)
 	}
 	return cfg, nil
+}
+
+func normalizeProbes(docs []probeDocument) []ProbeRuntimeConfig {
+	probes := make([]ProbeRuntimeConfig, 0, len(docs))
+	for _, doc := range docs {
+		if doc.Name == "" {
+			continue
+		}
+		probes = append(probes, ProbeRuntimeConfig{
+			Name:          doc.Name,
+			QueryTemplate: doc.QueryTemplate,
+			TimeoutMS:     doc.TimeoutMS,
+		})
+	}
+	return probes
 }
 
 func hash(content []byte) string {

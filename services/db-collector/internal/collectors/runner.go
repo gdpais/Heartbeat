@@ -4,9 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	collectorconfig "heartbeat/services/db-collector/internal/config"
@@ -15,10 +13,6 @@ import (
 	collectormetadata "heartbeat/services/db-collector/internal/metadata"
 	catalogsqlserver "heartbeat/services/db-collector/internal/probes/sqlserver"
 )
-
-type Repository interface {
-	ListScheduledProbes(context.Context, collectormetadata.QueryFilter) ([]collectormetadata.ScheduledProbe, error)
-}
 
 type ProbeExecutor interface {
 	RunProbe(context.Context, collectormetadata.ScheduledProbe) ([]collectorexport.Sample, []collectormetadata.Evidence, error)
@@ -29,29 +23,20 @@ type EvidenceSink interface {
 }
 
 type Runner struct {
-	repo     Repository
 	executor ProbeExecutor
 	exporter collectorexport.Recorder
 	sink     EvidenceSink
 }
 
-func NewRunner(repo Repository, executor ProbeExecutor, exporter collectorexport.Recorder, sink EvidenceSink) Runner {
-	return Runner{repo: repo, executor: executor, exporter: exporter, sink: sink}
+func NewRunner(executor ProbeExecutor, exporter collectorexport.Recorder, sink EvidenceSink) Runner {
+	return Runner{executor: executor, exporter: exporter, sink: sink}
 }
 
 func (r Runner) RunOnce(ctx context.Context, collector collectorconfig.CollectorRuntimeConfig) error {
 	if !collector.Enabled {
 		return nil
 	}
-	items, err := r.repo.ListScheduledProbes(ctx, collectormetadata.QueryFilter{
-		Engine:          collector.Kind,
-		CollectorID:     collector.ID,
-		EnvironmentSlug: collector.Environment,
-		TargetNames:     collector.TargetNames,
-	})
-	if err != nil {
-		return err
-	}
+	items := scheduledProbes(collector)
 	var allSamples []collectorexport.Sample
 	var allEvidence []collectormetadata.Evidence
 	for _, item := range items {
@@ -92,11 +77,13 @@ func (e SQLExecutor) RunProbe(ctx context.Context, item collectormetadata.Schedu
 		return nil, nil, err
 	}
 	defer cleanup()
+	probe, ok := e.Catalog.Get(item.Definition.Name)
+	if !ok {
+		return nil, nil, fmt.Errorf("unknown probe %s", item.Definition.Name)
+	}
 	query := item.Definition.QueryTemplate
 	if query == "" {
-		if probe, ok := e.Catalog.Get(item.Definition.Name); ok {
-			query = probe.QueryTemplate
-		}
+		query = probe.QueryTemplate
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, timeoutFor(item))
 	defer cancel()
@@ -109,7 +96,7 @@ func (e SQLExecutor) RunProbe(ctx context.Context, item collectormetadata.Schedu
 	if err != nil {
 		return nil, nil, err
 	}
-	return decodeRows(item, maps), buildEvidence(item, maps), nil
+	return decodeRows(item, probe, maps), buildEvidence(item, probe, maps), nil
 }
 
 func timeoutFor(item collectormetadata.ScheduledProbe) time.Duration {
@@ -158,42 +145,48 @@ func normalizeValue(value any) any {
 	}
 }
 
-func decodeRows(item collectormetadata.ScheduledProbe, rows []map[string]any) []collectorexport.Sample {
+func decodeRows(item collectormetadata.ScheduledProbe, probe catalogsqlserver.Probe, rows []map[string]any) []collectorexport.Sample {
 	var samples []collectorexport.Sample
 	for _, row := range rows {
-		labels := map[string]string{
-			"environment": item.Target.EnvironmentSlug,
-			"target":      item.Target.Name,
-		}
-		stringKeys := sortedStringKeys(row)
-		for _, key := range stringKeys {
-			if key == "metric" || key == "metric_name" {
-				continue
-			}
-			labels[key] = fmt.Sprint(row[key])
-		}
-		for key, value := range row {
-			metricValue, ok := toFloat64(value)
+		for _, metric := range probe.Metrics {
+			rawValue, ok := row[metric.ValueColumn]
 			if !ok {
 				continue
 			}
-			metricName := fmt.Sprintf("heartbeat_sqlserver_%s_%s", sanitize(item.Definition.Category), sanitize(key))
-			samples = append(samples, collectorexport.Sample{Metric: metricName, Value: metricValue, Labels: labels})
+			metricValue, ok := toFloat64(rawValue)
+			if !ok {
+				continue
+			}
+			labels := map[string]string{
+				"environment": item.Target.EnvironmentSlug,
+				"target":      item.Target.Name,
+			}
+			for _, labelColumn := range metric.LabelColumns {
+				if value, ok := row[labelColumn]; ok {
+					labels[labelColumn] = fmt.Sprint(value)
+				}
+			}
+			samples = append(samples, collectorexport.Sample{
+				Metric: metric.Name,
+				Help:   metric.Help,
+				Value:  metricValue,
+				Labels: labels,
+			})
 		}
 	}
 	return samples
 }
 
-func buildEvidence(item collectormetadata.ScheduledProbe, rows []map[string]any) []collectormetadata.Evidence {
-	if item.Definition.Category != "blocking" && item.Definition.Category != "sessions" {
+func buildEvidence(item collectormetadata.ScheduledProbe, probe catalogsqlserver.Probe, rows []map[string]any) []collectormetadata.Evidence {
+	if probe.Category != "blocking" && probe.Category != "sessions" {
 		return nil
 	}
 	if len(rows) == 0 {
 		return nil
 	}
 	return []collectormetadata.Evidence{{
-		Kind:  item.Definition.Category,
-		Title: fmt.Sprintf("%s snapshot for %s", item.Definition.Category, item.Target.Name),
+		Kind:  probe.Category,
+		Title: fmt.Sprintf("%s snapshot for %s", probe.Category, item.Target.Name),
 		Metadata: map[string]string{
 			"rows": strconv.Itoa(len(rows)),
 		},
@@ -223,26 +216,50 @@ func toFloat64(value any) (float64, bool) {
 	}
 }
 
-func sanitize(value string) string {
-	replacer := strings.NewReplacer(" ", "_", "/", "_", "-", "_", ".", "_")
-	return strings.ToLower(replacer.Replace(value))
-}
-
-func sortedStringKeys(row map[string]any) []string {
-	keys := make([]string, 0, len(row))
-	for key, value := range row {
-		if _, ok := toFloat64(value); ok {
-			continue
-		}
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 type Poller struct {
 	Runner    Runner
 	Collector collectorconfig.CollectorRuntimeConfig
+}
+
+func scheduledProbes(collector collectorconfig.CollectorRuntimeConfig) []collectormetadata.ScheduledProbe {
+	var items []collectormetadata.ScheduledProbe
+	for _, target := range collector.Targets {
+		if len(collector.TargetNames) > 0 && !contains(collector.TargetNames, target.Name) {
+			continue
+		}
+		for _, probe := range target.Probes {
+			items = append(items, collectormetadata.ScheduledProbe{
+				CollectorID: collector.ID,
+				Target: collectormetadata.DatabaseTarget{
+					EnvironmentSlug: target.EnvironmentSlug,
+					Name:            target.Name,
+					Engine:          target.Engine,
+					Host:            target.Host,
+					Port:            target.Port,
+					DatabaseName:    target.DatabaseName,
+					CredentialRef:   target.CredentialRef,
+				},
+				Definition: collectormetadata.ProbeDefinition{
+					Name:          probe.Name,
+					QueryTemplate: probe.QueryTemplate,
+					TimeoutMS:     probe.TimeoutMS,
+				},
+				Assignment: collectormetadata.ProbeAssignment{
+					IntervalSeconds: int(collector.ScrapeInterval / time.Second),
+				},
+			})
+		}
+	}
+	return items
+}
+
+func contains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func (p Poller) Start(ctx context.Context) error {

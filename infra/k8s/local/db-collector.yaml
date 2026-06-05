@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db-collector
+  namespace: heartbeat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db-collector
+  template:
+    metadata:
+      labels:
+        app: db-collector
+    spec:
+      containers:
+        - name: db-collector
+          image: heartbeat/db-collector:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR
+              value: :8082
+            - name: HEARTBEAT_INTEGRATIONS_PATH
+              value: /app/config/integrations.yaml
+          ports:
+            - containerPort: 8082
+          volumeMounts:
+            - name: config
+              mountPath: /app/config/integrations.yaml
+              subPath: integrations.yaml
+      volumes:
+        - name: config
+          configMap:
+            name: heartbeat-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-collector
+  namespace: heartbeat
+spec:
+  selector:
+    app: db-collector
+  ports:
+    - port: 8082
+      targetPort: 8082

@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: heartbeat-config
+  namespace: heartbeat
+data:
+  integrations.yaml: |
+    grafana:
+      base_url: http://grafana.heartbeat.svc.cluster.local:3000
+      dashboard_templates:
+        sqlserver-overview: /d/sqlserver-overview
+    loki:
+      base_url: http://loki.heartbeat.svc.cluster.local:3100
+    alertmanager:
+      base_url: http://alertmanager.heartbeat.svc.cluster.local:9093
+    collectors:
+      - id: sqlserver-default
+        kind: sqlserver
+        enabled: true
+        credential_ref: kv/sqlserver-default
+        config:
+          environment: local
+          scrape_interval: 30s
+          target_names: []
+          probes:
+            - name: waits
+            - name: blocking
+            - name: sessions
+            - name: memory_pressure
+            - name: storage
+            - name: throughput
+          targets: []

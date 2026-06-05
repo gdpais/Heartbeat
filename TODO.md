@@ -258,16 +258,19 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 - [x] Implement memory pressure probes
 - [x] Implement storage probes
 - [x] Implement throughput/latency probes as needed
+- [x] Replace generic column-to-metric decoding with explicit per-probe metric descriptors
 
 ### 5.4 Metrics and evidence output
 - [x] Normalize SQL Server outputs into Prometheus-friendly metrics
 - [x] Expose scrape endpoint
 - [x] Publish investigation evidence snapshots where useful
+- [x] Keep DB collector metric output stateless and Prometheus-scraped instead of persisted in PostgreSQL
 - [ ] Add collector self-observability
 
 ### 5.5 Runtime config model
 - [x] Read desired runtime collector config from `config/integrations.yaml`
-- [x] Read target/probe metadata from API/PostgreSQL
+- [x] Read active target/probe runtime config from YAML/Kubernetes convention
+- [ ] Reintroduce API/PostgreSQL-driven probe assignments only after the control-plane workflow exists
 - [x] Keep desired state out of PostgreSQL
 
 ---

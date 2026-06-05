@@ -26,6 +26,15 @@ collectors:
       environment: prod
       scrape_interval: 30s
       target_names: [core-db]
+      probes:
+        - name: waits
+        - name: sessions
+      targets:
+        - name: core-db
+          host: sql.prod.local
+          port: 1433
+          database_name: Heartbeat
+          credential_ref: kv/core-db
   - id: otel-sidecar
     kind: otel
     enabled: true
@@ -59,6 +68,19 @@ collectors:
 	if collectors[0].ScrapeInterval.String() != "30s" {
 		t.Fatalf("unexpected scrape interval: %s", collectors[0].ScrapeInterval)
 	}
+	if len(collectors[0].Targets) != 1 {
+		t.Fatalf("expected 1 target, got %d", len(collectors[0].Targets))
+	}
+	target := collectors[0].Targets[0]
+	if target.Name != "core-db" {
+		t.Fatalf("unexpected target name: %s", target.Name)
+	}
+	if target.EnvironmentSlug != "prod" {
+		t.Fatalf("unexpected target environment: %s", target.EnvironmentSlug)
+	}
+	if len(target.Probes) != 2 {
+		t.Fatalf("expected target to inherit 2 probes, got %d", len(target.Probes))
+	}
 }
 
 func TestConfigVersionStableForEquivalentContent(t *testing.T) {
@@ -80,6 +102,8 @@ collectors:
     config:
       environment: prod
       scrape_interval: 30s
+      probes:
+        - name: waits
 `)
 	if err := os.WriteFile(pathA, content, 0o600); err != nil {
 		t.Fatalf("write config a: %v", err)

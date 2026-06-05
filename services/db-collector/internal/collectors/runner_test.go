@@ -8,15 +8,8 @@ import (
 	collectorconfig "heartbeat/services/db-collector/internal/config"
 	collectorexport "heartbeat/services/db-collector/internal/export"
 	collectormetadata "heartbeat/services/db-collector/internal/metadata"
+	catalogsqlserver "heartbeat/services/db-collector/internal/probes/sqlserver"
 )
-
-type fakeRepository struct {
-	items []collectormetadata.ScheduledProbe
-}
-
-func (f fakeRepository) ListScheduledProbes(context.Context, collectormetadata.QueryFilter) ([]collectormetadata.ScheduledProbe, error) {
-	return f.items, nil
-}
 
 type fakeExecutor struct{}
 
@@ -40,12 +33,7 @@ func (f *fakeSink) Publish(items []collectormetadata.Evidence) error {
 func TestRunnerExecutesConfiguredCollector(t *testing.T) {
 	exporter := collectorexport.NewInMemoryExporter()
 	sink := &fakeSink{}
-	runner := NewRunner(fakeRepository{items: []collectormetadata.ScheduledProbe{{
-		CollectorID: "sql-prod",
-		Target:      collectormetadata.DatabaseTarget{Name: "core-db", EnvironmentSlug: "prod", Engine: "sqlserver"},
-		Definition:  collectormetadata.ProbeDefinition{Name: "waits", Category: "waits", TimeoutMS: 5000, QueryTemplate: "SELECT 1"},
-		Assignment:  collectormetadata.ProbeAssignment{IntervalSeconds: 30},
-	}}}, fakeExecutor{}, exporter, sink)
+	runner := NewRunner(fakeExecutor{}, exporter, sink)
 
 	err := runner.RunOnce(context.Background(), collectorconfig.CollectorRuntimeConfig{
 		ID:             "sql-prod",
@@ -54,6 +42,16 @@ func TestRunnerExecutesConfiguredCollector(t *testing.T) {
 		CredentialRef:  "kv/sql-prod",
 		ScrapeInterval: 30 * time.Second,
 		Environment:    "prod",
+		Targets: []collectorconfig.TargetRuntimeConfig{{
+			Name:            "core-db",
+			EnvironmentSlug: "prod",
+			Engine:          "sqlserver",
+			Probes: []collectorconfig.ProbeRuntimeConfig{{
+				Name:          "waits",
+				QueryTemplate: "SELECT 1",
+				TimeoutMS:     5000,
+			}},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
@@ -64,5 +62,43 @@ func TestRunnerExecutesConfiguredCollector(t *testing.T) {
 	}
 	if len(sink.evidence) != 1 {
 		t.Fatalf("expected 1 evidence item, got %d", len(sink.evidence))
+	}
+}
+
+func TestDecodeRowsUsesExplicitMetricDescriptors(t *testing.T) {
+	item := collectormetadata.ScheduledProbe{
+		Target: collectormetadata.DatabaseTarget{Name: "core-db", EnvironmentSlug: "prod"},
+	}
+	probe := catalogsqlserver.Probe{
+		Metrics: []catalogsqlserver.Metric{{
+			Name:         "heartbeat_sqlserver_wait_time_ms",
+			Help:         "Wait time.",
+			ValueColumn:  "wait_time_ms",
+			LabelColumns: []string{"wait_type"},
+		}},
+	}
+	rows := []map[string]any{{
+		"wait_type":       "LCK_M_X",
+		"wait_time_ms":    int64(42),
+		"ignored_numeric": int64(99),
+		"ignored_label":   "high-cardinality-value",
+	}}
+
+	samples := decodeRows(item, probe, rows)
+	if len(samples) != 1 {
+		t.Fatalf("expected 1 sample, got %d", len(samples))
+	}
+	sample := samples[0]
+	if sample.Metric != "heartbeat_sqlserver_wait_time_ms" {
+		t.Fatalf("unexpected metric: %s", sample.Metric)
+	}
+	if sample.Value != 42 {
+		t.Fatalf("unexpected value: %v", sample.Value)
+	}
+	if sample.Labels["wait_type"] != "LCK_M_X" {
+		t.Fatalf("unexpected wait_type label: %s", sample.Labels["wait_type"])
+	}
+	if _, ok := sample.Labels["ignored_label"]; ok {
+		t.Fatalf("unexpected ignored_label in labels")
 	}
 }
