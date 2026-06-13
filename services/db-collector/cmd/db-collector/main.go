@@ -8,6 +8,7 @@
 //	HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR  HTTP listen address (default ":8082")
 //	HEARTBEAT_INTEGRATIONS_PATH         Path to integrations YAML file
 //	                                    (default "config/integrations.yaml")
+//	HEARTBEAT_ADMIN_TOKEN               Bearer token for admin reload endpoint
 package main
 
 import (
@@ -16,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"heartbeat/services/db-collector/internal/app"
 )
@@ -26,6 +28,8 @@ func main() {
 	cfg := app.Config{
 		ListenAddr:       env("HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR", ":8082"),
 		IntegrationsPath: env("HEARTBEAT_INTEGRATIONS_PATH", "config/integrations.yaml"),
+		AdminToken:       os.Getenv("HEARTBEAT_ADMIN_TOKEN"),
+		WatchInterval:    durationEnv("HEARTBEAT_CONFIG_WATCH_INTERVAL", 0),
 	}
 	if err := app.Run(ctx, cfg); err != nil {
 		log.Fatal(err)
@@ -39,4 +43,16 @@ func env(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func durationEnv(key string, fallback time.Duration) time.Duration {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

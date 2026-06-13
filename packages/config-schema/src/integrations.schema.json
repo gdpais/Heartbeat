@@ -15,6 +15,10 @@
         "dashboard_templates": {
           "type": "object",
           "additionalProperties": {"type": "string"}
+        },
+        "deep_link_templates": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
         }
       }
     },
@@ -23,7 +27,8 @@
       "additionalProperties": false,
       "required": ["base_url"],
       "properties": {
-        "base_url": {"type": "string", "format": "uri"}
+        "base_url": {"type": "string", "format": "uri"},
+        "endpoint": {"type": "string", "format": "uri"}
       }
     },
     "alertmanager": {
@@ -31,7 +36,16 @@
       "additionalProperties": false,
       "required": ["base_url"],
       "properties": {
-        "base_url": {"type": "string", "format": "uri"}
+        "base_url": {"type": "string", "format": "uri"},
+        "endpoint": {"type": "string", "format": "uri"}
+      }
+    },
+    "opentelemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpoint"],
+      "properties": {
+        "endpoint": {"type": "string", "format": "uri"}
       }
     },
     "notification_channels": {
@@ -44,9 +58,17 @@
           "id": {"type": "string"},
           "channel_type": {"type": "string"},
           "target_ref": {"type": "string"},
-          "credential_ref": {"type": "string"}
+          "credential_ref": {"type": "string"},
+          "config": {
+            "type": "object",
+            "additionalProperties": {"type": "string"}
+          }
         }
       }
+    },
+    "credential_refs": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
     },
     "collectors": {
       "type": "array",

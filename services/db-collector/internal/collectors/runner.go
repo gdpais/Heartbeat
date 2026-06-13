@@ -24,7 +24,7 @@ import (
 	"strconv"
 	"time"
 
-	collectorconfig "heartbeat/services/db-collector/internal/config"
+	collectorconfig "heartbeat/internal/config"
 	connector "heartbeat/services/db-collector/internal/connectors/sqlserver"
 	collectorexport "heartbeat/services/db-collector/internal/export"
 	collectormetadata "heartbeat/services/db-collector/internal/metadata"

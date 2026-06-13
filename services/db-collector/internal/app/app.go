@@ -8,14 +8,19 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
-	"sync"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	heartbeatconfig "heartbeat/internal/config"
 	"heartbeat/services/db-collector/internal/collectors"
-	collectorconfig "heartbeat/services/db-collector/internal/config"
 	connector "heartbeat/services/db-collector/internal/connectors/sqlserver"
 	collectorexport "heartbeat/services/db-collector/internal/export"
 )
@@ -28,6 +33,12 @@ type Config struct {
 	// IntegrationsPath is the path to the YAML file that declares collectors,
 	// targets, and probes (e.g. "config/integrations.yaml").
 	IntegrationsPath string
+	// AdminToken enables POST /admin/config/reload when set. Requests must send
+	// Authorization: Bearer <token>.
+	AdminToken string
+	// WatchInterval enables dev/local config polling when positive. The watcher
+	// checks both the config file and its parent directory.
+	WatchInterval time.Duration
 }
 
 // Run initialises the service, starts all enabled collectors as background
@@ -42,7 +53,7 @@ type Config struct {
 // if the HTTP server fails to start or a collector returns an unrecoverable
 // error.
 func Run(ctx context.Context, cfg Config) error {
-	runtimeCfg, err := collectorconfig.LoadRuntimeConfig(cfg.IntegrationsPath)
+	configManager, err := heartbeatconfig.NewManager(cfg.IntegrationsPath)
 	if err != nil {
 		return err
 	}
@@ -51,35 +62,26 @@ func Run(ctx context.Context, cfg Config) error {
 	exporter := collectorexport.NewPrometheusExporter(registry)
 	executor := collectors.NewSQLExecutor(connector.NewManager(connector.EnvCredentialResolver{}))
 	runner := collectors.NewRunner(executor, exporter, collectors.LoggingEvidenceSink{})
+	lifecycle := newPollerLifecycle(runner)
 
 	errCh := make(chan error, 1)
-	var wg sync.WaitGroup
-	for _, collector := range runtimeCfg.EnabledCollectors("sqlserver") {
-		poller := collectors.Poller{Runner: runner, Collector: collector}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := poller.Start(ctx); err != nil && ctx.Err() == nil {
-				select {
-				case errCh <- err:
-				default:
-				}
-			}
-		}()
+	if err := heartbeatconfig.ReconcileCollectors(ctx, lifecycle, heartbeatconfig.DiffCollectors(heartbeatconfig.RuntimeConfig{}, configManager.Snapshot().Config, "sqlserver")); err != nil {
+		return err
 	}
 
-	server := &http.Server{Addr: cfg.ListenAddr, Handler: routes(registry)}
+	server := &http.Server{Addr: cfg.ListenAddr, Handler: routes(registry, configManager, cfg.AdminToken, lifecycle)}
+	go reloadOnSIGHUP(ctx, configManager, lifecycle)
+	if cfg.WatchInterval > 0 {
+		go reloadOnConfigChange(ctx, cfg.IntegrationsPath, cfg.WatchInterval, configManager, lifecycle)
+	}
 	go func() {
 		<-ctx.Done()
 		_ = server.Shutdown(context.Background())
+		_ = lifecycle.shutdown(context.Background())
 	}()
 
 	go func() {
-		wg.Wait()
-		select {
-		case errCh <- ctx.Err():
-		default:
-		}
+		errCh <- lifecycle.wait(ctx)
 	}()
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -99,18 +101,132 @@ func Run(ctx context.Context, cfg Config) error {
 //
 // Endpoints:
 //   - GET /metrics  – Prometheus metrics scrape endpoint.
-//   - GET /healthz  – Liveness probe; always returns 200 OK.
-//   - GET /readyz   – Readiness probe; always returns 200 OK.
-func routes(registry *prometheus.Registry) http.Handler {
+//   - GET /healthcheck  – Liveness probe; always returns 200 OK.
+//   - GET /readyz   – Readiness probe with config version and reload status.
+//   - GET /admin/config – Redacted active config diagnostics.
+//   - POST /admin/config/reload – Authenticated explicit reload trigger.
+func routes(registry *prometheus.Registry, configManager *heartbeatconfig.Manager, adminToken string, lifecycle *pollerLifecycle) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/healthcheck", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ready"))
+		writeJSON(w, http.StatusOK, readiness(configManager, lifecycle))
+	})
+	mux.HandleFunc("/admin/config", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		snapshot := configManager.Snapshot()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"version":         snapshot.Config.Version,
+			"loaded_at":       snapshot.LoadedAt,
+			"last_reload_at":  snapshot.LastReloadAt,
+			"last_reload_err": snapshot.LastReloadErr,
+			"config":          snapshot.Config.Redacted(),
+		})
+	})
+	mux.HandleFunc("/admin/config/reload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		if adminToken == "" || r.Header.Get("Authorization") != "Bearer "+adminToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		previous := configManager.Snapshot()
+		next, err := configManager.Reload()
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, readiness(configManager, lifecycle))
+			return
+		}
+		diff := heartbeatconfig.DiffCollectors(previous.Config, next.Config, "sqlserver")
+		if err := heartbeatconfig.ReconcileCollectors(context.Background(), lifecycle, diff); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, readiness(configManager, lifecycle))
 	})
 	return mux
+}
+
+func reloadOnSIGHUP(ctx context.Context, configManager *heartbeatconfig.Manager, lifecycle *pollerLifecycle) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-signals:
+			reloadCollectors(ctx, configManager, lifecycle)
+		}
+	}
+}
+
+func reloadOnConfigChange(ctx context.Context, path string, interval time.Duration, configManager *heartbeatconfig.Manager, lifecycle *pollerLifecycle) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	parent := filepath.Dir(path)
+	last := configFingerprint(path, parent)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			next := configFingerprint(path, parent)
+			if next == last {
+				continue
+			}
+			last = next
+			time.Sleep(500 * time.Millisecond)
+			reloadCollectors(ctx, configManager, lifecycle)
+		}
+	}
+}
+
+func reloadCollectors(ctx context.Context, configManager *heartbeatconfig.Manager, lifecycle *pollerLifecycle) {
+	previous := configManager.Snapshot()
+	next, err := configManager.Reload()
+	if err != nil {
+		return
+	}
+	_ = heartbeatconfig.ReconcileCollectors(ctx, lifecycle, heartbeatconfig.DiffCollectors(previous.Config, next.Config, "sqlserver"))
+}
+
+func configFingerprint(path, parent string) string {
+	fileInfo, fileErr := os.Stat(path)
+	parentInfo, parentErr := os.Stat(parent)
+	return statFingerprint(fileInfo, fileErr) + "|" + statFingerprint(parentInfo, parentErr)
+}
+
+func statFingerprint(info os.FileInfo, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return info.ModTime().UTC().Format(time.RFC3339Nano) + ":" + info.Mode().String()
+}
+
+func readiness(configManager *heartbeatconfig.Manager, lifecycle *pollerLifecycle) map[string]any {
+	snapshot := configManager.Snapshot()
+	return map[string]any{
+		"status":          "ready",
+		"config_version":  snapshot.Config.Version,
+		"last_reload_at":  snapshot.LastReloadAt,
+		"last_reload_err": snapshot.LastReloadErr,
+		"collectors":      lifecycle.statuses(),
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }

@@ -203,15 +203,15 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 ## 4. Core system: OTel gateway (`services/otel-gateway`)
 
 ### 4.1 Service bootstrap
-- [ ] Create Go service entrypoint `services/otel-gateway/cmd/otel-gateway/`
-- [ ] Create internal packages for parsers and normalization
-- [ ] Add health/metrics/logging/graceful shutdown
+- [x] Create Go service entrypoint `services/otel-gateway/cmd/otel-gateway/`
+- [x] Create internal packages for parsers and normalization
+- [x] Add health/metrics/logging/graceful shutdown
 
 ### 4.2 Collector-first integration
-- [ ] Configure stock OpenTelemetry Collector first
-- [ ] Keep custom app code thin
-- [ ] Ensure custom code outputs shared Heartbeat telemetry contract
-- [ ] Avoid rebuilding OTel Collector behavior in service code
+- [x] Configure stock OpenTelemetry Collector first
+- [x] Keep custom app code thin
+- [x] Ensure custom code outputs shared Heartbeat telemetry contract
+- [x] Avoid rebuilding OTel Collector behavior in service code
 
 ### 4.3 OutSystems normalization
 - [ ] Implement OutSystems parser(s)
@@ -333,78 +333,78 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 ## 8. Core system: Integrations, YAML config, and K8s runtime model
 
 ### 8.1 Integration YAML schema
-- [ ] Define `config/integrations.yaml` schema
+- [x] Define `config/integrations.yaml` schema
 - [ ] Cover:
-  - [ ] Grafana base URL
-  - [ ] Loki endpoint
-  - [ ] Alertmanager endpoint
-  - [ ] SMTP/webhook/email delivery config
-  - [ ] dashboard URL templates
-  - [ ] collector definitions
-  - [ ] credential refs
+  - [x] Grafana base URL
+  - [x] Loki endpoint
+  - [x] Alertmanager endpoint
+  - [x] SMTP/webhook/email delivery config
+  - [x] dashboard URL templates
+  - [x] collector definitions
+  - [x] credential refs
 
 ### 8.2 Go config manager
-- [ ] Create shared config manager package
-- [ ] Parse YAML into typed structs
-- [ ] Validate schema + business rules
-- [ ] Compute `config_version` hash
-- [ ] Support redacted rendering for diagnostics
-- [ ] Fail closed on invalid candidate config
+- [x] Create shared config manager package
+- [x] Parse YAML into typed structs
+- [x] Validate schema + business rules
+- [x] Compute `config_version` hash
+- [x] Support redacted rendering for diagnostics
+- [x] Fail closed on invalid candidate config
 
 ### 8.3 Hot reload and reconciliation
-- [ ] Implement immutable active config snapshots (`atomic.Value` / copy-on-write)
-- [ ] Diff desired collectors by stable ID
-- [ ] Add collector lifecycle interface:
-  - [ ] `Start`
-  - [ ] `Update`
-  - [ ] `Drain`
-  - [ ] `Stop`
-  - [ ] `Status`
-- [ ] Handle:
-  - [ ] add collector
-  - [ ] remove collector
-  - [ ] safe live update
-  - [ ] restart when live update unsupported
-- [ ] Preserve old active config on failed reload
+- [x] Implement immutable active config snapshots (`atomic.Value` / copy-on-write)
+- [x] Diff desired collectors by stable ID
+- [x] Add collector lifecycle interface:
+  - [x] `Start`
+  - [x] `Update`
+  - [x] `Drain`
+  - [x] `Stop`
+  - [x] `Status`
+- [x] Handle:
+  - [x] add collector
+  - [x] remove collector
+  - [x] safe live update
+  - [x] restart when live update unsupported
+- [x] Preserve old active config on failed reload
 
 ### 8.4 K8s delivery and reload triggers
-- [ ] Deliver config via ConfigMap + secret refs
-- [ ] Mount projected config volume
-- [ ] Watch parent directory + debounce for dev/local if fsnotify is used
-- [ ] Support explicit `SIGHUP`
-- [ ] Support authenticated `POST /admin/config/reload`
+- [x] Deliver config via ConfigMap + secret refs
+- [x] Mount projected config volume
+- [x] Watch parent directory + debounce for dev/local if fsnotify is used
+- [x] Support explicit `SIGHUP`
+- [x] Support authenticated `POST /admin/config/reload`
 - [ ] Optionally integrate reloader sidecar/controller
-- [ ] Expose config version + reload status in health/admin endpoints and metrics
+- [x] Expose config version + reload status in health/admin endpoints and metrics
 
 ---
 
 ## 9. Core system: Grafana / Prometheus / Loki / Alertmanager / OTel infra
 
 ### 9.1 Prometheus
-- [ ] Provision scrape config for services and collectors
-- [ ] Add OutSystems recording rules
-- [ ] Add SQL Server recording rules
-- [ ] Add alert rule output path from Heartbeat rendering
+- [x] Provision scrape config for services and collectors
+- [x] Add OutSystems recording rules
+- [x] Add SQL Server recording rules
+- [x] Add alert rule output path from Heartbeat rendering
 
 ### 9.2 Loki
-- [ ] Provision Loki for app logs
-- [ ] Enforce low-cardinality label strategy
-- [ ] Keep high-cardinality investigation fields in log body/payload
+- [x] Provision Loki for app logs
+- [x] Enforce low-cardinality label strategy
+- [x] Keep high-cardinality investigation fields in log body/payload
 
 ### 9.3 Grafana
-- [ ] Provision datasources as code
-- [ ] Provision dashboards as code
-- [ ] Add deep-link templates for UI -> Grafana/Loki flows
+- [x] Provision datasources as code
+- [x] Provision dashboards as code
+- [x] Add deep-link templates for UI -> Grafana/Loki flows
 
 ### 9.4 Alertmanager
-- [ ] Provision routing configuration
-- [ ] Support grouping/dedupe/silence/delivery
-- [ ] Integrate rendered routes from Heartbeat metadata
+- [x] Provision routing configuration
+- [x] Support grouping/dedupe/silence/delivery
+- [x] Integrate rendered routes from Heartbeat metadata
 
 ### 9.5 OpenTelemetry Collector
-- [ ] Provision collector config
-- [ ] Route metrics/logs correctly to Prometheus/Loki paths
-- [ ] Prefer collector processors/config before custom service code
+- [x] Provision collector config
+- [x] Route metrics/logs correctly to Prometheus/Loki paths
+- [x] Prefer collector processors/config before custom service code
 
 ---
 

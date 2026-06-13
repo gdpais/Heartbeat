@@ -1,4 +1,11 @@
 route:
   receiver: default
+  group_by: ["alertname", "job", "environment"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
 receivers:
   - name: default
+    webhook_configs:
+      - url: http://otel-gateway:8083/v1/heartbeat/alerts
+        send_resolved: true

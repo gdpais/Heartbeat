@@ -7,3 +7,4 @@ resources:
   - secret-postgres.yaml
   - postgres.yaml
   - db-collector.yaml
+  - otel-gateway.yaml

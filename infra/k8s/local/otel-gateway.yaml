@@ -1,36 +1,29 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: db-collector
+  name: otel-gateway
   namespace: heartbeat
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: db-collector
+      app: otel-gateway
   template:
     metadata:
       labels:
-        app: db-collector
+        app: otel-gateway
     spec:
       containers:
-        - name: db-collector
-          image: heartbeat/db-collector:local
+        - name: otel-gateway
+          image: heartbeat/otel-gateway:local
           imagePullPolicy: IfNotPresent
           env:
-            - name: HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR
-              value: :8082
+            - name: HEARTBEAT_OTEL_GATEWAY_LISTEN_ADDR
+              value: :8083
             - name: HEARTBEAT_INTEGRATIONS_PATH
               value: /app/config/integrations.yaml
-            - name: HEARTBEAT_ADMIN_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: heartbeat-runtime
-                  key: admin-token
-            - name: HEARTBEAT_CONFIG_WATCH_INTERVAL
-              value: 5s
           ports:
-            - containerPort: 8082
+            - containerPort: 8083
           volumeMounts:
             - name: config
               mountPath: /app/config
@@ -43,11 +36,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: db-collector
+  name: otel-gateway
   namespace: heartbeat
 spec:
   selector:
-    app: db-collector
+    app: otel-gateway
   ports:
-    - port: 8082
-      targetPort: 8082
+    - port: 8083
+      targetPort: 8083

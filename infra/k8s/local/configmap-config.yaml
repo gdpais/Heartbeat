@@ -9,10 +9,28 @@ data:
       base_url: http://grafana.heartbeat.svc.cluster.local:3000
       dashboard_templates:
         sqlserver-overview: /d/sqlserver-overview
+        heartbeat-overview: /d/heartbeat-overview
+        outsystems-overview: /d/outsystems-overview
+      deep_link_templates:
+        loki-logs: /explore?orgId=1&left=${loki_query}
+        sqlserver-target: /d/sqlserver-overview?var-target=${target}
     loki:
       base_url: http://loki.heartbeat.svc.cluster.local:3100
+      endpoint: http://loki.heartbeat.svc.cluster.local:3100/loki/api/v1/push
     alertmanager:
       base_url: http://alertmanager.heartbeat.svc.cluster.local:9093
+      endpoint: http://alertmanager.heartbeat.svc.cluster.local:9093/api/v2/alerts
+    opentelemetry:
+      endpoint: http://otel-collector.heartbeat.svc.cluster.local:4318
+    notification_channels:
+      - id: default-webhook
+        channel_type: webhook
+        target_ref: http://alertmanager.heartbeat.svc.cluster.local:9093/api/v2/alerts
+        credential_ref: env/HEARTBEAT_WEBHOOK_TOKEN
+        config:
+          timeout: 10s
+    credential_refs:
+      sqlserver-default: env/HEARTBEAT_SQLSERVER_PASSWORD
     collectors:
       - id: sqlserver-default
         kind: sqlserver
