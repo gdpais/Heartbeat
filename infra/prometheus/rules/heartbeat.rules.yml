@@ -3,3 +3,30 @@ groups:
     rules:
       - record: heartbeat:up:count
         expr: count(up)
+      - record: heartbeat:service_up:ratio
+        expr: avg by (job) (up)
+
+  - name: heartbeat-sqlserver-recording
+    rules:
+      - record: heartbeat:sqlserver_wait_seconds:rate5m
+        expr: sum by (environment, target, wait_type) (rate(heartbeat_sqlserver_wait_seconds_total[5m]))
+      - record: heartbeat:sqlserver_blocking_sessions:sum
+        expr: sum by (environment, target) (heartbeat_sqlserver_blocking_sessions)
+      - record: heartbeat:sqlserver_connections:sum
+        expr: sum by (environment, target) (heartbeat_sqlserver_connections)
+
+  - name: heartbeat-outsystems-recording
+    rules:
+      - record: heartbeat:outsystems_events:rate5m
+        expr: sum by (environment, application, severity) (rate(heartbeat_otel_gateway_normalized_events_total[5m]))
+
+  - name: heartbeat-alerts
+    rules:
+      - alert: HeartbeatServiceDown
+        expr: up{job=~"db-collector|otel-gateway|otel-collector"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Heartbeat service {{ $labels.job }} is down"
+          description: "Prometheus has not scraped {{ $labels.job }} successfully for at least 2 minutes."

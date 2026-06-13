@@ -1,0 +1,51 @@
+grafana:
+  base_url: http://localhost:3000
+  dashboard_templates:
+    sqlserver-overview: /d/sqlserver-overview
+    heartbeat-overview: /d/heartbeat-overview
+    outsystems-overview: /d/outsystems-overview
+  deep_link_templates:
+    loki-logs: /explore?orgId=1&left=${loki_query}
+    sqlserver-target: /d/sqlserver-overview?var-target=${target}
+loki:
+  base_url: http://localhost:3100
+  endpoint: http://loki:3100/loki/api/v1/push
+alertmanager:
+  base_url: http://localhost:9093
+  endpoint: http://alertmanager:9093/api/v2/alerts
+opentelemetry:
+  endpoint: http://otel-collector:4318
+notification_channels:
+  - id: default-webhook
+    channel_type: webhook
+    target_ref: http://localhost:9093/api/v2/alerts
+    credential_ref: env/HEARTBEAT_WEBHOOK_TOKEN
+    config:
+      timeout: 10s
+  - id: local-email
+    channel_type: email
+    target_ref: ops@example.local
+    credential_ref: env/HEARTBEAT_SMTP_PASSWORD
+    config:
+      smtp_host: smtp.example.local
+      smtp_port: "587"
+credential_refs:
+  sqlserver-default: env/HEARTBEAT_SQLSERVER_PASSWORD
+  webhook-default: env/HEARTBEAT_WEBHOOK_TOKEN
+collectors:
+  - id: sqlserver-default
+    kind: sqlserver
+    enabled: true
+    credential_ref: kv/sqlserver-default
+    config:
+      environment: local
+      scrape_interval: 30s
+      target_names: []
+      probes:
+        - name: waits
+        - name: blocking
+        - name: sessions
+        - name: memory_pressure
+        - name: storage
+        - name: throughput
+      targets: []

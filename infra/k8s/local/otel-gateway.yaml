@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-gateway
+  namespace: heartbeat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-gateway
+  template:
+    metadata:
+      labels:
+        app: otel-gateway
+    spec:
+      containers:
+        - name: otel-gateway
+          image: heartbeat/otel-gateway:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HEARTBEAT_OTEL_GATEWAY_LISTEN_ADDR
+              value: :8083
+            - name: HEARTBEAT_INTEGRATIONS_PATH
+              value: /app/config/integrations.yaml
+          ports:
+            - containerPort: 8083
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: heartbeat-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-gateway
+  namespace: heartbeat
+spec:
+  selector:
+    app: otel-gateway
+  ports:
+    - port: 8083
+      targetPort: 8083

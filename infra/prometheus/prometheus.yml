@@ -4,6 +4,7 @@ global:
 
 rule_files:
   - /etc/prometheus/rules/*.yml
+  - /etc/prometheus/rules/generated/*.yml
 
 scrape_configs:
   - job_name: prometheus
@@ -13,3 +14,19 @@ scrape_configs:
   - job_name: otel-collector
     static_configs:
       - targets: ["otel-collector:8889"]
+
+  - job_name: db-collector
+    static_configs:
+      - targets: ["db-collector:8082"]
+
+  - job_name: otel-gateway
+    static_configs:
+      - targets: ["otel-gateway:8083"]
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
+
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]

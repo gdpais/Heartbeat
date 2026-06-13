@@ -2,10 +2,30 @@ receivers:
   otlp:
     protocols:
       grpc:
+        endpoint: 0.0.0.0:4317
       http:
+        endpoint: 0.0.0.0:4318
 
 processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+  resource:
+    attributes:
+      - key: heartbeat.source
+        value: otel-collector
+        action: upsert
   batch:
+  attributes/low_cardinality_logs:
+    actions:
+      - key: user_id
+        action: delete
+      - key: session_id
+        action: delete
+      - key: request_id
+        action: delete
+      - key: client_ip
+        action: delete
 
 exporters:
   debug:
@@ -13,6 +33,11 @@ exporters:
     endpoint: 0.0.0.0:8889
   loki:
     endpoint: http://loki:3100/loki/api/v1/push
+    default_labels_enabled:
+      exporter: false
+      job: true
+      instance: false
+      level: true
 
 extensions:
   health_check:
@@ -23,9 +48,9 @@ service:
   pipelines:
     metrics:
       receivers: [otlp]
-      processors: [batch]
+      processors: [memory_limiter, resource, batch]
       exporters: [prometheus, debug]
     logs:
       receivers: [otlp]
-      processors: [batch]
+      processors: [memory_limiter, resource, attributes/low_cardinality_logs, batch]
       exporters: [loki, debug]

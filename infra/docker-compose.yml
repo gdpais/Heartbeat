@@ -17,72 +17,102 @@ services:
       retries: 10
 
   redis:
-    image: redis:7
+    image: redis:7-alpine
     ports:
       - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
 
   prometheus:
-    image: prom/prometheus:v3.5.0
+    image: prom/prometheus:v3.0.1
     command:
       - --config.file=/etc/prometheus/prometheus.yml
-      - --web.enable-lifecycle
+      - --storage.tsdb.path=/prometheus
     ports:
       - "9090:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
 
   loki:
-    image: grafana/loki:3.5.4
-    command: ["-config.file=/etc/loki/config.yml"]
+    image: grafana/loki:3.3.2
+    command: -config.file=/etc/loki/config.yml
     ports:
       - "3100:3100"
     volumes:
       - ./loki/config.yml:/etc/loki/config.yml:ro
-
-  grafana:
-    image: grafana/grafana:12.1.1
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
-    depends_on:
-      - prometheus
-      - loki
+      - loki_data:/loki
 
   alertmanager:
-    image: prom/alertmanager:v0.28.1
+    image: prom/alertmanager:v0.27.0
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
     ports:
       - "9093:9093"
     volumes:
       - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.131.1
+    image: otel/opentelemetry-collector-contrib:0.114.0
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     ports:
       - "4317:4317"
       - "4318:4318"
-      - "13133:13133"
       - "8889:8889"
+      - "13133:13133"
     volumes:
       - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
     depends_on:
-      - prometheus
       - loki
+
+  otel-gateway:
+    build:
+      context: ..
+      dockerfile: services/otel-gateway/Dockerfile
+    environment:
+      HEARTBEAT_OTEL_GATEWAY_LISTEN_ADDR: :8083
+      HEARTBEAT_INTEGRATIONS_PATH: /app/config/integrations.yaml
+    ports:
+      - "8083:8083"
+    volumes:
+      - ../config/integrations.yaml:/app/config/integrations.yaml:ro
+    depends_on:
+      - otel-collector
+
+  db-collector:
+    build:
+      context: ..
+      dockerfile: services/db-collector/Dockerfile
+    environment:
+      HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR: :8082
+      HEARTBEAT_INTEGRATIONS_PATH: /app/config/integrations.yaml
+      HEARTBEAT_ADMIN_TOKEN: local-admin-token
+      HEARTBEAT_CONFIG_WATCH_INTERVAL: 2s
+    ports:
+      - "8082:8082"
+    volumes:
+      - ../config/integrations.yaml:/app/config/integrations.yaml:ro
+    depends_on:
+      - prometheus
 
 volumes:
   postgres_data:
+  prometheus_data:
+  loki_data:
+  alertmanager_data:
   grafana_data:
