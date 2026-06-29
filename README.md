@@ -167,6 +167,59 @@ make health
 make test
 ```
 
+## Local SQL Server live-scrape sandbox
+
+The safest way to test live SQL Server scraping in this repo is to use the
+dev-only overlay instead of editing the default compose file or the default
+`config/integrations.yaml`.
+
+This keeps local SQL Server credentials and targets out of the tracked runtime
+config that would later feed shared or production-oriented delivery.
+
+Files involved:
+
+- tracked example env -> `.env.sqlserver-dev.example`
+- tracked example collector config -> `config/integrations.local-dev.example.yaml`
+- ignored local env -> `.env.sqlserver-dev`
+- ignored local collector config -> `config/integrations.local-dev.yaml`
+- tracked dev-only compose overlay -> `infra/docker-compose.sqlserver-dev.yml`
+
+Bootstrap the ignored local files:
+
+```bash
+make sqlserver-dev-init
+```
+
+Then start the local stack with a non-production SQL Server instance:
+
+```bash
+make sqlserver-dev-up
+```
+
+Useful checks:
+
+```bash
+make sqlserver-dev-health
+curl http://localhost:8082/metrics
+```
+
+Endpoints:
+
+- SQL Server (dev-only) -> `localhost:11433`
+- Prometheus -> `http://localhost:9090`
+- Grafana -> `http://localhost:3000`
+- db-collector metrics -> `http://localhost:8082/metrics`
+
+The SQL Server overlay uses:
+
+- a separate compose file
+- a separate local-only integrations file
+- a local SA password from `.env.sqlserver-dev`
+- `MSSQL_PID=Developer`
+
+That is the intended boundary between branch-local testing and future
+production delivery.
+
 ## Kubernetes local stack
 
 If you prefer Kubernetes locally, the repo includes a minimal bundle for the only implemented workload: `db-collector`, plus the PostgreSQL instance it needs.

@@ -1,0 +1,23 @@
+services:
+  sqlserver-dev:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?set in .env.sqlserver-dev}
+    ports:
+      - "11433:1433"
+    volumes:
+      - sqlserver_dev_data:/var/opt/mssql
+
+  db-collector:
+    environment:
+      HEARTBEAT_INTEGRATIONS_PATH: /app/config/integrations.local-dev.yaml
+      HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV: ${HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV:?set in .env.sqlserver-dev}
+    volumes:
+      - ../config/integrations.local-dev.yaml:/app/config/integrations.local-dev.yaml:ro
+    depends_on:
+      - sqlserver-dev
+
+volumes:
+  sqlserver_dev_data:

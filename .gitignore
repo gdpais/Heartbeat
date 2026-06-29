@@ -1,5 +1,6 @@
 .DS_Store
 .env
+.env.sqlserver-dev
 *.log
 .tmp/
 coverage/
@@ -8,3 +9,4 @@ __pycache__/
 .pytest_cache/
 infra/data/
 .hermes/
+config/integrations.local-dev.yaml

@@ -1,6 +1,8 @@
 .PHONY: help up down config migrate health test k8s-up k8s-down k8s-apply k8s-port-forward build-db-collector-image kind-load-db-collector-image
 
 COMPOSE_FILE := infra/docker-compose.yml
+SQLSERVER_DEV_COMPOSE_FILE := infra/docker-compose.sqlserver-dev.yml
+SQLSERVER_DEV_ENV_FILE := .env.sqlserver-dev
 K8S_DIR := infra/k8s/local
 DB_COLLECTOR_IMAGE := heartbeat/db-collector:local
 
@@ -10,6 +12,11 @@ help:
 		'  make up                  Start postgres + db-collector with Docker Compose' \
 		'  make down                Stop the local Docker Compose stack and remove volumes' \
 		'  make config              Validate the Docker Compose file' \
+		'  make sqlserver-dev-init  Create ignored local-only SQL Server dev files from examples' \
+		'  make sqlserver-dev-up    Start the local stack plus a dev-only SQL Server target' \
+		'  make sqlserver-dev-down  Stop the local SQL Server dev overlay and remove volumes' \
+		'  make sqlserver-dev-config Validate the SQL Server dev overlay compose config' \
+		'  make sqlserver-dev-health Check collector, Prometheus, and Grafana for the SQL Server dev overlay' \
 		'  make migrate             Apply the foundation migration into local Postgres' \
 		'  make health              Check Postgres and db-collector health endpoints' \
 		'  make test                Run the Go test suite for the implemented service' \
@@ -28,6 +35,25 @@ down:
 
 config:
 	docker compose -f $(COMPOSE_FILE) config
+
+sqlserver-dev-init:
+	test -f $(SQLSERVER_DEV_ENV_FILE) || cp .env.sqlserver-dev.example $(SQLSERVER_DEV_ENV_FILE)
+	test -f config/integrations.local-dev.yaml || cp config/integrations.local-dev.example.yaml config/integrations.local-dev.yaml
+
+sqlserver-dev-up:
+	docker compose --env-file $(SQLSERVER_DEV_ENV_FILE) -f $(COMPOSE_FILE) -f $(SQLSERVER_DEV_COMPOSE_FILE) up -d
+
+sqlserver-dev-down:
+	docker compose --env-file $(SQLSERVER_DEV_ENV_FILE) -f $(COMPOSE_FILE) -f $(SQLSERVER_DEV_COMPOSE_FILE) down -v
+
+sqlserver-dev-config:
+	docker compose --env-file $(SQLSERVER_DEV_ENV_FILE) -f $(COMPOSE_FILE) -f $(SQLSERVER_DEV_COMPOSE_FILE) config
+
+sqlserver-dev-health:
+	curl http://localhost:8082/healthz
+	curl http://localhost:8082/readyz
+	curl http://localhost:9090/-/healthy
+	curl http://localhost:3000/api/health
 
 migrate:
 	docker compose -f $(COMPOSE_FILE) exec -T postgres psql -U heartbeat -d heartbeat < db/migrations/0001_foundations.up.sql
