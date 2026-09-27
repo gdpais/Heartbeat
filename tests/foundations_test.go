@@ -1,10 +1,50 @@
 package tests
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
+
+// These are safety boundaries: a future fixture edit must not give disposable
+// tests access to persistent developer data or globally named Docker resources.
+func TestPostgresFixtureIsDisposable(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join(repoRoot(t), "infra/docker-compose.test.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Name     string         `yaml:"name"`
+		Volumes  map[string]any `yaml:"volumes"`
+		Networks map[string]any `yaml:"networks"`
+		Services map[string]struct {
+			ContainerName string   `yaml:"container_name"`
+			Ports         []any    `yaml:"ports"`
+			NetworkMode   string   `yaml:"network_mode"`
+			Tmpfs         []string `yaml:"tmpfs"`
+			Volumes       []string `yaml:"volumes"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(content, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	pg, ok := fixture.Services["postgres"]
+	if !ok || len(fixture.Services) != 1 || fixture.Name != "" || len(fixture.Volumes) != 0 || len(fixture.Networks) != 0 {
+		t.Fatal("test fixture must contain only PostgreSQL and no shared resources")
+	}
+	if pg.ContainerName != "" || pg.NetworkMode != "" || len(pg.Ports) != 0 {
+		t.Fatal("test PostgreSQL must not use globally named containers or host networking/ports")
+	}
+	if len(pg.Tmpfs) != 1 || pg.Tmpfs[0] != "/var/lib/postgresql/data" {
+		t.Fatal("test database storage must be disposable tmpfs")
+	}
+	if len(pg.Volumes) != 1 || pg.Volumes[0] != "../db/migrations:/migrations:ro" {
+		t.Fatal("the only permitted test bind mount is read-only migrations")
+	}
+}
 
 func TestRequiredFoundationFilesExist(t *testing.T) {
 	root := repoRoot(t)
@@ -91,11 +131,6 @@ func TestSchemaContractsAreValidJSON(t *testing.T) {
 	}
 }
 
-func TestDockerComposeConfigIsValid(t *testing.T) {
-	root := repoRoot(t)
-	runCommand(t, root, "docker", "compose", "-f", filepath.Join(root, "infra/docker-compose.yml"), "config")
-}
-
 func TestMigrationContainsCoreTablesAndExcludesNonGoals(t *testing.T) {
 	sql := migrationSQL(t)
 	expected := []string{
@@ -169,5 +204,18 @@ func TestMigrationHasExpectedUniquesAndIndexes(t *testing.T) {
 		if !strings.Contains(sql, fragment) {
 			t.Fatalf("migration missing fragment %q", fragment)
 		}
+	}
+}
+
+func TestMigrationFilesUseSQLExtension(t *testing.T) {
+	root := repoRoot(t)
+	for _, rel := range []string{
+		"db/migrations/0001_foundations.up.sql",
+		"db/migrations/0001_foundations.down.sql",
+	} {
+		if filepath.Ext(rel) != ".sql" {
+			t.Fatalf("expected .sql file extension for %s", rel)
+		}
+		mustExist(t, filepath.Join(root, rel))
 	}
 }

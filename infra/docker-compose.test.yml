@@ -1,0 +1,18 @@
+# Used only by opt-in integration tests, each with a unique --project-name.
+# No host ports or durable volumes: never share the developer database.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: heartbeat
+      POSTGRES_USER: heartbeat
+      POSTGRES_PASSWORD: heartbeat-test-only
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ../db/migrations:/migrations:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U heartbeat -d heartbeat"]
+      interval: 1s
+      timeout: 5s
+      retries: 60
