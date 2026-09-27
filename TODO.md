@@ -7,9 +7,11 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 - [x] Isolate Docker integration tests from the developer stack and concurrent test runs
 - [x] Consolidate config/reload, health endpoint, and SQL Server development fixes with regression coverage
 - [x] Run repository tests, race checks, vet, and isolated Docker integration tests
-- [ ] Commit the reviewed changes with descriptive messages and push `otel-integrations`
+- [x] Commit the reviewed changes with descriptive messages and push `otel-integrations`
 
 Review and evidence: [consolidation review](docs/reviews/2026-09-28-consolidation.md).
+Published runtime (`956fc70`), test/tooling (`08a6223`), and documentation
+(`454c515`) commits to `origin/otel-integrations` on 2026-09-28.
 
 ## 0. Cross-cutting foundations
 
