@@ -173,8 +173,12 @@ func (c RuntimeConfig) EnabledCollectors(kind string) []CollectorRuntimeConfig {
 // visible, but their concrete values are masked.
 func (c RuntimeConfig) Redacted() RuntimeConfig {
 	out := c
-	out.Collectors = append([]CollectorRuntimeConfig(nil), c.Collectors...)
-	out.NotificationChannels = append([]NotificationChannel(nil), c.NotificationChannels...)
+	out.Grafana = cloneEndpoint(c.Grafana)
+	out.Loki = cloneEndpoint(c.Loki)
+	out.Alertmanager = cloneEndpoint(c.Alertmanager)
+	out.OpenTelemetry = cloneEndpoint(c.OpenTelemetry)
+	out.Collectors = cloneCollectors(c.Collectors)
+	out.NotificationChannels = cloneNotificationChannels(c.NotificationChannels)
 	out.CredentialRefs = map[string]string{}
 	for key := range c.CredentialRefs {
 		out.CredentialRefs[key] = "<redacted>"
@@ -188,6 +192,41 @@ func (c RuntimeConfig) Redacted() RuntimeConfig {
 		out.Collectors[i].CredentialRef = redactRef(out.Collectors[i].CredentialRef)
 		for j := range out.Collectors[i].Targets {
 			out.Collectors[i].Targets[j].CredentialRef = redactRef(out.Collectors[i].Targets[j].CredentialRef)
+		}
+	}
+	return out
+}
+
+func cloneEndpoint(in Endpoint) Endpoint {
+	in.DashboardTemplates = copyStringMap(in.DashboardTemplates)
+	in.DeepLinkTemplates = copyStringMap(in.DeepLinkTemplates)
+	return in
+}
+
+func cloneCollectors(in []CollectorRuntimeConfig) []CollectorRuntimeConfig {
+	out := make([]CollectorRuntimeConfig, len(in))
+	for i, collector := range in {
+		out[i] = collector
+		out[i].TargetNames = append([]string(nil), collector.TargetNames...)
+		out[i].Probes = append([]ProbeRuntimeConfig(nil), collector.Probes...)
+		out[i].Targets = make([]TargetRuntimeConfig, len(collector.Targets))
+		for j, target := range collector.Targets {
+			out[i].Targets[j] = target
+			out[i].Targets[j].Probes = append([]ProbeRuntimeConfig(nil), target.Probes...)
+		}
+	}
+	return out
+}
+
+func cloneNotificationChannels(in []NotificationChannel) []NotificationChannel {
+	out := make([]NotificationChannel, len(in))
+	for i, channel := range in {
+		out[i] = channel
+		if channel.Config != nil {
+			out[i].Config = make(map[string]string, len(channel.Config))
+			for key, value := range channel.Config {
+				out[i].Config[key] = value
+			}
 		}
 	}
 	return out
@@ -268,11 +307,22 @@ func validate(cfg RuntimeConfig) error {
 	if err := validateURL("loki.base_url", cfg.Loki.BaseURL, true); err != nil {
 		return err
 	}
+	if err := validateURL("loki.endpoint", cfg.Loki.Endpoint, false); err != nil {
+		return err
+	}
 	if err := validateURL("alertmanager.base_url", cfg.Alertmanager.BaseURL, true); err != nil {
+		return err
+	}
+	if err := validateURL("alertmanager.endpoint", cfg.Alertmanager.Endpoint, false); err != nil {
 		return err
 	}
 	if err := validateURL("opentelemetry.endpoint", cfg.OpenTelemetry.Endpoint, false); err != nil {
 		return err
+	}
+	for key, ref := range cfg.CredentialRefs {
+		if ref != "" && !validSecretRef(ref) {
+			return fmt.Errorf("credential_refs.%s must be a secret reference", key)
+		}
 	}
 	ids := map[string]struct{}{}
 	for _, collector := range cfg.Collectors {

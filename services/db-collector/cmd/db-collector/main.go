@@ -26,10 +26,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	cfg := app.Config{
-		ListenAddr:       env("HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR", ":8082"),
-		IntegrationsPath: env("HEARTBEAT_INTEGRATIONS_PATH", "config/integrations.yaml"),
-		AdminToken:       os.Getenv("HEARTBEAT_ADMIN_TOKEN"),
-		WatchInterval:    durationEnv("HEARTBEAT_CONFIG_WATCH_INTERVAL", 0),
+		ListenAddr:                      env("HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR", ":8082"),
+		IntegrationsPath:                env("HEARTBEAT_INTEGRATIONS_PATH", "config/integrations.yaml"),
+		AdminToken:                      os.Getenv("HEARTBEAT_ADMIN_TOKEN"),
+		WatchInterval:                   durationEnv("HEARTBEAT_CONFIG_WATCH_INTERVAL", 0),
+		SQLServerTrustServerCertificate: boolEnv("HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE", false),
 	}
 	if err := app.Run(ctx, cfg); err != nil {
 		log.Fatal(err)
@@ -55,4 +56,19 @@ func durationEnv(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return parsed
+}
+
+func boolEnv(key string, fallback bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	switch value {
+	case "1", "true", "TRUE", "True", "yes", "YES", "Yes", "on", "ON", "On":
+		return true
+	case "0", "false", "FALSE", "False", "no", "NO", "No", "off", "OFF", "Off":
+		return false
+	default:
+		return fallback
+	}
 }

@@ -44,7 +44,6 @@ type CredentialResolver interface {
 }
 
 // EnvCredentialResolver resolves credentials from environment variables.
-// See the package documentation for the expected variable naming convention.
 type EnvCredentialResolver struct{}
 
 // Resolve implements [CredentialResolver].  It normalises ref to upper-snake
@@ -79,6 +78,9 @@ type Manager struct {
 	QueryTimeout time.Duration
 	// Encrypt controls whether the connection uses TLS encryption.
 	Encrypt bool
+	// TrustServerCertificate skips hostname and chain verification while keeping
+	// TLS transport enabled. This is intended for dev-only self-signed targets.
+	TrustServerCertificate bool
 }
 
 // NewManager returns a Manager configured with sensible production defaults:
@@ -110,6 +112,7 @@ func (m Manager) Open(ctx context.Context, target collectormetadata.DatabaseTarg
 	query.Set("database", target.DatabaseName)
 	query.Set("app name", m.Application)
 	query.Set("encrypt", fmt.Sprintf("%t", m.Encrypt))
+	query.Set("TrustServerCertificate", fmt.Sprintf("%t", m.TrustServerCertificate))
 	query.Set("dial timeout", fmt.Sprintf("%d", int(m.DialTimeout.Seconds())))
 	dsn := (&url.URL{
 		Scheme:   "sqlserver",

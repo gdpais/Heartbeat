@@ -88,7 +88,6 @@ func (r Runner) RunOnce(ctx context.Context, collector collectorconfig.Collector
 }
 
 // LoggingEvidenceSink is a no-op [EvidenceSink] used in the default wiring.
-// It discards all evidence without error.
 type LoggingEvidenceSink struct{}
 
 // Publish implements [EvidenceSink].  It is a no-op.
@@ -140,6 +139,11 @@ func (e SQLExecutor) RunProbe(ctx context.Context, item collectormetadata.Schedu
 	return decodeRows(item, probe, maps), buildEvidence(item, probe, maps), nil
 }
 
+// timeoutFor returns the effective timeout for one probe execution.
+//
+// Probe-specific timeouts win first. If the probe does not override its own
+// timeout, the collector scrape interval becomes the deadline. A final fallback
+// keeps pathological configurations from running forever.
 func timeoutFor(item collectormetadata.ScheduledProbe) time.Duration {
 	if item.Definition.TimeoutMS > 0 {
 		return time.Duration(item.Definition.TimeoutMS) * time.Millisecond
@@ -150,6 +154,10 @@ func timeoutFor(item collectormetadata.ScheduledProbe) time.Duration {
 	return 5 * time.Second
 }
 
+// readRows materialises the query result set into a slice of column maps.
+//
+// Values are kept as driver-returned types except for []byte, which is
+// normalised to string so downstream decoding can treat text consistently.
 func readRows(rows *sql.Rows) ([]map[string]any, error) {
 	columns, err := rows.Columns()
 	if err != nil {
@@ -177,6 +185,7 @@ func readRows(rows *sql.Rows) ([]map[string]any, error) {
 	return out, nil
 }
 
+// normalizeValue converts driver-returned byte slices into strings.
 func normalizeValue(value any) any {
 	switch v := value.(type) {
 	case []byte:
@@ -186,6 +195,11 @@ func normalizeValue(value any) any {
 	}
 }
 
+// decodeRows maps the SQL result set into Prometheus samples.
+//
+// The probe catalog defines which column carries the numeric value and which
+// columns become labels. Rows that do not contain the configured value column
+// are ignored.
 func decodeRows(item collectormetadata.ScheduledProbe, probe catalogsqlserver.Probe, rows []map[string]any) []collectorexport.Sample {
 	var samples []collectorexport.Sample
 	for _, row := range rows {
@@ -218,6 +232,11 @@ func decodeRows(item collectormetadata.ScheduledProbe, probe catalogsqlserver.Pr
 	return samples
 }
 
+// buildEvidence emits a lightweight snapshot for probe categories that feed
+// investigation or alerting workflows.
+//
+// Evidence is currently produced only for blocking and session probes and only
+// when at least one row is returned.
 func buildEvidence(item collectormetadata.ScheduledProbe, probe catalogsqlserver.Probe, rows []map[string]any) []collectormetadata.Evidence {
 	if probe.Category != "blocking" && probe.Category != "sessions" {
 		return nil
@@ -234,6 +253,7 @@ func buildEvidence(item collectormetadata.ScheduledProbe, probe catalogsqlserver
 	}}
 }
 
+// toFloat64 normalises driver values into a float64 when possible.
 func toFloat64(value any) (float64, bool) {
 	switch v := value.(type) {
 	case int64:
@@ -264,6 +284,8 @@ type Poller struct {
 	Collector collectorconfig.CollectorRuntimeConfig
 }
 
+// scheduledProbes expands a collector into the per-target, per-probe work
+// items that Runner executes.
 func scheduledProbes(collector collectorconfig.CollectorRuntimeConfig) []collectormetadata.ScheduledProbe {
 	var items []collectormetadata.ScheduledProbe
 	for _, target := range collector.Targets {
@@ -296,6 +318,7 @@ func scheduledProbes(collector collectorconfig.CollectorRuntimeConfig) []collect
 	return items
 }
 
+// contains reports whether needle appears in values.
 func contains(values []string, needle string) bool {
 	for _, value := range values {
 		if value == needle {

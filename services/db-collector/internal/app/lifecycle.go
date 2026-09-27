@@ -22,6 +22,7 @@ type pollerLifecycle struct {
 	errCh  chan error
 }
 
+// newPollerLifecycle creates a supervisor for the active collector goroutines.
 func newPollerLifecycle(runner collectors.Runner) *pollerLifecycle {
 	return &pollerLifecycle{
 		runner: runner,
@@ -30,6 +31,8 @@ func newPollerLifecycle(runner collectors.Runner) *pollerLifecycle {
 	}
 }
 
+// Start launches a new poller for collector. If the collector already exists,
+// Start falls back to the update path.
 func (l *pollerLifecycle) Start(ctx context.Context, collector heartbeatconfig.CollectorRuntimeConfig) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -65,12 +68,14 @@ func (l *pollerLifecycle) Start(ctx context.Context, collector heartbeatconfig.C
 	return nil
 }
 
+// Update replaces an existing poller with the new collector configuration.
 func (l *pollerLifecycle) Update(ctx context.Context, collector heartbeatconfig.CollectorRuntimeConfig) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.updateLocked(ctx, collector)
 }
 
+// updateLocked performs the shared start/restart path while the mutex is held.
 func (l *pollerLifecycle) updateLocked(ctx context.Context, collector heartbeatconfig.CollectorRuntimeConfig) error {
 	if entry, exists := l.items[collector.ID]; exists {
 		entry.status.Phase = "restarting"
@@ -109,6 +114,7 @@ func (l *pollerLifecycle) updateLocked(ctx context.Context, collector heartbeatc
 	return nil
 }
 
+// Drain marks a collector as draining before it is stopped.
 func (l *pollerLifecycle) Drain(_ context.Context, id string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -118,6 +124,7 @@ func (l *pollerLifecycle) Drain(_ context.Context, id string) error {
 	return nil
 }
 
+// Stop cancels the collector poller and waits for it to exit.
 func (l *pollerLifecycle) Stop(_ context.Context, id string) error {
 	l.mu.Lock()
 	entry, exists := l.items[id]
@@ -135,6 +142,7 @@ func (l *pollerLifecycle) Stop(_ context.Context, id string) error {
 	return nil
 }
 
+// Status returns the current lifecycle status for one collector.
 func (l *pollerLifecycle) Status(id string) heartbeatconfig.CollectorStatus {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -144,6 +152,7 @@ func (l *pollerLifecycle) Status(id string) heartbeatconfig.CollectorStatus {
 	return heartbeatconfig.CollectorStatus{ID: id, Phase: "stopped"}
 }
 
+// statuses returns the lifecycle status for all active collectors.
 func (l *pollerLifecycle) statuses() []heartbeatconfig.CollectorStatus {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -154,6 +163,7 @@ func (l *pollerLifecycle) statuses() []heartbeatconfig.CollectorStatus {
 	return out
 }
 
+// wait blocks until a collector fails or the outer context is cancelled.
 func (l *pollerLifecycle) wait(ctx context.Context) error {
 	select {
 	case err := <-l.errCh:
@@ -163,6 +173,7 @@ func (l *pollerLifecycle) wait(ctx context.Context) error {
 	}
 }
 
+// shutdown stops every active collector.
 func (l *pollerLifecycle) shutdown(ctx context.Context) error {
 	l.mu.Lock()
 	ids := make([]string, 0, len(l.items))

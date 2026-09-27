@@ -1,14 +1,15 @@
 // Package app wires together all db-collector subsystems and runs the service
 // until the context is cancelled.
 //
-// Run is the single entry-point: it loads configuration, starts per-collector
-// pollers, and serves the Prometheus /metrics endpoint along with liveness and
-// readiness probes.
+// Run is the entry point. It loads configuration, reconciles enabled
+// collectors, starts per-collector pollers, and serves metrics plus health
+// endpoints.
 package app
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"os/signal"
@@ -39,19 +40,19 @@ type Config struct {
 	// WatchInterval enables dev/local config polling when positive. The watcher
 	// checks both the config file and its parent directory.
 	WatchInterval time.Duration
+	// SQLServerTrustServerCertificate is a dev/test escape hatch for self-signed
+	// SQL Server containers. Production should keep this disabled.
+	SQLServerTrustServerCertificate bool
 }
 
-// Run initialises the service, starts all enabled collectors as background
-// goroutines, and serves HTTP until ctx is cancelled or a fatal error occurs.
+// Run initialises the service, reconciles the configured collectors, and
+// serves HTTP until ctx is cancelled or a fatal error occurs.
 //
-// Each enabled "sqlserver" collector in the integrations file is launched as
-// an independent [collectors.Poller]. All pollers share the same
-// [collectors.Runner] and write metrics to a single Prometheus registry that
-// is exposed at /metrics.
+// Each enabled sqlserver collector is launched as an independent Poller. All
+// pollers share the same Runner and export into a single Prometheus registry.
 //
-// Run returns nil on a clean shutdown (context cancelled) and a non-nil error
-// if the HTTP server fails to start or a collector returns an unrecoverable
-// error.
+// Run returns nil on a clean shutdown and a non-nil error if the HTTP server
+// fails to start or a collector returns an unrecoverable error.
 func Run(ctx context.Context, cfg Config) error {
 	configManager, err := heartbeatconfig.NewManager(cfg.IntegrationsPath)
 	if err != nil {
@@ -60,7 +61,9 @@ func Run(ctx context.Context, cfg Config) error {
 
 	registry := prometheus.NewRegistry()
 	exporter := collectorexport.NewPrometheusExporter(registry)
-	executor := collectors.NewSQLExecutor(connector.NewManager(connector.EnvCredentialResolver{}))
+	manager := connector.NewManager(connector.EnvCredentialResolver{})
+	manager.TrustServerCertificate = cfg.SQLServerTrustServerCertificate
+	executor := collectors.NewSQLExecutor(manager)
 	runner := collectors.NewRunner(executor, exporter, collectors.LoggingEvidenceSink{})
 	lifecycle := newPollerLifecycle(runner)
 
@@ -101,17 +104,19 @@ func Run(ctx context.Context, cfg Config) error {
 //
 // Endpoints:
 //   - GET /metrics  – Prometheus metrics scrape endpoint.
-//   - GET /healthcheck  – Liveness probe; always returns 200 OK.
+//   - GET /healthz  – Liveness probe; always returns 200 OK.
 //   - GET /readyz   – Readiness probe with config version and reload status.
 //   - GET /admin/config – Redacted active config diagnostics.
 //   - POST /admin/config/reload – Authenticated explicit reload trigger.
 func routes(registry *prometheus.Registry, configManager *heartbeatconfig.Manager, adminToken string, lifecycle *pollerLifecycle) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-	mux.HandleFunc("/healthcheck", func(w http.ResponseWriter, _ *http.Request) {
+	health := func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
-	})
+	}
+	mux.HandleFunc("/healthz", health)
+	mux.HandleFunc("/healthcheck", health)
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, readiness(configManager, lifecycle))
 	})
@@ -139,15 +144,12 @@ func routes(registry *prometheus.Registry, configManager *heartbeatconfig.Manage
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		previous := configManager.Snapshot()
-		next, err := configManager.Reload()
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, readiness(configManager, lifecycle))
-			return
-		}
-		diff := heartbeatconfig.DiffCollectors(previous.Config, next.Config, "sqlserver")
-		if err := heartbeatconfig.ReconcileCollectors(context.Background(), lifecycle, diff); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		if _, err := reloadCollectors(context.Background(), configManager, lifecycle); err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, heartbeatconfig.ErrInvalidCandidate) {
+				status = http.StatusBadRequest
+			}
+			writeJSON(w, status, readiness(configManager, lifecycle))
 			return
 		}
 		writeJSON(w, http.StatusOK, readiness(configManager, lifecycle))
@@ -155,6 +157,7 @@ func routes(registry *prometheus.Registry, configManager *heartbeatconfig.Manage
 	return mux
 }
 
+// reloadOnSIGHUP reloads collector config whenever the process receives SIGHUP.
 func reloadOnSIGHUP(ctx context.Context, configManager *heartbeatconfig.Manager, lifecycle *pollerLifecycle) {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGHUP)
@@ -164,11 +167,13 @@ func reloadOnSIGHUP(ctx context.Context, configManager *heartbeatconfig.Manager,
 		case <-ctx.Done():
 			return
 		case <-signals:
-			reloadCollectors(ctx, configManager, lifecycle)
+			_, _ = reloadCollectors(ctx, configManager, lifecycle)
 		}
 	}
 }
 
+// reloadOnConfigChange polls the config file and its parent directory for
+// changes and reloads collectors when the fingerprint changes.
 func reloadOnConfigChange(ctx context.Context, path string, interval time.Duration, configManager *heartbeatconfig.Manager, lifecycle *pollerLifecycle) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -185,26 +190,28 @@ func reloadOnConfigChange(ctx context.Context, path string, interval time.Durati
 			}
 			last = next
 			time.Sleep(500 * time.Millisecond)
-			reloadCollectors(ctx, configManager, lifecycle)
+			_, _ = reloadCollectors(ctx, configManager, lifecycle)
 		}
 	}
 }
 
-func reloadCollectors(ctx context.Context, configManager *heartbeatconfig.Manager, lifecycle *pollerLifecycle) {
-	previous := configManager.Snapshot()
-	next, err := configManager.Reload()
-	if err != nil {
-		return
-	}
-	_ = heartbeatconfig.ReconcileCollectors(ctx, lifecycle, heartbeatconfig.DiffCollectors(previous.Config, next.Config, "sqlserver"))
+// reloadCollectors applies a collector diff to the active lifecycle.
+func reloadCollectors(ctx context.Context, configManager *heartbeatconfig.Manager, lifecycle *pollerLifecycle) (heartbeatconfig.Snapshot, error) {
+	return configManager.ReloadApplying(func(previous, next heartbeatconfig.RuntimeConfig) error {
+		diff := heartbeatconfig.DiffCollectors(previous, next, "sqlserver")
+		return heartbeatconfig.ReconcileCollectors(ctx, lifecycle, diff)
+	})
 }
 
+// configFingerprint combines the file and parent-directory fingerprints so
+// local edits and mount swaps both trigger reloads.
 func configFingerprint(path, parent string) string {
 	fileInfo, fileErr := os.Stat(path)
 	parentInfo, parentErr := os.Stat(parent)
 	return statFingerprint(fileInfo, fileErr) + "|" + statFingerprint(parentInfo, parentErr)
 }
 
+// statFingerprint converts os.Stat output into a stable string fingerprint.
 func statFingerprint(info os.FileInfo, err error) string {
 	if err != nil {
 		return err.Error()
@@ -212,6 +219,7 @@ func statFingerprint(info os.FileInfo, err error) string {
 	return info.ModTime().UTC().Format(time.RFC3339Nano) + ":" + info.Mode().String()
 }
 
+// readiness returns the JSON payload served by /readyz.
 func readiness(configManager *heartbeatconfig.Manager, lifecycle *pollerLifecycle) map[string]any {
 	snapshot := configManager.Snapshot()
 	return map[string]any{
@@ -223,6 +231,7 @@ func readiness(configManager *heartbeatconfig.Manager, lifecycle *pollerLifecycl
 	}
 }
 
+// writeJSON writes value as a JSON response with the given status code.
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

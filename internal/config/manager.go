@@ -2,11 +2,22 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
+)
+
+var (
+	// ErrInvalidCandidate identifies reload failures caused by unreadable or
+	// invalid candidate config files. The active snapshot is preserved.
+	ErrInvalidCandidate = errors.New("invalid candidate config")
+	// ErrReloadApply identifies reload failures caused by applying an otherwise
+	// valid candidate to runtime systems. The active snapshot is preserved.
+	ErrReloadApply = errors.New("apply candidate config")
 )
 
 // Snapshot is an immutable active configuration view plus reload diagnostics.
@@ -45,6 +56,15 @@ func (m *Manager) Snapshot() Snapshot {
 // Reload validates and activates the candidate config from disk. If validation
 // fails, the old active snapshot is preserved and returned with LastReloadErr.
 func (m *Manager) Reload() (Snapshot, error) {
+	return m.ReloadApplying(nil)
+}
+
+// ReloadApplying validates the candidate config, invokes apply while the old
+// snapshot is still active, and only publishes the new snapshot if apply
+// succeeds. Apply callbacks must treat both configs as read-only. This preserves
+// the config snapshot only: callbacks own rollback of any partial runtime changes
+// and detection of asynchronous startup failures.
+func (m *Manager) ReloadApplying(apply func(previous, next RuntimeConfig) error) (Snapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	current := m.Snapshot()
@@ -54,7 +74,15 @@ func (m *Manager) Reload() (Snapshot, error) {
 		current.LastReloadAt = now
 		current.LastReloadErr = err.Error()
 		m.active.Store(current)
-		return current, err
+		return current, fmt.Errorf("%w: %v", ErrInvalidCandidate, err)
+	}
+	if apply != nil {
+		if err := apply(current.Config, next); err != nil {
+			current.LastReloadAt = now
+			current.LastReloadErr = err.Error()
+			m.active.Store(current)
+			return current, fmt.Errorf("%w: %v", ErrReloadApply, err)
+		}
 	}
 	snapshot := Snapshot{Config: next, LoadedAt: now, LastReloadAt: now}
 	m.active.Store(snapshot)
@@ -144,7 +172,7 @@ func collectorsByID(collectors []CollectorRuntimeConfig) map[string]CollectorRun
 }
 
 func collectorsEqual(a, b CollectorRuntimeConfig) bool {
-	return fmt.Sprintf("%#v", a) == fmt.Sprintf("%#v", b)
+	return reflect.DeepEqual(a, b)
 }
 
 func sortDiff(diff *CollectorDiff) {
