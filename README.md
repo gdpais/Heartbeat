@@ -48,6 +48,10 @@ TODO snapshot from `TODO.md`:
 
 ## Architecture at a glance
 
+See the [architecture diagrams](docs/architecture/overview.md) for the current
+runtime, planned platform, data flows, and storage boundaries. Implemented and
+planned connections are explicitly distinguished.
+
 Core systems:
 
 - Control plane -> Go API, PostgreSQL metadata, Redis for async coordination
@@ -167,6 +171,10 @@ make health
 make test
 ```
 
+This runs all Docker-free Go tests. Use `make test-integration` for isolated
+PostgreSQL migration tests, `make test-race` for race checks, and `make vet` for
+static checks. See [test isolation](docs/runbooks/local-dev.md#test-isolation).
+
 ## Local SQL Server live-scrape sandbox
 
 The safest way to test live SQL Server scraping in this repo is to use the
@@ -205,7 +213,7 @@ curl http://localhost:8082/metrics
 
 Endpoints:
 
-- SQL Server (dev-only) -> `localhost:11433`
+- SQL Server (dev-only) -> `localhost:11433` (bound to loopback only)
 - Prometheus -> `http://localhost:9090`
 - Grafana -> `http://localhost:3000`
 - db-collector metrics -> `http://localhost:8082/metrics`
@@ -214,7 +222,8 @@ The SQL Server overlay uses:
 
 - a separate compose file
 - a separate local-only integrations file
-- a local SA password from `.env.sqlserver-dev`
+- a random per-machine SA password generated into `.env.sqlserver-dev`
+  (mode `600`) by `make sqlserver-dev-init`
 - `MSSQL_PID=Developer`
 
 That is the intended boundary between branch-local testing and future
@@ -286,6 +295,7 @@ Start here:
 - `docs/architecture/session-analysis.md`
 - `docs/architecture/alerting.md`
 - `docs/runbooks/local-dev.md`
+- `docs/runbooks/database-targets.md`
 
 ## Important design constraints
 
