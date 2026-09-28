@@ -13,7 +13,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,17 +23,22 @@ import (
 )
 
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	slog.SetDefault(logger)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	cfg := app.Config{
 		ListenAddr:                      env("HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR", ":8082"),
 		IntegrationsPath:                env("HEARTBEAT_INTEGRATIONS_PATH", "config/integrations.yaml"),
 		AdminToken:                      os.Getenv("HEARTBEAT_ADMIN_TOKEN"),
 		WatchInterval:                   durationEnv("HEARTBEAT_CONFIG_WATCH_INTERVAL", 0),
 		SQLServerTrustServerCertificate: boolEnv("HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE", false),
+		Logger:                          logger,
 	}
-	if err := app.Run(ctx, cfg); err != nil {
-		log.Fatal(err)
+	err := app.Run(ctx, cfg)
+	stop()
+	if err != nil {
+		logger.Error("db-collector exited with error", "error", err)
+		os.Exit(1)
 	}
 }
 
