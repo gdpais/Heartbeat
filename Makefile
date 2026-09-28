@@ -4,6 +4,8 @@ COMPOSE_FILE := infra/docker-compose.yml
 SQLSERVER_DEV_COMPOSE_FILE := infra/docker-compose.sqlserver-dev.yml
 SQLSERVER_DEV_ENV_FILE := .env.sqlserver-dev
 K8S_DIR := infra/k8s/local
+# Health checks fail fast on HTTP errors (keeping the body) and never hang.
+CURL_CHECK := curl -sS --fail-with-body --connect-timeout 2 --max-time 5 -w '\n'
 DB_COLLECTOR_IMAGE := heartbeat/db-collector:local
 
 help:
@@ -63,18 +65,18 @@ sqlserver-dev-config:
 	docker compose --env-file $(SQLSERVER_DEV_ENV_FILE) -f $(COMPOSE_FILE) -f $(SQLSERVER_DEV_COMPOSE_FILE) config --no-interpolate
 
 sqlserver-dev-health:
-	curl http://localhost:8082/healthz
-	curl http://localhost:8082/readyz
-	curl http://localhost:9090/-/healthy
-	curl http://localhost:3000/api/health
+	$(CURL_CHECK) http://localhost:8082/healthz
+	$(CURL_CHECK) http://localhost:8082/readyz
+	$(CURL_CHECK) http://localhost:9090/-/healthy
+	$(CURL_CHECK) http://localhost:3000/api/health
 
 migrate:
 	docker compose -f $(COMPOSE_FILE) exec -T postgres psql -U heartbeat -d heartbeat < db/migrations/0001_foundations.up.sql
 
 health:
 	docker compose -f $(COMPOSE_FILE) exec postgres pg_isready -U heartbeat -d heartbeat
-	curl http://localhost:8082/healthz
-	curl http://localhost:8082/readyz
+	$(CURL_CHECK) http://localhost:8082/healthz
+	$(CURL_CHECK) http://localhost:8082/readyz
 
 test:
 	GOCACHE=$$(pwd)/.tmp/gocache go test ./...

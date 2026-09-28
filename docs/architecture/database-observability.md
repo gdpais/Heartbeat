@@ -14,7 +14,11 @@
 
 ## Collector recovery and high availability (planned)
 
-These are planned improvements, not guarantees of the current runtime. The
+Status: items 1-3 are implemented for a single collector replica (failure
+isolation, backoff, freshness metrics, stale-series cleanup, readiness, reload
+rollback); see `services/db-collector/README.md`. Items 4-5 remain planned.
+
+The remaining items are planned improvements, not guarantees of the current runtime. The
 current SQL path is remote queries -> custom collector's in-memory metrics ->
 Prometheus scrape/storage -> Grafana. There is no separate custom loader or
 durable collector-side sample queue. PostgreSQL and Redis do not buffer this

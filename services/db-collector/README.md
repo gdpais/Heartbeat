@@ -53,13 +53,41 @@ The collector lifecycle in `internal/app/lifecycle.go` supports:
 Collectors are reconciled by stable ID, so config reloads can restart only the
 collectors that changed.
 
-Reloads are serialized. Invalid candidates and synchronous reconciliation errors
-preserve the previous active configuration snapshot and record the reload error.
-This is not transactional runtime rollback: earlier lifecycle operations may have
-succeeded, and pollers start asynchronously. Replacement startup validation and
-rollback remain open reliability work. `/readyz` currently reports config/lifecycle
-diagnostics with HTTP 200 even when a poller fails; it is not a collection-health
-guarantee.
+Reloads are serialized and bounded (30s). Invalid candidates keep the previous
+configuration running. A valid candidate is diffed against the collectors that
+are actually running, and collectors that are not running (crashed or failed)
+are restarted even if their config is unchanged. If applying fails part-way,
+the applied steps are rolled back in reverse order; if the rollback also fails,
+`runtime_diverged` is set and `/readyz` returns 503 until a later reload
+succeeds.
+
+## Failure Isolation And Readiness
+
+- Targets run concurrently (up to 8 per collector); probes within a target run
+  one at a time. Each cycle is bounded by the scrape interval, and each probe
+  by `min(interval/2, 10s)` unless `timeout_ms` overrides it (capped at the
+  interval).
+- A failing probe only affects its own target. The first failure retries on
+  the next cycle; repeated failures back off exponentially (capped at 5m, with
+  jitter). Every probe failure is logged as structured JSON with collector,
+  target, and probe.
+- A failed probe clears its series instead of exporting stale values, and a
+  removed collector's series are deleted.
+- Self-observability series: `heartbeat_collector_target_up`,
+  `heartbeat_collector_target_consecutive_failures`,
+  `heartbeat_collector_target_last_success_timestamp_seconds`, and
+  `heartbeat_collector_cycle_duration_seconds`.
+- A crashed poller is restarted with backoff (1s doubling to 1m).
+- `/healthz` is liveness only. `/readyz` returns 503 before every collector
+  has completed its first cycle, when a collector is failed or crash-looping,
+  when a collector has not completed a cycle within 2x its interval + 10s, or
+  when the runtime diverged after a failed rollback. A monitored database
+  being down does not make the pod unready; it shows as a failed target in the
+  `/readyz` body and metrics. The body never includes raw error text.
+- SQL Server connections are pooled per target (max 2 open, 10m lifetime);
+  idle pools are closed after 15m.
+- Shutdown is bounded: HTTP drain 10s, poller stop 20s, then pooled
+  connections are closed.
 
 ## Probe / Extractor Model
 

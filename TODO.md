@@ -261,6 +261,7 @@ Published runtime (`956fc70`), test/tooling (`08a6223`), and documentation
 - [x] Implement secure SQL Server connector manager
 - [ ] Enforce least-privilege credentials
 - [x] Enforce query timeout/budget guards
+- [x] Pool SQL Server connections per target
 - [ ] Review all production queries for non-blocking behavior
 - [ ] Define safe probe review/versioning process
 
@@ -535,11 +536,12 @@ Published runtime (`956fc70`), test/tooling (`08a6223`), and documentation
 ### 15.0 Collector recovery and high availability
 - [ ] Align SQL Server Prometheus recording-rule names and gauge/counter semantics with the current probe catalog; validate the rules against emitted metrics
 - [x] Document the planned HA improvements and late-stage Alloy comparison in architecture and roadmap docs
-- [ ] Isolate probe/target failures so one failed target cannot stop unrelated collection
-- [ ] Retry transient collection failures with bounded exponential backoff and jitter; expose persistent failures without retry storms
-- [ ] Expose per-target/probe success, error counts, last-success time, and freshness; expire stale/removed metric series
-- [ ] Make readiness reflect expected collector state and add deployment health probes and restart/recovery policies
-- [ ] Validate safe reloads, including partial reconciliation failure and replacement-poller startup failure
+- [x] Isolate probe/target failures so one failed target cannot stop unrelated collection
+- [x] Retry transient collection failures with bounded exponential backoff and jitter; expose persistent failures without retry storms
+- [x] Expose per-target success, consecutive failures, last-success time, and freshness; expire stale/removed metric series
+- [ ] Add per-probe cumulative error counters
+- [x] Make readiness reflect expected collector state and add deployment health probes and restart/recovery policies (local K8s bundle)
+- [x] Validate safe reloads, including partial reconciliation failure (rollback) and replacement-poller startup failure (unit-tested)
 - [ ] Define target ownership and takeover across replicas, with fencing or equivalent protection against duplicate SQL polling during partitions
 - [ ] Define recovery-time and acceptable data-gap objectives; design downstream buffering/replay limits separately from collector failover
 - [ ] Test target outages, process/node loss, network partitions, reloads during failure, and storage outages; record recovery time, gaps, duplicates, and database load
