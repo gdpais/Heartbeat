@@ -108,14 +108,8 @@ from the query result:
 - `LabelColumns` become Prometheus labels
 - `Name` and `Help` define the exported metric
 
-The built-in catalog currently includes these probes:
-
-- `waits`
-- `blocking`
-- `sessions`
-- `memory_pressure`
-- `storage`
-- `throughput`
+The built-in probes, their source views and the metrics they emit are listed
+in the [metrics reference](../../docs/reference/metrics-and-endpoints.md#sql-server-probe-metrics).
 
 If a collector overrides `query_template` for a probe, the runtime uses that
 SQL instead of the catalog default.
@@ -157,37 +151,19 @@ Current behavior:
 
 - credentials are resolved through a `CredentialResolver`
 - environment-based credentials use the `HEARTBEAT_CREDENTIAL_<REF>` naming
-  pattern
+  pattern ([resolution rules](../../docs/reference/configuration.md#credential-resolution))
 - the DSN enables TLS by default
 - each connection is pinged before probe execution begins
 - probe execution uses a per-probe timeout
 
-## Current Probe Definitions
+## Configuration and Endpoints
 
-The built-in SQL Server probes are implemented as read-only queries against
-system views:
-
-- `waits` reads `sys.dm_os_wait_stats`
-- `blocking` reads `sys.dm_exec_requests`
-- `sessions` reads `sys.dm_exec_sessions`
-- `memory_pressure` reads `sys.dm_os_performance_counters`
-- `storage` reads `sys.master_files`
-- `throughput` reads `sys.dm_os_performance_counters`
-
-Each probe maps the returned rowset into one or more Prometheus gauges.
-
-## Configuration
-
-The service reads `config/integrations.yaml` and exposes the active state
-through the HTTP endpoints in `internal/app/app.go`.
-
-Key inputs:
-
-- `collectors:` declares enabled collector instances
-- each collector declares its targets and probes
-- target names can be filtered with `target_names`
-- probe-level `timeout_ms` overrides the default timeout derived from the
-  scrape interval
+- `integrations.yaml` keys, credential resolution and environment variables:
+  [configuration reference](../../docs/reference/configuration.md)
+- HTTP endpoints and metrics:
+  [metrics and endpoints reference](../../docs/reference/metrics-and-endpoints.md#db-collector-8082)
+- Adding a monitored database:
+  [onboarding guide](../../docs/guides/database-targets.md)
 
 ## Extending The Service
 

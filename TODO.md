@@ -1,42 +1,15 @@
 # TODO
 
-Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_180810-heartbeat-monitoring-mvp.md`.
-
-## Compose-to-kind assessment — 2026-09-28
-- [x] Make both application Dockerfiles platform-aware and verify ARM64 and AMD64 outputs
-- [x] Align the technology recommendation and remaining concerns with Heartbeat's goals
-- [x] Assess current deployment parity, migration risks, development/CI trade-offs, and acceptance gates; save a source-backed report without changing the runtime
-- [x] Revise the assessment for shared Helm delivery on kind and production, SQL Server retained in Docker, and Make/integration-test adaptation; verify report references and superseded recommendations
-
-Report: [Compose-to-kind assessment](docs/reviews/2026-09-28-compose-to-kind-assessment.md).
-Validated Compose configuration, Kustomize rendering, report references, and scoped
-diff whitespace. For the CPU correction, built both services for ARM64 and AMD64,
-verified image/binary architecture, and passed native ARM64 health/readiness/metrics
-smoke tests in disposable containers. AMD64 execution, Kubernetes deployment,
-database migrations, and live SQL collection were not tested by this assessment.
-
-
-## Consolidation review — 2026-09-28
-- [x] Review every pending change and record behavior, limitations, and validation evidence
-- [x] Isolate Docker integration tests from the developer stack and concurrent test runs
-- [x] Consolidate config/reload, health endpoint, and SQL Server development fixes with regression coverage
-- [x] Run repository tests, race checks, vet, and isolated Docker integration tests
-- [x] Commit the reviewed changes with descriptive messages and push `otel-integrations`
-
-Review and evidence: [consolidation review](docs/reviews/2026-09-28-consolidation.md).
-Published runtime (`956fc70`), test/tooling (`08a6223`), and documentation
-(`454c515`) commits to `origin/otel-integrations` on 2026-09-28.
+Implementation task list for Heartbeat. Phases and priorities are in the
+[roadmap](docs/product/roadmap.md); the original plan this list was derived from
+is [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
 
 ## 0. Cross-cutting foundations
 
 ### 0.1 Product and architecture baseline
-- [x] Write `docs/product/requirements.md`
-- [x] Write `docs/product/phased-roadmap.md`
-- [x] Write `docs/architecture/overview.md`
-- [x] Write `docs/architecture/database-observability.md`
-- [x] Write `docs/architecture/session-analysis.md`
-- [x] Write `docs/architecture/alerting.md`
+- [x] Write product and architecture baseline docs ([docs index](docs/README.md))
 - [x] Design current-runtime and target-architecture diagrams, link them from the README, and verify them against source/configuration
+- [x] Reorganize docs by audience; record key decisions as ADRs; archive superseded plans
 - [ ] Freeze subsystem boundaries, responsibilities, and interfaces
 - [ ] Freeze ownership rules:
   - [ ] app-owned workflows derive environment through `applications.environment_id`
@@ -55,8 +28,10 @@ Published runtime (`956fc70`), test/tooling (`08a6223`), and documentation
   - [x] Grafana
   - [x] Alertmanager
   - [x] OpenTelemetry Collector
-- [x] Document local dev health checks in `docs/runbooks/local-dev.md`
+- [x] Document local dev health checks in `docs/guides/local-development.md`
 - [x] Add GitHub Actions CI for Go tests and Docker Compose validation
+- [x] Isolate Docker integration tests from the developer stack and concurrent test runs
+- [x] Make both application Dockerfiles platform-aware (ARM64 and AMD64)
 
 ### 0.3 Shared contracts and conventions
 - [x] Create `packages/config-schema/`
@@ -66,6 +41,12 @@ Published runtime (`956fc70`), test/tooling (`08a6223`), and documentation
 - [x] Define alert evidence payload contract
 - [x] Define reporting payload contract
 - [x] Define integration YAML schema
+
+### 0.4 Kubernetes delivery (kind + Helm)
+- [x] Assess the Compose-to-kind migration and choose shared Helm delivery ([ADR 0003](docs/architecture/decisions/0003-helm-on-kind-and-production.md))
+- [ ] Answer the open production decisions (cloud/distribution, registry, deploy mechanism, production values location, dead-man's switch, secrets backend, Grafana SSO)
+- [ ] Build the Helm chart and kind workflow; adapt Make and CI; pass the ADR 0003 acceptance criteria
+- [ ] Retire the platform Compose definition and the Kustomize bundle
 
 ---
 
@@ -296,7 +277,8 @@ Published runtime (`956fc70`), test/tooling (`08a6223`), and documentation
 ### 5.5 Metrics and evidence output
 - [x] Normalize SQL Server outputs into Prometheus-friendly metrics
 - [x] Expose scrape endpoint
-- [x] Publish investigation evidence snapshots where useful
+- [x] Produce structured evidence for blocking/session probes
+- [ ] Persist or publish evidence snapshots (the default sink currently discards them)
 - [x] Keep DB collector metric output stateless and Prometheus-scraped instead of persisted in PostgreSQL
 - [ ] Add collector self-observability
 
@@ -367,7 +349,7 @@ Published runtime (`956fc70`), test/tooling (`08a6223`), and documentation
 
 ### 8.1 Integration YAML schema
 - [x] Define `config/integrations.yaml` schema
-- [ ] Cover:
+- [x] Cover:
   - [x] Grafana base URL
   - [x] Loki endpoint
   - [x] Alertmanager endpoint
@@ -417,7 +399,8 @@ Published runtime (`956fc70`), test/tooling (`08a6223`), and documentation
 - [x] Provision scrape config for services and collectors
 - [x] Add OutSystems recording rules
 - [x] Add SQL Server recording rules
-- [x] Add alert rule output path from Heartbeat rendering
+- [x] Add alert rule output path (`rules/generated/`, loaded by Prometheus; nothing renders into it yet)
+- [ ] Add an `alerting` block so Prometheus sends alerts to Alertmanager
 
 ### 9.2 Loki
 - [x] Provision Loki for app logs
@@ -432,7 +415,7 @@ Published runtime (`956fc70`), test/tooling (`08a6223`), and documentation
 ### 9.4 Alertmanager
 - [x] Provision routing configuration
 - [x] Support grouping/dedupe/silence/delivery
-- [x] Integrate rendered routes from Heartbeat metadata
+- [ ] Integrate rendered routes from Heartbeat metadata (needs the API; routing is static today)
 
 ### 9.5 OpenTelemetry Collector
 - [x] Provision collector config
@@ -583,7 +566,7 @@ Design details: [Collector recovery and high availability](docs/architecture/dat
 ### 15.3 Audit and runbooks
 - [ ] rotate audit JSONL files
 - [ ] ship audit logs to Loki/SIEM
-- [ ] write SQL Server onboarding runbook
+- [x] write SQL Server onboarding runbook ([guide](docs/guides/database-targets.md))
 - [ ] write alert tuning runbook
 - [ ] write ops/runbook docs for reload failures, collector crashes, queue backlogs
 

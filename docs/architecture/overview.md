@@ -66,8 +66,8 @@ flowchart LR
 ```
 
 The default integration file has no SQL Server targets. Configure a target using
-the [database onboarding runbook](../runbooks/database-targets.md), or use the
-[local development sandbox](../runbooks/local-dev.md), to collect database metrics.
+the [database onboarding runbook](../guides/database-targets.md), or use the
+[local development sandbox](../guides/local-development.md#sql-server-sandbox), to collect database metrics.
 The SQL metric path has no PostgreSQL dependency, Redis queue, or durable
 collector-side sample buffer.
 
@@ -91,7 +91,7 @@ is still pending.
 The target adds operator workflows around the telemetry path. The implemented
 collection pipeline and the Prometheus/Loki pair are collapsed into single
 nodes; see [Current runtime](#current-runtime) for their internals. Columns
-follow the planes in [Core systems](#core-systems). An existing store does not
+are the planes described in [Core systems](#core-systems). An existing store does not
 imply that its planned consumers are implemented.
 
 ```mermaid
@@ -211,31 +211,41 @@ source/configuration review, not live runtime validation.
   and [gateway HTTP handlers](../../services/otel-gateway/internal/app/app.go).
 - [Integration configuration](../../config/integrations.yaml),
   [Grafana data sources](../../infra/grafana/provisioning/datasources/datasources.yml),
-  [session analysis](session-analysis.md), [alerting](alerting.md), and
+  [operator workflows](workflows.md), [data model](data-model.md), and
   [implementation checklist](../../TODO.md).
 
 ## Core systems
-- Control plane: Go API, PostgreSQL metadata, Redis for async coordination
-- Collection plane: OTel Collector and DB collectors
-- Storage/query plane: Prometheus, Loki, PostgreSQL
-- Analysis plane: session analyzer, adaptive baselines, reporting jobs
-- Presentation plane: React UI and Grafana deep links
 
-## Boundary decisions
-- PostgreSQL => durable metadata only
-- YAML/Kubernetes => integration endpoints, dashboard URL templates, collector desired runtime state
-- Redis => transient queues, locks, retries, short-lived caches
-- Loki/Prometheus => operational evidence and telemetry
+Heartbeat is organized into four planes, the same four columns as the
+[target platform](#target-platform) diagram.
 
-## Monorepo layout
-- `apps/api`
-- `apps/web`
-- `services/otel-gateway`
-- `services/db-collector`
-- `services/session-analyzer`
-- `services/reporting`
-- `packages/config-schema`
-- `packages/telemetry-contracts`
-- `infra`
-- `db/migrations`
-- `tests`
+| Plane | Components | Status | Details |
+| --- | --- | --- | --- |
+| Telemetry | Collection (DB collector, OpenTelemetry Collector, OTel gateway), storage and evaluation (Prometheus, Loki), alert routing (Alertmanager) | Implemented; gateway partial; Prometheus → Alertmanager not connected | [Current runtime](#current-runtime), [database observability](database-observability.md), [metrics and endpoints](../reference/metrics-and-endpoints.md) |
+| Analysis jobs | Session analyzer (correlation, adaptive baselines), reporting, report storage | Planned | [Operator workflows](workflows.md) |
+| Control plane | Go API, PostgreSQL (durable metadata), Redis (queues, locks, retries), YAML/Kubernetes config | Schema and config manager implemented; API planned | [Data model](data-model.md), [configuration](../reference/configuration.md), [decisions](decisions/README.md) |
+| Presentation | Grafana dashboards, React web UI with Grafana deep links | Grafana implemented; UI planned | [Operator workflows](workflows.md) |
+
+## Architectural guardrails
+
+Rules every subsystem follows. The reasoning is recorded in the
+[architecture decisions](decisions/README.md).
+
+- The API never queries SQL Server directly; all database-specific collection
+  stays in `db-collector`.
+- Redis is never the system of record. Durable job and request state lives in
+  PostgreSQL (`investigation_jobs`, `report_runs`); workers must be idempotent.
+- Loki labels stay low-cardinality. User, session, request and IP identifiers go
+  in the log body, never in labels.
+- Adaptive alert math is not computed in Grafana dashboards. Services compute and
+  version baselines; executable rules are rendered to Prometheus.
+- Custom parsers never bypass the shared telemetry contract in
+  `packages/telemetry-contracts`.
+- There is one ownership path per record: application-owned rows derive their
+  environment through `applications.environment_id`.
+- Collector desired state comes from YAML/Kubernetes, not PostgreSQL. Runtime
+  state is exposed through metrics, health endpoints and logs.
+- The OTel gateway stays thin: stock OpenTelemetry Collector configuration first,
+  custom Go code only for platform-specific parsing.
+
+The repository layout is described in the [README](../../README.md#repository-layout).

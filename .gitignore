@@ -10,3 +10,7 @@ __pycache__/
 infra/data/
 .hermes/
 config/integrations.local-dev.yaml
+
+# Dated working documents for decision review; outcomes go to docs/architecture/decisions/
+docs/plans/
+docs/reviews/

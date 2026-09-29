@@ -1,5 +1,7 @@
 # Heartbeat Plan: Database Monitoring Tool with Grafana
 
+> **Archived.** Superseded planning document kept for history; see [docs/archive/README.md](README.md) for where its content lives now.
+
 ## Goal
 Design and implement a database monitoring platform that visualizes metrics in Grafana, supports adaptive alerting and reporting, and provides a backoffice for operational management (new DB connections, query changes, etc.), while ensuring collectors are not installed on the database server itself.
 
@@ -89,7 +91,7 @@ Design and implement a database monitoring platform that visualizes metrics in G
    - Rate-limiting and query sandboxing to protect DB targets.
    - Implement collector failure isolation, bounded retries, freshness signals, safe reloads, and deployment recovery before adding replicas.
    - Define target ownership/takeover and downstream resilience against explicit recovery-time and data-gap objectives; validate failure scenarios before claiming HA.
-   - Follow the [planned collector HA design](docs/architecture/database-observability.md#collector-recovery-and-high-availability-planned).
+   - Follow the [planned collector HA design](../architecture/database-observability.md#collector-recovery-and-high-availability-planned).
 
 10. Testing and validation
    - Unit tests for connectors, query parser/validator, anomaly calculations.
@@ -106,7 +108,7 @@ Design and implement a database monitoring platform that visualizes metrics in G
    - Once the core workflow and reliability baseline are validated, run a parallel comparison on a dedicated branch using equivalent non-production SQL Server workloads and isolated telemetry.
    - Compare coverage, custom probes/evidence, safety, database load, recovery, configuration integration, and operational cost; assess future Oracle support separately.
    - Keep both implementations available as an option if distinct needs justify it, with explicit per-target ownership and a shared telemetry contract. No replacement or production adoption is decided yet.
-   - Follow the [comparison design and decision criteria](docs/architecture/database-observability.md#custom-collector-and-alloy-comparison-late-roadmap).
+   - Follow the [comparison design and decision criteria](../architecture/database-observability.md#custom-collector-and-alloy-comparison-late-roadmap).
 
 ## Files/components likely to change (implementation phase)
 - `infra/`

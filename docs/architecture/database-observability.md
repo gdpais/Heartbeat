@@ -6,6 +6,35 @@
 - PostgreSQL can store target metadata, probe definitions, and probe assignments for future control-plane workflows.
 - Active collector runtime desired state is not read from PostgreSQL for MVP.
 
+## SQL Server signal coverage
+
+Target signal set for the MVP, compared with what the built-in probe catalog
+emits today. Metric names and labels are listed in the
+[metrics reference](../reference/metrics-and-endpoints.md#sql-server-probe-metrics).
+
+| Signal | Status | Current probe / metric |
+| --- | --- | --- |
+| Wait statistics | Collected | `waits` → `heartbeat_sqlserver_wait_time_ms` |
+| Blocking and locks | Collected (blocked requests) | `blocking` → `heartbeat_sqlserver_blocked_requests` |
+| Sessions and connections | Collected | `sessions` → `heartbeat_sqlserver_sessions` |
+| Memory pressure | Collected | `memory_pressure` → `heartbeat_sqlserver_memory_kb` |
+| Database size / file size | Collected | `storage` → `heartbeat_sqlserver_database_file_size_mb` |
+| Throughput counters (batch requests, transactions) | Collected | `throughput` → `heartbeat_sqlserver_throughput` |
+| Instance availability | Partial | `heartbeat_collector_target_up` (collector reachability) |
+| CPU pressure | Planned | — |
+| Buffer/cache hit ratio | Planned | — |
+| Physical and logical reads/writes per second, I/O, IOPS | Planned | — |
+| Query latency | Planned | — |
+| Rollbacks, user transactions | Planned | — |
+| Free space and growth trends | Planned | — |
+| TempDB pressure | Planned | — |
+| Error events | Planned | — |
+
+Output expectations: stable metric names; labels for environment, target,
+database, instance and, where safe, application; dashboards for overview,
+waits/locks, sessions, storage and regressions. Only
+`infra/grafana/dashboards/sqlserver-overview.json` exists so far.
+
 ## Safety rules
 - Credentials are referenced by `credential_ref` only.
 - Production probes must be non-blocking.
@@ -16,7 +45,7 @@
 
 Status: items 1-3 are implemented for a single collector replica (failure
 isolation, backoff, freshness metrics, stale-series cleanup, readiness, reload
-rollback); see `services/db-collector/README.md`. Items 4-5 remain planned.
+rollback); see the [DB collector README](../../services/db-collector/README.md). Items 4-5 remain planned.
 
 The remaining items are planned improvements, not guarantees of the current runtime. The
 current SQL path is remote queries -> custom collector's in-memory metrics ->
@@ -97,12 +126,8 @@ per-target/backend selection, ownership, and duplicate-prevention rules; it does
 not imply routinely polling every production target twice. Review the evidence
 before merging any selected integration or planning production adoption.
 
-## PostgreSQL model
-- `database_targets`
-- `probe_definitions`
-- `probe_assignments`
+## Metadata model
 
-## Deferred topology
-- `assets`
-- `asset_relationships`
-- target-to-asset linkage beyond nullable future hooks
+The planned control-plane tables (`database_targets`, `probe_definitions`,
+`probe_assignments`) and the deferred asset/topology extension are described in
+the [data model](data-model.md#database-observability).

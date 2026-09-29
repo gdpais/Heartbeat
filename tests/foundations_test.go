@@ -49,13 +49,15 @@ func TestPostgresFixtureIsDisposable(t *testing.T) {
 func TestRequiredFoundationFilesExist(t *testing.T) {
 	root := repoRoot(t)
 	required := []string{
-		"docs/product/requirements.md",
-		"docs/product/phased-roadmap.md",
+		"docs/README.md",
+		"docs/product/overview.md",
+		"docs/product/roadmap.md",
 		"docs/architecture/overview.md",
+		"docs/architecture/data-model.md",
 		"docs/architecture/database-observability.md",
-		"docs/architecture/session-analysis.md",
-		"docs/architecture/alerting.md",
-		"docs/runbooks/local-dev.md",
+		"docs/architecture/workflows.md",
+		"docs/guides/local-development.md",
+		"docs/reference/configuration.md",
 		"infra/docker-compose.yml",
 		"packages/config-schema/src/integrations.schema.json",
 		"packages/telemetry-contracts/src/application_event.schema.json",
