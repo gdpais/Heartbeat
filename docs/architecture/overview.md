@@ -6,75 +6,63 @@ PostgreSQL holds the durable metadata used by the planned control plane.
 
 ## How to read the diagrams
 
-The runtime and target views are each split into two focused diagrams so every
-diagram stays readable without zooming. Ports, endpoints and other detail live
-in the [component details](#component-details) table rather than inside boxes.
-
-- Arrows point the way information moves: telemetry flows toward the operator;
-  commands and configuration flow away from the operator.
-- Colour shows status. Shape shows type: cylinders are stores, slanted boxes
-  are configuration, pills are people.
-- Solid lines are implemented or configured connections, not proof of a
-  successful live deployment. Dotted lines are planned. The **orange line**
-  marks a known gap between implemented components.
-
-```mermaid
-%%{init: {"theme": "base", "fontFamily": "Inter, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif", "themeVariables": {"fontFamily": "Inter, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "15px", "lineColor": "#8b95a7", "primaryTextColor": "#1f2937", "clusterBkg": "#f8fafc", "clusterBorder": "#cbd5e1", "titleColor": "#475569", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 36, "rankSpacing": 52, "padding": 16}}}%%
-flowchart LR
-    a("<b>Implemented</b>") ~~~ b("<b>Partial</b>") ~~~ c("<b>Planned</b>") ~~~ d("<b>External</b>")
-    classDef ok fill:#eaf1ff,stroke:#3b6fd8,stroke-width:1.5px,color:#1e3a8a
-    classDef partial fill:#fff4e0,stroke:#d98a1c,stroke-width:1.5px,color:#7a4306
-    classDef planned fill:#ffffff,stroke:#94a3b8,stroke-width:1.5px,stroke-dasharray:6 4,color:#475569
-    classDef ext fill:#f1f5f9,stroke:#64748b,stroke-width:1.5px,color:#1f2937
-    class a ok
-    class b partial
-    class c planned
-    class d ext
-```
+- Arrows follow the direction data moves. Labels say whether it is *pulled*
+  (scraped/queried by the receiver) or *pushed* by the sender.
+- Colour encodes status only: **blue** implemented, **amber** partial,
+  **dashed gray** planned or idle. Shape encodes type: cylinder = store,
+  parallelogram = configuration, rounded = person.
+- Solid edges are implemented or configured connections, not proof of a
+  successful live deployment. Dashed edges are planned; the **amber edge** marks
+  a known gap in otherwise-implemented components.
 
 ## Current runtime
 
-These diagrams reflect the checked-in services and Compose configuration.
-
-### Telemetry path
-
-How SQL Server probes and OTLP data reach the operator. SQL Server hosts run
-no Heartbeat agent; the DB collector probes them remotely.
+This diagram reflects the checked-in services and Compose configuration.
 
 ```mermaid
-%%{init: {"theme": "base", "fontFamily": "Inter, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif", "themeVariables": {"fontFamily": "Inter, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "15px", "lineColor": "#8b95a7", "primaryTextColor": "#1f2937", "clusterBkg": "#f8fafc", "clusterBorder": "#cbd5e1", "titleColor": "#475569", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 36, "rankSpacing": 52, "padding": 16}}}%%
-flowchart TB
-    sql[("<b>SQL Server</b><br/>monitored targets")]
-    otlp("<b>OTLP clients</b><br/>apps and hosts")
+flowchart LR
+    sql[("SQL Server targets<br/>no Heartbeat agent")]
+    otlp["OTLP clients"]
 
-    subgraph env["Heartbeat monitoring environment"]
-        db("<b>DB collector</b><br/>remote SQL probes")
-        otel("<b>OTel Collector</b><br/>OTLP receiver")
-        gateway("<b>OTel gateway</b><br/>no producer yet")
-        prom[("<b>Prometheus</b><br/>metrics · rules")]
-        loki[("<b>Loki</b><br/>logs")]
-        grafana("<b>Grafana</b><br/>dashboards")
+    subgraph env["Heartbeat monitoring environment · Compose"]
+        config[/"integrations.yaml<br/>targets · probes · credential_ref"/]
+        secrets[/"Environment secrets<br/>HEARTBEAT_CREDENTIAL_*"/]
+        db["DB collector · :8082<br/>/metrics · /readyz<br/>/admin/config/reload"]
+        otel["OTel Collector<br/>OTLP :4317 / :4318<br/>Prometheus export :8889"]
+        gateway["OTel gateway · :8083<br/>normalize endpoint: no caller yet<br/>alert intake: count only"]
+        prom[("Prometheus<br/>15s scrape · rule files")]
+        loki[("Loki")]
+        am["Alertmanager<br/>webhook route"]
+        grafana["Grafana<br/>provisioned dashboards"]
+        idle[("PostgreSQL · Redis<br/>provisioned, no consumers")]
     end
 
-    operator(["<b>Operator</b>"])
+    operator(["Operator"])
 
-    sql -->|probed| db
-    otlp -->|OTLP push| otel
-    db -->|scraped| prom
-    otel -->|scraped| prom
-    gateway -->|scraped| prom
-    otel -->|log push| loki
-    prom -->|PromQL| grafana
-    loki -->|LogQL| grafana
-    grafana --> operator
+    sql -->|"probe results · pulled"| db
+    otlp -->|"OTLP · pushed"| otel
+    config -->|"load + hot reload"| db
+    config -->|"load"| gateway
+    secrets -->|"resolve credential_ref"| db
+    db -->|"scraped"| prom
+    otel -->|"scraped"| prom
+    gateway -->|"scraped"| prom
+    otel -->|"logs · pushed"| loki
+    prom -.->|"GAP: no alerting block"| am
+    am -->|"webhook · pushed"| gateway
+    prom -->|"PromQL"| grafana
+    loki -->|"LogQL"| grafana
+    grafana -->|"dashboards · Explore"| operator
 
-    classDef ok fill:#eaf1ff,stroke:#3b6fd8,stroke-width:1.5px,color:#1e3a8a
-    classDef partial fill:#fff4e0,stroke:#d98a1c,stroke-width:1.5px,color:#7a4306
-    classDef planned fill:#ffffff,stroke:#94a3b8,stroke-width:1.5px,stroke-dasharray:6 4,color:#475569
-    classDef ext fill:#f1f5f9,stroke:#64748b,stroke-width:1.5px,color:#1f2937
-    class db,otel,prom,loki,grafana ok
+    classDef ok fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    classDef partial fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef idle fill:#f8fafc,stroke:#64748b,color:#334155,stroke-dasharray:5 5
+    classDef external fill:#f1f5f9,stroke:#64748b,color:#0f172a
+    class db,otel,prom,loki,am,grafana ok
     class gateway partial
-    class sql,otlp,operator ext
+    class idle idle
+    class sql,otlp,config,secrets,operator external
+    linkStyle 9 stroke:#d97706,stroke-width:2px,color:#b45309
 ```
 
 The default integration file has no SQL Server targets. Configure a target using
@@ -83,38 +71,8 @@ the [database onboarding runbook](../runbooks/database-targets.md), or use the
 The SQL metric path has no PostgreSQL dependency, Redis queue, or durable
 collector-side sample buffer.
 
-### Configuration and alerting
-
-How the collectors are configured, and where the alert path currently stops.
-
-```mermaid
-%%{init: {"theme": "base", "fontFamily": "Inter, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif", "themeVariables": {"fontFamily": "Inter, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "15px", "lineColor": "#8b95a7", "primaryTextColor": "#1f2937", "clusterBkg": "#f8fafc", "clusterBorder": "#cbd5e1", "titleColor": "#475569", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 36, "rankSpacing": 52, "padding": 16}}}%%
-flowchart TB
-    operator(["<b>Operator</b>"])
-    secrets[/"<b>Env secrets</b><br/>HEARTBEAT_CREDENTIAL_*"/]
-    config[/"<b>integrations.yaml</b><br/>targets · probes"/]
-    prom[("<b>Prometheus</b><br/>alert rules")]
-
-    db("<b>DB collector</b><br/>applies config diff")
-    am("<b>Alertmanager</b><br/>webhook route")
-    gateway("<b>OTel gateway</b><br/>counts alerts only")
-
-    operator -->|admin reload| db
-    config -->|hot reload| db
-    secrets -->|credentials| db
-    config -->|load| gateway
-    prom -.->|"GAP · no alerting block"| am
-    am -->|webhook| gateway
-
-    classDef ok fill:#eaf1ff,stroke:#3b6fd8,stroke-width:1.5px,color:#1e3a8a
-    classDef partial fill:#fff4e0,stroke:#d98a1c,stroke-width:1.5px,color:#7a4306
-    classDef planned fill:#ffffff,stroke:#94a3b8,stroke-width:1.5px,stroke-dasharray:6 4,color:#475569
-    classDef ext fill:#f1f5f9,stroke:#64748b,stroke-width:1.5px,color:#1f2937
-    class db,prom,am ok
-    class gateway partial
-    class operator,config,secrets ext
-    linkStyle 4 stroke:#e0781f,stroke-width:2.5px,color:#b45309
-```
+Self-scrapes (Prometheus, Loki, Alertmanager) are omitted. OutSystems ingestion
+is still pending.
 
 ### Component details
 
@@ -128,104 +86,80 @@ flowchart TB
 | Loki / Grafana | `:3100` / `:3000` | Grafana provisioned with Prometheus (default) and Loki data sources. |
 | PostgreSQL / Redis | `:5432` / `:6379` | Provisioned in Compose; no service reads or writes them yet. |
 
-Self-scrapes of Prometheus, Loki and Alertmanager are omitted from the diagrams.
-OutSystems ingestion is still pending.
-
 ## Target platform
 
 The target adds operator workflows around the telemetry path. The implemented
-collection pipeline is shown as a single box; see
-[Current runtime](#current-runtime) for its internals. An existing store does
-not imply that its planned consumers are implemented.
-
-### Data and analysis
-
-How collected telemetry becomes dashboards, investigations, reports and
-notifications.
+collection pipeline and the Prometheus/Loki pair are collapsed into single
+nodes; see [Current runtime](#current-runtime) for their internals. Columns
+follow the planes in [Core systems](#core-systems). An existing store does not
+imply that its planned consumers are implemented.
 
 ```mermaid
-%%{init: {"theme": "base", "fontFamily": "Inter, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif", "themeVariables": {"fontFamily": "Inter, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "15px", "lineColor": "#8b95a7", "primaryTextColor": "#1f2937", "clusterBkg": "#f8fafc", "clusterBorder": "#cbd5e1", "titleColor": "#475569", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 36, "rankSpacing": 52, "padding": 16}}}%%
 flowchart TB
-    sql[("<b>SQL Server</b>")]
-    apps("<b>OutSystems apps</b>")
-    pipeline("<b>Collection pipeline</b><br/>collectors · gateway")
-    stores[("<b>Prometheus · Loki</b><br/>metrics · logs")]
+    sql[("SQL Server targets")]
+    apps["OutSystems apps"]
 
-    grafana("<b>Grafana</b>")
-    analyzer("<b>Session analyzer</b><br/>correlation · baselines")
-    reporting("<b>Reporting</b><br/>scheduled reports")
-    am("<b>Alertmanager</b>")
+    subgraph telemetry["Telemetry · see Current runtime"]
+        direction TB
+        pipeline["Collection pipeline<br/>DB collector · OTel · gateway"]
+        stores[("Prometheus · Loki<br/>metrics · logs · rules")]
+        am["Alertmanager"]
+    end
 
-    operator(["<b>Operator</b>"])
-    pg[("<b>PostgreSQL</b><br/>summaries · URIs")]
-    artifacts[("<b>Report storage</b><br/>backend TBD")]
-    delivery("<b>Notifications</b><br/>email · webhooks")
+    subgraph analysis["Analysis jobs"]
+        direction TB
+        analyzer["Session analyzer<br/>correlation · baselines"]
+        reporting["Reporting<br/>report generation"]
+        artifacts[("Report storage<br/>backend TBD")]
+    end
 
-    sql -->|probed| pipeline
-    apps -.->|ingest| pipeline
+    subgraph control["Control plane"]
+        direction TB
+        config[/"YAML / Kubernetes config"/]
+        api["Go API<br/>inventory · policies · investigations"]
+        pg[("PostgreSQL<br/>durable metadata")]
+        redis[("Redis<br/>queues · locks · retries")]
+    end
+
+    subgraph present["Presentation"]
+        direction TB
+        grafana["Grafana"]
+        web["React web UI"]
+    end
+
+    delivery["Email / webhooks"]
+    operator(["Operator / SRE"])
+
+    sql -->|"probes · pulled"| pipeline
+    apps -.->|"source ingestion"| pipeline
     pipeline --> stores
-    stores -->|query| grafana
-    stores -.->|query| analyzer
-    stores -.->|query| reporting
-    stores -.->|"GAP · alerts"| am
-    grafana --> operator
-    analyzer -.-> pg
-    reporting -.-> pg
-    reporting -.-> artifacts
-    am -.-> delivery
+    stores -.->|"GAP: alerts"| am
+    am -.->|"notify"| delivery
+    am -->|"alert webhook · role TBD"| pipeline
+    stores -->|"PromQL / LogQL"| grafana
+    stores -.->|"PromQL / LogQL"| analysis
+    analysis -.->|"summaries · run metadata"| pg
+    reporting -.->|"report files"| artifacts
+    redis -.->|"jobs"| analysis
+    api -.->|"enqueue"| redis
+    api <-.->|"metadata"| pg
+    config -.->|"endpoints · templates"| api
+    api -.->|"policy · baseline rules"| stores
+    api -.->|"notification routes"| am
+    api <-.->|"HTTPS API"| web
+    web -.->|"deep links"| grafana
+    grafana -->|"dashboards"| operator
+    web <-.->|"manage · investigate"| operator
 
-    classDef ok fill:#eaf1ff,stroke:#3b6fd8,stroke-width:1.5px,color:#1e3a8a
-    classDef partial fill:#fff4e0,stroke:#d98a1c,stroke-width:1.5px,color:#7a4306
-    classDef planned fill:#ffffff,stroke:#94a3b8,stroke-width:1.5px,stroke-dasharray:6 4,color:#475569
-    classDef ext fill:#f1f5f9,stroke:#64748b,stroke-width:1.5px,color:#1f2937
-    class stores,grafana,am,pg ok
+    classDef ok fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    classDef partial fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef planned fill:#f8fafc,stroke:#64748b,color:#334155,stroke-dasharray:5 5
+    classDef external fill:#f1f5f9,stroke:#64748b,color:#0f172a
+    class grafana,pg,redis,stores,am ok
     class pipeline partial
-    class apps,analyzer,reporting,artifacts,delivery planned
-    class sql,operator ext
-    linkStyle 6 stroke:#e0781f,stroke-width:2.5px,color:#b45309
-```
-
-### Operator workflows and control
-
-How the planned web UI and API manage metadata, schedule jobs, and provision
-rules and notification routes.
-
-```mermaid
-%%{init: {"theme": "base", "fontFamily": "Inter, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif", "themeVariables": {"fontFamily": "Inter, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "15px", "lineColor": "#8b95a7", "primaryTextColor": "#1f2937", "clusterBkg": "#f8fafc", "clusterBorder": "#cbd5e1", "titleColor": "#475569", "edgeLabelBackground": "#ffffff"}, "flowchart": {"curve": "basis", "nodeSpacing": 36, "rankSpacing": 52, "padding": 16}}}%%
-flowchart TB
-    operator(["<b>Operator</b>"])
-    config[/"<b>YAML / Kubernetes</b><br/>endpoints · templates"/]
-    web("<b>React web UI</b>")
-    api("<b>Go API</b><br/>inventory · policies")
-    grafana("<b>Grafana</b>")
-
-    pg[("<b>PostgreSQL</b><br/>metadata")]
-    redis[("<b>Redis</b><br/>job queue")]
-    prom[("<b>Prometheus</b><br/>rules")]
-    am("<b>Alertmanager</b><br/>routes")
-
-    jobs("<b>Analysis jobs</b><br/>analyzer · reporting")
-    gateway("<b>OTel gateway</b><br/>alert intake")
-
-    operator -.->|manage| web
-    web -.->|HTTPS| api
-    web -.->|deep links| grafana
-    config -.->|settings| api
-    api -.->|read / write| pg
-    api -.->|enqueue| redis
-    api -.->|provision| prom
-    api -.->|provision| am
-    redis -.->|jobs| jobs
-    am -->|"webhook · role TBD"| gateway
-
-    classDef ok fill:#eaf1ff,stroke:#3b6fd8,stroke-width:1.5px,color:#1e3a8a
-    classDef partial fill:#fff4e0,stroke:#d98a1c,stroke-width:1.5px,color:#7a4306
-    classDef planned fill:#ffffff,stroke:#94a3b8,stroke-width:1.5px,stroke-dasharray:6 4,color:#475569
-    classDef ext fill:#f1f5f9,stroke:#64748b,stroke-width:1.5px,color:#1f2937
-    class grafana,pg,redis,prom,am ok
-    class gateway partial
-    class web,api,jobs planned
-    class operator,config ext
+    class web,api,analyzer,reporting,artifacts,apps,delivery planned
+    class operator,sql,config external
+    linkStyle 3 stroke:#d97706,stroke-width:2px,color:#b45309
 ```
 
 Session analysis owns correlation and baselines; reporting owns report
