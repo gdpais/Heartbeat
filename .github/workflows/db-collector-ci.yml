@@ -2,7 +2,7 @@ name: db-collector-ci
 
 on:
   push:
-    branches: [master, db-collectors]
+    branches: [master, db-collectors, otel-integrations]
   pull_request:
 
 jobs:
@@ -16,4 +16,10 @@ jobs:
       - name: Validate docker compose
         run: docker compose -f infra/docker-compose.yml config
       - name: Run Go tests
-        run: go test ./...
+        run: make test
+      - name: Run race checks
+        run: make test-race
+      - name: Run Go static checks
+        run: make vet
+      - name: Run isolated PostgreSQL integration tests
+        run: make test-integration

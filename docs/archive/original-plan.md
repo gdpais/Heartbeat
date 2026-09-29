@@ -1,5 +1,7 @@
 # Heartbeat Plan: Database Monitoring Tool with Grafana
 
+> **Archived.** Superseded planning document kept for history; see [docs/archive/README.md](README.md) for where its content lives now.
+
 ## Goal
 Design and implement a database monitoring platform that visualizes metrics in Grafana, supports adaptive alerting and reporting, and provides a backoffice for operational management (new DB connections, query changes, etc.), while ensuring collectors are not installed on the database server itself.
 
@@ -10,6 +12,7 @@ Design and implement a database monitoring platform that visualizes metrics in G
 - Prometheus and/or Mimir are acceptable for metrics storage/querying.
 - Backoffice must allow runtime configuration updates without redeploying the whole stack.
 - Security and network access to DBs will be managed from a separate monitoring environment.
+- File-based ingestion may be supported later as a last-resort fallback when direct database connectivity is not feasible; it is explicitly lower priority than live collection from SQL Server or other database instances.
 
 ## Proposed architecture
 - Collection layer (off-DB hosts):
@@ -51,6 +54,7 @@ Design and implement a database monitoring platform that visualizes metrics in G
    - Implement query scheduler and execution workers per DB connector.
    - Export metrics in Prometheus exposition format.
    - Add health metrics for the collector itself (query latency, failures, staleness).
+   - Defer file-ingestion adapters until after the primary live-collection path is stable; position them as fallback-only.
 
 4. Implement configuration/backoffice domain model
    - Entities: DatabaseConnection, MetricQuery, QueryTemplate, AlertPolicy, NotificationChannel, ReportSchedule, User/Role, AuditEvent.
@@ -85,6 +89,9 @@ Design and implement a database monitoring platform that visualizes metrics in G
    - RBAC, SSO/OIDC for backoffice and Grafana.
    - Audit trails and immutable action logs.
    - Rate-limiting and query sandboxing to protect DB targets.
+   - Implement collector failure isolation, bounded retries, freshness signals, safe reloads, and deployment recovery before adding replicas.
+   - Define target ownership/takeover and downstream resilience against explicit recovery-time and data-gap objectives; validate failure scenarios before claiming HA.
+   - Follow the [planned collector HA design](../architecture/database-observability.md#collector-recovery-and-high-availability-planned).
 
 10. Testing and validation
    - Unit tests for connectors, query parser/validator, anomaly calculations.
@@ -96,6 +103,12 @@ Design and implement a database monitoring platform that visualizes metrics in G
    - MVP in staging with 1–2 DB engines and a few production-like targets.
    - Observe false-positive/false-negative rates; tune adaptive alerting.
    - Progressive production rollout by team or environment.
+
+12. Late-roadmap custom collector / Alloy comparison
+   - Once the core workflow and reliability baseline are validated, run a parallel comparison on a dedicated branch using equivalent non-production SQL Server workloads and isolated telemetry.
+   - Compare coverage, custom probes/evidence, safety, database load, recovery, configuration integration, and operational cost; assess future Oracle support separately.
+   - Keep both implementations available as an option if distinct needs justify it, with explicit per-target ownership and a shared telemetry contract. No replacement or production adoption is decided yet.
+   - Follow the [comparison design and decision criteria](../architecture/database-observability.md#custom-collector-and-alloy-comparison-late-roadmap).
 
 ## Files/components likely to change (implementation phase)
 - `infra/`
@@ -148,6 +161,7 @@ Design and implement a database monitoring platform that visualizes metrics in G
 - Adaptive alerting complexity can increase operational overhead; start simple and iterate.
 - Remote SQL polling may add DB load if query design is poor; enforce query budgets and sampling limits.
 - Multi-DB support increases connector maintenance; prioritize by business impact.
+- File-based ingestion reduces dependency on direct connectivity but increases freshness, validation, and operator workflow risks; keep it as a last-resort path.
 - Mimir improves scale/retention but adds infra complexity; defer for MVP unless required.
 
 ## Open questions

@@ -13,6 +13,8 @@ spec:
       labels:
         app: db-collector
     spec:
+      # Covers the bounded shutdown: HTTP drain 10s + poller stop 20s + 5s.
+      terminationGracePeriodSeconds: 45
       containers:
         - name: db-collector
           image: heartbeat/db-collector:local
@@ -31,6 +33,21 @@ spec:
               value: 5s
           ports:
             - containerPort: 8082
+          # Liveness only checks the process: a monitored database outage must
+          # never restart the collector. Readiness reports whether the
+          # collectors are actually cycling (see /readyz reasons).
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8082
+            periodSeconds: 10
+            failureThreshold: 3
           volumeMounts:
             - name: config
               mountPath: /app/config

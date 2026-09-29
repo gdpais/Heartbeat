@@ -1,0 +1,35 @@
+services:
+  sqlserver-dev:
+    platform: linux/amd64
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?set in .env.sqlserver-dev}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - SQLCMDPASSWORD="$$MSSQL_SA_PASSWORD" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -Q "SELECT 1" >/dev/null 2>&1 || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    ports:
+      # Loopback only: the container logs in as sa, so never expose it to the LAN.
+      - "127.0.0.1:11433:1433"
+    volumes:
+      - sqlserver_dev_data:/var/opt/mssql
+
+  db-collector:
+    environment:
+      HEARTBEAT_INTEGRATIONS_PATH: /app/config/integrations.local-dev.yaml
+      HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV: ${HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV:?set in .env.sqlserver-dev}
+      HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE: "true"
+    volumes:
+      - ../config/integrations.local-dev.yaml:/app/config/integrations.local-dev.yaml:ro
+    depends_on:
+      sqlserver-dev:
+        condition: service_healthy
+
+volumes:
+  sqlserver_dev_data:

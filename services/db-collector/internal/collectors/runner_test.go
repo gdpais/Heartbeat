@@ -35,7 +35,7 @@ func TestRunnerExecutesConfiguredCollector(t *testing.T) {
 	sink := &fakeSink{}
 	runner := NewRunner(fakeExecutor{}, exporter, sink)
 
-	err := runner.RunOnce(context.Background(), collectorconfig.CollectorRuntimeConfig{
+	result, err := runner.RunOnce(context.Background(), collectorconfig.CollectorRuntimeConfig{
 		ID:             "sql-prod",
 		Kind:           "sqlserver",
 		Enabled:        true,
@@ -55,6 +55,9 @@ func TestRunnerExecutesConfiguredCollector(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
+	}
+	if !result.Healthy() || len(result.Targets) != 1 || result.Targets[0].State != TargetOK {
+		t.Fatalf("unexpected cycle result: %+v", result)
 	}
 
 	if got := exporter.LastValue("heartbeat_sqlserver_wait_seconds"); got != 12 {
@@ -100,5 +103,28 @@ func TestDecodeRowsUsesExplicitMetricDescriptors(t *testing.T) {
 	}
 	if _, ok := sample.Labels["ignored_label"]; ok {
 		t.Fatalf("unexpected ignored_label in labels")
+	}
+}
+
+func TestStorageProbeEmitsOneSeriesPerFile(t *testing.T) {
+	probe, ok := catalogsqlserver.DefaultCatalog().Get("storage")
+	if !ok {
+		t.Fatal("storage probe missing")
+	}
+	item := collectormetadata.ScheduledProbe{
+		Target: collectormetadata.DatabaseTarget{Name: "core-db", EnvironmentSlug: "prod"},
+	}
+	// A database has at least a data and a log file; both share database_name.
+	rows := []map[string]any{
+		{"database_name": "sales", "file_name": "sales", "file_type": "ROWS", "size_mb": 512.0},
+		{"database_name": "sales", "file_name": "sales_log", "file_type": "LOG", "size_mb": 64.0},
+	}
+	samples := decodeRows(item, probe, rows)
+	if len(samples) != 2 {
+		t.Fatalf("expected 2 samples, got %d", len(samples))
+	}
+	exporter := collectorexport.NewInMemoryExporter()
+	if err := exporter.RecordScope(collectorexport.Scope{Collector: "c", Target: "core-db", Probe: "storage"}, samples); err != nil {
+		t.Fatalf("files of one database must not collide: %v", err)
 	}
 }

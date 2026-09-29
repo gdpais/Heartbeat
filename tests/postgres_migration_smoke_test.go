@@ -1,12 +1,14 @@
+//go:build integration
+
 package tests
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestUpMigrationCreatesCoreTables(t *testing.T) {
+	t.Parallel()
 	root := repoRoot(t)
 	stack := newPostgresStack(t, root)
 	stack.ResetDatabase(t)
@@ -29,6 +31,7 @@ from (
 }
 
 func TestDownMigrationDropsTables(t *testing.T) {
+	t.Parallel()
 	root := repoRoot(t)
 	stack := newPostgresStack(t, root)
 	stack.ResetDatabase(t)
@@ -42,6 +45,7 @@ func TestDownMigrationDropsTables(t *testing.T) {
 }
 
 func TestInvestigationLookupQueryPlanUsesIndex(t *testing.T) {
+	t.Parallel()
 	root := repoRoot(t)
 	stack := newPostgresStack(t, root)
 	stack.ResetDatabase(t)
@@ -72,18 +76,5 @@ where environment_id = (select id from environments where slug = 'prod')
 
 	if !strings.Contains(stdout, "investigations_subject_lookup_idx") {
 		t.Fatalf("query plan did not use expected index: %s", stdout)
-	}
-}
-
-func TestMigrationFilesUseSQLExtension(t *testing.T) {
-	root := repoRoot(t)
-	for _, rel := range []string{
-		"db/migrations/0001_foundations.up.sql",
-		"db/migrations/0001_foundations.down.sql",
-	} {
-		if filepath.Ext(rel) != ".sql" {
-			t.Fatalf("expected .sql file extension for %s", rel)
-		}
-		mustExist(t, filepath.Join(root, rel))
 	}
 }

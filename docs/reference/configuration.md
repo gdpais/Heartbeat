@@ -1,0 +1,153 @@
+# Configuration Reference
+
+Heartbeat services are configured by one integrations file plus environment
+variables. Why config lives in YAML rather than PostgreSQL is explained in
+[ADR 0002](../architecture/decisions/0002-runtime-config-in-yaml.md).
+
+Sources of truth:
+
+- Loader and validation: [`internal/config/config.go`](../../internal/config/config.go)
+- JSON schema: [`packages/config-schema/src/integrations.schema.json`](../../packages/config-schema/src/integrations.schema.json)
+- Default file: [`config/integrations.yaml`](../../config/integrations.yaml) (no SQL Server targets)
+- Local SQL Server example: [`config/integrations.local-dev.example.yaml`](../../config/integrations.local-dev.example.yaml)
+
+## Config files by environment
+
+| Environment | File the collector reads | How it gets there |
+| --- | --- | --- |
+| Host-run or Docker Compose | `config/integrations.yaml` | Mounted at `/app/config/integrations.yaml` |
+| SQL Server dev overlay | `config/integrations.local-dev.yaml` (git-ignored) | Created by `make sqlserver-dev-init` |
+| Local Kubernetes bundle | `integrations.yaml` key in `infra/k8s/local/configmap-config.yaml` | ConfigMap volume |
+
+## `integrations.yaml`
+
+### Endpoints
+
+| Key | Required | Notes |
+| --- | --- | --- |
+| `grafana.base_url` | yes | Absolute URL, as seen from the operator's browser |
+| `grafana.dashboard_templates` | no | Map of name → dashboard path, e.g. `sqlserver-overview: /d/sqlserver-overview` |
+| `grafana.deep_link_templates` | no | Map of name → path with `${variables}`, e.g. `/d/sqlserver-overview?var-target=${target}` |
+| `loki.base_url` | yes | Absolute URL |
+| `loki.endpoint` | no | Absolute URL (push API) |
+| `alertmanager.base_url` | yes | Absolute URL |
+| `alertmanager.endpoint` | no | Absolute URL (alerts API) |
+| `opentelemetry.endpoint` | no | Absolute URL of the OTel Collector (OTLP HTTP) |
+
+### Notification channels
+
+```yaml
+notification_channels:
+  - id: default-webhook          # required, unique
+    channel_type: webhook        # required
+    target_ref: http://…         # required
+    credential_ref: env/HEARTBEAT_WEBHOOK_TOKEN   # optional secret reference
+    config:                      # optional string map
+      timeout: 10s
+```
+
+### Credential references
+
+`credential_refs` is an optional map of name → secret reference. Every
+credential reference in the file (`credential_refs.*`, collector, target and
+channel `credential_ref`) must start with `env/`, `kv/` or `secret/`. Values
+are never stored in the file.
+
+### Collectors
+
+```yaml
+collectors:
+  - id: sqlserver-default        # required, unique; stable ID used for reload diffs
+    kind: sqlserver              # required; sqlserver is the only implemented kind
+    enabled: true
+    credential_ref: kv/sqlserver-default   # default for targets without their own
+    config:
+      environment: local         # default environment label for targets
+      scrape_interval: 30s       # Go duration, > 0; default 30s
+      target_names: []           # optional subset of targets to run; empty = all
+      probes:                    # default probe set for targets without their own
+        - name: waits
+        - name: blocking
+          timeout_ms: 5000       # optional per-probe timeout override
+        - name: storage
+          query_template: "…"    # optional SQL override of the catalog query
+      targets:
+        - name: finance-prod     # required, unique within the collector; becomes the `target` label
+          environment: prod      # optional; defaults to config.environment
+          host: finance-sql.internal   # required
+          port: 1433             # required, 1–65535
+          database_name: FinanceDB     # initial database
+          credential_ref: env/finance-prod   # optional; defaults to the collector's
+          probes: []             # optional; defaults to config.probes
+```
+
+Built-in probe names: `waits`, `blocking`, `sessions`, `memory_pressure`,
+`storage`, `throughput`. See the
+[metrics reference](metrics-and-endpoints.md#sql-server-probe-metrics).
+
+Probe timeout defaults to `min(scrape_interval / 2, 10s)`; `timeout_ms` overrides
+it and is capped at the interval. A `query_template` override runs with the
+same login, so review it with the DBAs; see the
+[login permissions](../guides/database-targets.md#collector-login-permissions).
+
+### Validation and reload behavior
+
+- The file is validated on startup and on every reload. `make config` validates
+  Compose syntax only, not this file.
+- An invalid candidate is rejected and the previous config keeps running.
+  `POST /admin/config/reload` returns 400 for invalid config and 500 for a
+  failed apply.
+- Collectors are diffed by `id`; only changed, added or removed collectors are
+  restarted. A failed apply is rolled back. If the rollback also fails,
+  `runtime_diverged` is reported and `/readyz` returns 503.
+- Reload triggers: `SIGHUP`, authenticated `POST /admin/config/reload`, and file
+  polling when `HEARTBEAT_CONFIG_WATCH_INTERVAL` is set.
+
+## Credential resolution
+
+The DB collector resolves a `credential_ref` from an environment variable:
+
+```text
+HEARTBEAT_CREDENTIAL_<REF>
+```
+
+`<REF>` is the full reference upper-cased, with `/`, `-` and `.` replaced by
+`_`. The value must be `username:password`.
+
+| `credential_ref` | Environment variable |
+| --- | --- |
+| `env/sqlserver-b` | `HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_B` |
+| `kv/sqlserver-default` | `HEARTBEAT_CREDENTIAL_KV_SQLSERVER_DEFAULT` |
+
+The variable must be present in the **container's** environment; exporting it
+in your host shell does not pass it into Compose or Kubernetes. Changing it
+requires restarting the collector.
+
+## Environment variables
+
+### DB collector
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR` | `:8082` | HTTP listen address |
+| `HEARTBEAT_INTEGRATIONS_PATH` | `config/integrations.yaml` | Integrations file path |
+| `HEARTBEAT_ADMIN_TOKEN` | unset | Bearer token for `POST /admin/config/reload`; reload is refused without it |
+| `HEARTBEAT_CONFIG_WATCH_INTERVAL` | unset (off) | Go duration; poll the config file for changes (Compose uses `2s`) |
+| `HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE` | `false` | Skip TLS certificate verification. **Local dev container only**; applies to every target |
+| `HEARTBEAT_CREDENTIAL_<REF>` | — | Target credentials, see above |
+
+### OTel gateway
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `HEARTBEAT_OTEL_GATEWAY_LISTEN_ADDR` | `:8083` | HTTP listen address |
+| `HEARTBEAT_INTEGRATIONS_PATH` | `config/integrations.yaml` | Integrations file path; the gateway loads it once, with no reload |
+
+### Local development files
+
+| File | Tracked | Purpose |
+| --- | --- | --- |
+| `.env.sqlserver-dev.example` | yes | Template for the SQL Server dev overlay |
+| `.env.sqlserver-dev` | no (mode 600) | Random per-machine SA password and collector credential, generated by `make sqlserver-dev-init` |
+| `config/integrations.local-dev.example.yaml` | yes | Template collector config with the dev SQL Server target |
+| `config/integrations.local-dev.yaml` | no | Local copy used by the overlay |
