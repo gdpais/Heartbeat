@@ -2,6 +2,20 @@
 
 Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_180810-heartbeat-monitoring-mvp.md`.
 
+## Compose-to-kind assessment — 2026-09-28
+- [x] Make both application Dockerfiles platform-aware and verify ARM64 and AMD64 outputs
+- [x] Align the technology recommendation and remaining concerns with Heartbeat's goals
+- [x] Assess current deployment parity, migration risks, development/CI trade-offs, and acceptance gates; save a source-backed report without changing the runtime
+- [x] Revise the assessment for shared Helm delivery on kind and production, SQL Server retained in Docker, and Make/integration-test adaptation; verify report references and superseded recommendations
+
+Report: [Compose-to-kind assessment](docs/reviews/2026-09-28-compose-to-kind-assessment.md).
+Validated Compose configuration, Kustomize rendering, report references, and scoped
+diff whitespace. For the CPU correction, built both services for ARM64 and AMD64,
+verified image/binary architecture, and passed native ARM64 health/readiness/metrics
+smoke tests in disposable containers. AMD64 execution, Kubernetes deployment,
+database migrations, and live SQL collection were not tested by this assessment.
+
+
 ## Consolidation review — 2026-09-28
 - [x] Review every pending change and record behavior, limitations, and validation evidence
 - [x] Isolate Docker integration tests from the developer stack and concurrent test runs
