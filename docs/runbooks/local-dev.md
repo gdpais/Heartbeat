@@ -14,6 +14,31 @@
 This validates Compose syntax; it does not validate `integrations.yaml`.
 The service validates integration configuration on startup and reload.
 
+## Application image platforms
+
+Both application Dockerfiles compile for Docker's selected target platform.
+The build stage runs natively, so cross-compiling the Go executable does not
+require CPU emulation. The default target follows the selected builder; choose
+the platform explicitly when building for a different environment.
+
+For an ARM64 development image:
+
+```bash
+docker build --platform linux/arm64 -t heartbeat/db-collector:local -f services/db-collector/Dockerfile .
+```
+
+For an AMD64 production candidate:
+
+```bash
+docker build --platform linux/amd64 -t heartbeat/db-collector:amd64 -f services/db-collector/Dockerfile .
+```
+
+Use `services/otel-gateway/Dockerfile` and the corresponding
+`heartbeat/otel-gateway` image name for the gateway. BuildKit supplies `TARGETOS`
+and `TARGETARCH`; do not override these independently of `--platform`.
+The Docker-hosted SQL Server development target retains its separate AMD64
+platform setting.
+
 ## Test isolation
 
 - `make test`: all Go unit and repository contract tests; no Docker commands.
