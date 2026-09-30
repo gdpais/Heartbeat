@@ -22,7 +22,7 @@ services:
       - "6379:6379"
 
   prometheus:
-    image: prom/prometheus:v3.0.1
+    image: prom/prometheus:v3.15.0
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -34,7 +34,7 @@ services:
       - prometheus_data:/prometheus
 
   loki:
-    image: grafana/loki:3.3.2
+    image: grafana/loki:3.7.8
     command: -config.file=/etc/loki/config.yml
     ports:
       - "3100:3100"
@@ -43,7 +43,7 @@ services:
       - loki_data:/loki
 
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: prom/alertmanager:v0.34.1
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
       - --storage.path=/alertmanager
@@ -54,7 +54,7 @@ services:
       - alertmanager_data:/alertmanager
 
   grafana:
-    image: grafana/grafana:11.4.0
+    image: grafana/grafana:13.2.3
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
@@ -68,7 +68,7 @@ services:
       - grafana_data:/var/lib/grafana
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.114.0
+    image: otel/opentelemetry-collector-contrib:0.161.0
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     ports:
       - "4317:4317"
