@@ -1,10 +1,9 @@
 module heartbeat
 
-go 1.26.0
+go 1.27.1
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/lib/pq v1.10.9
 	github.com/microsoft/go-mssqldb v1.8.2
 	github.com/prometheus/client_golang v1.23.2
 	gopkg.in/yaml.v3 v3.0.1

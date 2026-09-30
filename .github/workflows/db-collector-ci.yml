@@ -21,5 +21,7 @@ jobs:
         run: make test-race
       - name: Run Go static checks
         run: make vet
+      - name: Validate Prometheus rules
+        run: make rules-check
       - name: Run isolated PostgreSQL integration tests
         run: make test-integration

@@ -104,3 +104,7 @@ Production Kubernetes distribution and cloud; image and chart registry; deploy
 mechanism (GitOps or CI); where production values live; dead-man's-switch
 service; secrets backend; Grafana SSO provider. These are tracked in
 [TODO.md](../../../TODO.md).
+
+Update 2026-09-30: decided in
+[ADR 0005](0005-production-delivery-and-operations-defaults.md) (AWS EKS, Argo CD,
+ECR, AWS Secrets Manager, alert channels, Grafana access).

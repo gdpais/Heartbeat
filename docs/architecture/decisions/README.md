@@ -10,6 +10,7 @@ one; mark the old record *Superseded by ADR NNNN*.
 | [0002](0002-runtime-config-in-yaml.md) | Integrations and collector desired state come from YAML/Kubernetes, with hot reload | Accepted |
 | [0003](0003-helm-on-kind-and-production.md) | Deliver the platform with Helm on kind (local, CI) and production Kubernetes | Accepted; not implemented |
 | [0004](0004-core-technology-choices.md) | Core stack: Go, React, Prometheus, Loki, Grafana, Alertmanager, OTel Collector, PostgreSQL, Redis | Accepted |
+| [0005](0005-production-delivery-and-operations-defaults.md) | Production on AWS EKS via Argo CD GitOps; ECR; AWS Secrets Manager + ESO; pinned latest-stable versions; Discord → Slack/Teams/WhatsApp alerts; healthchecks.io dead-man's switch; Grafana admin auth | Accepted; not implemented |
 
 Template:
 

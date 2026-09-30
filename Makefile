@@ -1,4 +1,4 @@
-.PHONY: help up down config migrate health test test-integration test-race vet sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down sqlserver-dev-config sqlserver-dev-health k8s-up k8s-down k8s-apply k8s-port-forward build-db-collector-image kind-load-db-collector-image
+.PHONY: help tools-check rules-check up down config migrate health test test-integration test-race vet sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down sqlserver-dev-config sqlserver-dev-health k8s-up k8s-down k8s-apply k8s-port-forward build-db-collector-image kind-load-db-collector-image
 
 COMPOSE_FILE := infra/docker-compose.yml
 SQLSERVER_DEV_COMPOSE_FILE := infra/docker-compose.sqlserver-dev.yml
@@ -7,10 +7,18 @@ K8S_DIR := infra/k8s/local
 # Health checks fail fast on HTTP errors (keeping the body) and never hang.
 CURL_CHECK := curl -sS --fail-with-body --connect-timeout 2 --max-time 5 -w '\n'
 DB_COLLECTOR_IMAGE := heartbeat/db-collector:local
+# Toolchain pins (ADR 0005). The kind node image tracks the newest Kubernetes
+# minor Amazon EKS supports; kubectl must stay within one minor of it.
+KIND_VERSION := v0.33.0
+KIND_NODE_IMAGE := kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed
+HELM_MIN_VERSION := v4.2.0
+# promtool comes from the same image as the Prometheus server.
+PROMETHEUS_IMAGE := prom/prometheus:v3.15.0
 
 help:
 	@printf '%s\n' \
 		'Heartbeat developer commands:' \
+		'  make tools-check         Verify docker, kind, kubectl, helm and go against the pinned versions' \
 		'  make up                  Start postgres + db-collector with Docker Compose' \
 		'  make down                Stop the local Docker Compose stack and remove volumes' \
 		'  make config              Validate the Docker Compose file' \
@@ -25,12 +33,16 @@ help:
 		'  make test-integration    Run isolated PostgreSQL integration tests (requires Docker)' \
 		'  make test-race           Run all Docker-free tests with the race detector' \
 		'  make vet                 Run Go static checks' \
+		'  make rules-check         Validate Prometheus rules and run their promtool unit tests (requires Docker)' \
 		'  make build-db-collector-image   Build the local db-collector container image' \
 		'  make k8s-apply           Apply the local Kubernetes bundle' \
 		'  make k8s-up              Build the image and apply the local Kubernetes bundle' \
 		'  make k8s-down            Delete the local Kubernetes bundle' \
 		'  make k8s-port-forward    Forward Postgres and db-collector ports to localhost' \
 		'  make kind-load-db-collector-image   Load the db-collector image into kind'
+
+tools-check:
+	@KIND_VERSION=$(KIND_VERSION) KIND_NODE_IMAGE=$(KIND_NODE_IMAGE) HELM_MIN_VERSION=$(HELM_MIN_VERSION) scripts/tools-check.sh
 
 up:
 	docker compose -f $(COMPOSE_FILE) up -d
@@ -89,6 +101,10 @@ test-race:
 
 vet:
 	GOCACHE=$$(pwd)/.tmp/gocache go vet ./...
+
+rules-check:
+	docker run --rm -v "$$(pwd)/infra/prometheus/rules:/rules:ro" --entrypoint promtool $(PROMETHEUS_IMAGE) check rules /rules/heartbeat.rules.yml /rules/generated/heartbeat-rendered.rules.yml
+	docker run --rm -v "$$(pwd)/infra/prometheus/rules:/rules:ro" -w /rules/tests --entrypoint promtool $(PROMETHEUS_IMAGE) test rules heartbeat.rules.test.yml
 
 build-db-collector-image:
 	docker build -t $(DB_COLLECTOR_IMAGE) -f services/db-collector/Dockerfile .

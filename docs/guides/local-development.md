@@ -3,8 +3,10 @@
 Run the Heartbeat stack on your machine, test it, and point the DB collector at
 a throwaway SQL Server.
 
-Prerequisites: Docker with Compose (v2, `up --wait` support) and Go 1.26+.
-Run `make help` for the full target list.
+Prerequisites: Docker with Compose (v2, `up --wait` support) and Go 1.27+.
+For the Kubernetes workflow you also need kind, kubectl and Helm at the pinned
+versions; `make tools-check` verifies all of them and says how to fix any
+mismatch. Run `make help` for the full target list.
 
 ## Start the platform stack
 

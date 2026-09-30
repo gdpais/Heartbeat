@@ -44,7 +44,11 @@ is [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
 
 ### 0.4 Kubernetes delivery (kind + Helm)
 - [x] Assess the Compose-to-kind migration and choose shared Helm delivery ([ADR 0003](docs/architecture/decisions/0003-helm-on-kind-and-production.md))
-- [ ] Answer the open production decisions (cloud/distribution, registry, deploy mechanism, production values location, dead-man's switch, secrets backend, Grafana SSO)
+- [x] Decide platform (AWS EKS), deploy mechanism (Argo CD), registry (ECR), secrets (AWS Secrets Manager + ESO), version policy, alert channels incl. WhatsApp, dead-man's switch and Grafana access ([ADR 0005](docs/architecture/decisions/0005-production-delivery-and-operations-defaults.md))
+- [x] Pin tools to the EKS-supported minor (kind node v1.36.4, kubectl 1.35–1.37, Helm 4.2, Go 1.27.1); add `make tools-check`
+- [x] Bump engines to latest stable under Compose first (Prometheus, Grafana, Loki, Alertmanager, otelcol); add Renovate
+- [ ] Install the Renovate GitHub App on the repository (config is in `renovate.json`)
+- [ ] Before the first production deploy: document where the monitored SQL Servers sit relative to the EKS VPC; set up the WhatsApp Business Account and alert template
 - [ ] Build the Helm chart and kind workflow; adapt Make and CI; pass the ADR 0003 acceptance criteria
 - [ ] Retire the platform Compose definition and the Kustomize bundle
 
@@ -531,7 +535,8 @@ is [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
 ## 15. Feature track: Integrations and hardening
 
 ### 15.0 Collector recovery and high availability
-- [ ] Align SQL Server Prometheus recording-rule names and gauge/counter semantics with the current probe catalog; validate the rules against emitted metrics
+- [x] Align SQL Server Prometheus recording-rule names with the current probe catalog; validate the rules against emitted metrics (promtool unit tests in `make rules-check`, Go test for metric-name drift)
+- [ ] Export cumulative SQL Server values (waits, throughput counters) as counters and show rates in the dashboard
 - [x] Document the planned HA improvements and late-stage Alloy comparison in architecture and roadmap docs
 - [x] Isolate probe/target failures so one failed target cannot stop unrelated collection
 - [x] Retry transient collection failures with bounded exponential backoff and jitter; expose persistent failures without retry storms

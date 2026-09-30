@@ -30,7 +30,7 @@ Early MVP construction. See the [roadmap](docs/product/roadmap.md) and
 
 ## Quick start
 
-Prerequisites: Docker with Compose v2, Go 1.26+.
+Prerequisites: Docker with Compose v2, Go 1.27+.
 
 ```bash
 make up         # start the local stack
