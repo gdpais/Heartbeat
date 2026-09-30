@@ -44,7 +44,10 @@ is [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
 
 ### 0.4 Kubernetes delivery (kind + Helm)
 - [x] Assess the Compose-to-kind migration and choose shared Helm delivery ([ADR 0003](docs/architecture/decisions/0003-helm-on-kind-and-production.md))
-- [ ] Answer the open production decisions (cloud/distribution, registry, deploy mechanism, production values location, dead-man's switch, secrets backend, Grafana SSO)
+- [x] Decide platform (AWS EKS), deploy mechanism (Argo CD), registry (ECR), secrets (AWS Secrets Manager + ESO), version policy, alert channels incl. WhatsApp, dead-man's switch and Grafana access ([ADR 0005](docs/architecture/decisions/0005-production-delivery-and-operations-defaults.md))
+- [ ] Pin tools to the EKS-supported minor (kind node v1.36.4, kubectl 1.35–1.37, Helm 4.2, Go 1.27.1); add `make tools-check`
+- [ ] Bump engines to latest stable under Compose first (Prometheus, Grafana, Loki, Alertmanager, otelcol); add Renovate
+- [ ] Before the first production deploy: document where the monitored SQL Servers sit relative to the EKS VPC; set up the WhatsApp Business Account and alert template
 - [ ] Build the Helm chart and kind workflow; adapt Make and CI; pass the ADR 0003 acceptance criteria
 - [ ] Retire the platform Compose definition and the Kustomize bundle
 
