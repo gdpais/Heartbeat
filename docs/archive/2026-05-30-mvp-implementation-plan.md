@@ -1,5 +1,7 @@
 # Heartbeat Monitoring Platform Implementation Plan
 
+> **Archived.** Superseded planning document kept for history; see [docs/archive/README.md](README.md) for where its content lives now.
+
 > **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
 
 **Goal:** Build Heartbeat, an SRE-focused monitoring platform that complements Dynatrace/Datadog by adding stronger database observability, end-to-end telemetry coverage, session-centric troubleshooting, adaptive alerting, and reporting.

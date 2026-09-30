@@ -1,4 +1,4 @@
-FROM golang:1.26.0-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine AS build
 
 WORKDIR /src
 
@@ -9,7 +9,10 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/db-collector ./services/db-collector/cmd/db-collector
+# Cross-compile for the requested image platform using the native build stage.
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/db-collector ./services/db-collector/cmd/db-collector
 
 FROM gcr.io/distroless/static-debian12:nonroot
 

@@ -101,14 +101,16 @@ func DefaultCatalog() Catalog {
 			}},
 		},
 		{
-			Name:          "storage",
-			Category:      "storage",
-			QueryTemplate: "SELECT DB_NAME(database_id) AS database_name, size * 8.0 / 1024 AS size_mb FROM sys.master_files",
+			Name:     "storage",
+			Category: "storage",
+			// One row per database file: file_name is the logical name, unique
+			// within a database, so every file gets its own series.
+			QueryTemplate: "SELECT DB_NAME(database_id) AS database_name, name AS file_name, type_desc AS file_type, size * 8.0 / 1024 AS size_mb FROM sys.master_files",
 			Metrics: []Metric{{
 				Name:         "heartbeat_sqlserver_database_file_size_mb",
-				Help:         "SQL Server database file size in MB.",
+				Help:         "SQL Server database file size in MB, one series per file.",
 				ValueColumn:  "size_mb",
-				LabelColumns: []string{"database_name"},
+				LabelColumns: []string{"database_name", "file_name", "file_type"},
 			}},
 		},
 		{

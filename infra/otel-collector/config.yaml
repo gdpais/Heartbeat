@@ -31,13 +31,10 @@ exporters:
   debug:
   prometheus:
     endpoint: 0.0.0.0:8889
-  loki:
-    endpoint: http://loki:3100/loki/api/v1/push
-    default_labels_enabled:
-      exporter: false
-      job: true
-      instance: false
-      level: true
+  # Loki's native OTLP ingestion; resource attributes such as service.name
+  # become index labels and the rest structured metadata.
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
 
 extensions:
   health_check:
@@ -53,4 +50,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, resource, attributes/low_cardinality_logs, batch]
-      exporters: [loki, debug]
+      exporters: [otlp_http/loki, debug]

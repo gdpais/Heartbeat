@@ -1,16 +1,15 @@
 # TODO
 
-Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_180810-heartbeat-monitoring-mvp.md`.
+Implementation task list for Heartbeat. Phases and priorities are in the
+[roadmap](docs/product/roadmap.md); the original plan this list was derived from
+is [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
 
 ## 0. Cross-cutting foundations
 
 ### 0.1 Product and architecture baseline
-- [x] Write `docs/product/requirements.md`
-- [x] Write `docs/product/phased-roadmap.md`
-- [x] Write `docs/architecture/overview.md`
-- [x] Write `docs/architecture/database-observability.md`
-- [x] Write `docs/architecture/session-analysis.md`
-- [x] Write `docs/architecture/alerting.md`
+- [x] Write product and architecture baseline docs ([docs index](docs/README.md))
+- [x] Design current-runtime and target-architecture diagrams, link them from the README, and verify them against source/configuration
+- [x] Reorganize docs by audience; record key decisions as ADRs; archive superseded plans
 - [ ] Freeze subsystem boundaries, responsibilities, and interfaces
 - [ ] Freeze ownership rules:
   - [ ] app-owned workflows derive environment through `applications.environment_id`
@@ -29,8 +28,10 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
   - [x] Grafana
   - [x] Alertmanager
   - [x] OpenTelemetry Collector
-- [x] Document local dev health checks in `docs/runbooks/local-dev.md`
+- [x] Document local dev health checks in `docs/guides/local-development.md`
 - [x] Add GitHub Actions CI for Go tests and Docker Compose validation
+- [x] Isolate Docker integration tests from the developer stack and concurrent test runs
+- [x] Make both application Dockerfiles platform-aware (ARM64 and AMD64)
 
 ### 0.3 Shared contracts and conventions
 - [x] Create `packages/config-schema/`
@@ -40,6 +41,16 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 - [x] Define alert evidence payload contract
 - [x] Define reporting payload contract
 - [x] Define integration YAML schema
+
+### 0.4 Kubernetes delivery (kind + Helm)
+- [x] Assess the Compose-to-kind migration and choose shared Helm delivery ([ADR 0003](docs/architecture/decisions/0003-helm-on-kind-and-production.md))
+- [x] Decide platform (AWS EKS), deploy mechanism (Argo CD), registry (ECR), secrets (AWS Secrets Manager + ESO), version policy, alert channels incl. WhatsApp, dead-man's switch and Grafana access ([ADR 0005](docs/architecture/decisions/0005-production-delivery-and-operations-defaults.md))
+- [x] Pin tools to the EKS-supported minor (kind node v1.36.4, kubectl 1.35–1.37, Helm 4.2, Go 1.27.1); add `make tools-check`
+- [x] Bump engines to latest stable under Compose first (Prometheus, Grafana, Loki, Alertmanager, otelcol); add Renovate
+- [ ] Install the Renovate GitHub App on the repository (config is in `renovate.json`)
+- [ ] Before the first production deploy: document where the monitored SQL Servers sit relative to the EKS VPC; set up the WhatsApp Business Account and alert template
+- [ ] Build the Helm chart and kind workflow; adapt Make and CI; pass the ADR 0003 acceptance criteria
+- [ ] Retire the platform Compose definition and the Kustomize bundle
 
 ---
 
@@ -137,6 +148,7 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 - [ ] Derive environment through application
 - [ ] Validate ingest mode and required config
 - [ ] Store secret refs only
+- [ ] Defer file-based telemetry/data ingestion support as a fallback-only ingest mode when direct SQL Server or other database connectivity is unavailable
 
 ### 2.5 Database target management
 - [ ] Implement database targets CRUD
@@ -248,6 +260,7 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 - [x] Implement secure SQL Server connector manager
 - [ ] Enforce least-privilege credentials
 - [x] Enforce query timeout/budget guards
+- [x] Pool SQL Server connections per target
 - [ ] Review all production queries for non-blocking behavior
 - [ ] Define safe probe review/versioning process
 
@@ -260,14 +273,20 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 - [x] Implement throughput/latency probes as needed
 - [x] Replace generic column-to-metric decoding with explicit per-probe metric descriptors
 
-### 5.4 Metrics and evidence output
+### 5.4 Deferred fallback ingestion
+- [ ] Add file-based data ingestion for uploaded/exported files only after live database collection is stable
+- [ ] Restrict file-based ingestion to last-resort operational scenarios, not the default onboarding path
+- [ ] Define accepted file formats, validation rules, lineage metadata, and freshness warnings for fallback ingestion
+
+### 5.5 Metrics and evidence output
 - [x] Normalize SQL Server outputs into Prometheus-friendly metrics
 - [x] Expose scrape endpoint
-- [x] Publish investigation evidence snapshots where useful
+- [x] Produce structured evidence for blocking/session probes
+- [ ] Persist or publish evidence snapshots (the default sink currently discards them)
 - [x] Keep DB collector metric output stateless and Prometheus-scraped instead of persisted in PostgreSQL
 - [ ] Add collector self-observability
 
-### 5.5 Runtime config model
+### 5.6 Runtime config model
 - [x] Read desired runtime collector config from `config/integrations.yaml`
 - [x] Read active target/probe runtime config from YAML/Kubernetes convention
 - [ ] Reintroduce API/PostgreSQL-driven probe assignments only after the control-plane workflow exists
@@ -334,7 +353,7 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 
 ### 8.1 Integration YAML schema
 - [x] Define `config/integrations.yaml` schema
-- [ ] Cover:
+- [x] Cover:
   - [x] Grafana base URL
   - [x] Loki endpoint
   - [x] Alertmanager endpoint
@@ -384,7 +403,8 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 - [x] Provision scrape config for services and collectors
 - [x] Add OutSystems recording rules
 - [x] Add SQL Server recording rules
-- [x] Add alert rule output path from Heartbeat rendering
+- [x] Add alert rule output path (`rules/generated/`, loaded by Prometheus; nothing renders into it yet)
+- [ ] Add an `alerting` block so Prometheus sends alerts to Alertmanager
 
 ### 9.2 Loki
 - [x] Provision Loki for app logs
@@ -399,7 +419,7 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 ### 9.4 Alertmanager
 - [x] Provision routing configuration
 - [x] Support grouping/dedupe/silence/delivery
-- [x] Integrate rendered routes from Heartbeat metadata
+- [ ] Integrate rendered routes from Heartbeat metadata (needs the API; routing is static today)
 
 ### 9.5 OpenTelemetry Collector
 - [x] Provision collector config
@@ -514,6 +534,22 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 
 ## 15. Feature track: Integrations and hardening
 
+### 15.0 Collector recovery and high availability
+- [x] Align SQL Server Prometheus recording-rule names with the current probe catalog; validate the rules against emitted metrics (promtool unit tests in `make rules-check`, Go test for metric-name drift)
+- [ ] Export cumulative SQL Server values (waits, throughput counters) as counters and show rates in the dashboard
+- [x] Document the planned HA improvements and late-stage Alloy comparison in architecture and roadmap docs
+- [x] Isolate probe/target failures so one failed target cannot stop unrelated collection
+- [x] Retry transient collection failures with bounded exponential backoff and jitter; expose persistent failures without retry storms
+- [x] Expose per-target success, consecutive failures, last-success time, and freshness; expire stale/removed metric series
+- [ ] Add per-probe cumulative error counters
+- [x] Make readiness reflect expected collector state and add deployment health probes and restart/recovery policies (local K8s bundle)
+- [x] Validate safe reloads, including partial reconciliation failure (rollback) and replacement-poller startup failure (unit-tested)
+- [ ] Define target ownership and takeover across replicas, with fencing or equivalent protection against duplicate SQL polling during partitions
+- [ ] Define recovery-time and acceptable data-gap objectives; design downstream buffering/replay limits separately from collector failover
+- [ ] Test target outages, process/node loss, network partitions, reloads during failure, and storage outages; record recovery time, gaps, duplicates, and database load
+
+Design details: [Collector recovery and high availability](docs/architecture/database-observability.md#collector-recovery-and-high-availability-planned).
+
 ### 15.1 Grafana/Loki productization
 - [ ] validate integration config from YAML
 - [ ] validate datasources
@@ -522,6 +558,11 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 
 ### 15.2 Security and reliability
 - [ ] add authn/authz hardening
+- [ ] db-collector diagnostics: require the admin token for `GET /admin/config`; keep `/readyz` to status only and move raw driver errors (host, port, login) behind auth
+- [ ] db-collector redaction: mask notification channel `config` values in `Redacted()`, strip userinfo from endpoint URLs, and reject credentials embedded in `loki`/`alertmanager` URLs at validation
+- [ ] db-collector admin token: compare in constant time
+- [ ] db-collector network exposure: add a NetworkPolicy limiting port 8082 to Prometheus and operator access
+- [ ] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; consider per-target TLS settings instead of a process-wide flag
 - [ ] add query budgets
 - [ ] add rate limits
 - [ ] add retry/idempotency rules
@@ -530,7 +571,7 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 ### 15.3 Audit and runbooks
 - [ ] rotate audit JSONL files
 - [ ] ship audit logs to Loki/SIEM
-- [ ] write SQL Server onboarding runbook
+- [x] write SQL Server onboarding runbook ([guide](docs/guides/database-targets.md))
 - [ ] write alert tuning runbook
 - [ ] write ops/runbook docs for reload failures, collector crashes, queue backlogs
 
@@ -583,3 +624,14 @@ Implementation task list for Heartbeat, derived from `.hermes/plans/2026-05-30_1
 - [ ] DB-backed audit/compliance search
 - [ ] custom dashboard engine
 - [ ] autonomous RCA
+
+## 18. Late-stage collector comparison (planned)
+- [ ] After the core monitoring workflow and reliability baseline are validated, create a dedicated branch for the custom collector versus Grafana Alloy comparison
+- [ ] Run both implementations in parallel against equivalent non-production workloads with isolated metric identities and controlled combined query load
+- [ ] Compare signal coverage, custom probes/evidence, metric semantics, permissions/TLS, database load, resource use, configuration/reload, recovery, and operational cost
+- [ ] Exercise target/collector/node/network/downstream outages and measure recovery, freshness, gaps, duplicates, and buffering/replay behavior
+- [ ] Assess SQL Server fit first and future Oracle extensibility separately; do not assume connector parity
+- [ ] Record an evidence-backed decision: retain custom collection, adopt Alloy for suitable workloads, or support both with explicit per-target ownership and a shared telemetry contract
+- [ ] Merge any selected implementation only after reviewing the comparison; keep production adoption separate from the experiment
+
+Evaluation design: [Custom collector and Alloy comparison](docs/architecture/database-observability.md#custom-collector-and-alloy-comparison-late-roadmap).
