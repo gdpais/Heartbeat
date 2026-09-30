@@ -94,24 +94,27 @@ Rules ([`heartbeat.rules.yml`](../../infra/prometheus/rules/heartbeat.rules.yml)
 | Rule | Type |
 | --- | --- |
 | `heartbeat:up:count`, `heartbeat:service_up:ratio` | Recording |
-| `heartbeat:sqlserver_wait_seconds:rate5m`, `heartbeat:sqlserver_blocking_sessions:sum`, `heartbeat:sqlserver_connections:sum` | Recording (broken, see below) |
+| `heartbeat:sqlserver_wait_seconds:rate5m` | Recording: wait seconds per second by `wait_type`, from `heartbeat_sqlserver_wait_time_ms` |
+| `heartbeat:sqlserver_blocked_requests:sum` | Recording: blocked requests per target; 0 when the target's last cycle succeeded and nothing is blocked |
+| `heartbeat:sqlserver_sessions:sum` | Recording: sessions per target, all statuses |
 | `heartbeat:outsystems_events:rate5m` | Recording |
 | `HeartbeatServiceDown` | Alert: `up == 0` for the collector, gateway or OTel Collector |
 
 `infra/prometheus/rules/generated/` is loaded but empty; it is reserved for
-rules rendered from alert policies.
+rules rendered from alert policies. `make rules-check` validates the rules and
+runs their promtool unit tests (`infra/prometheus/rules/tests/`), and a Go test
+fails if a rule or dashboard references a SQL Server metric the probe catalog
+does not emit.
 
 ## Known gaps
 
-- **SQL Server recording rules reference old metric names.** They use
-  `heartbeat_sqlserver_wait_seconds_total`, `heartbeat_sqlserver_blocking_sessions`
-  and `heartbeat_sqlserver_connections`, but the collector emits
-  `heartbeat_sqlserver_wait_time_ms`, `heartbeat_sqlserver_blocked_requests` and
-  `heartbeat_sqlserver_sessions`. The Grafana SQL Server dashboard already uses
-  the current names. Tracked in TODO §15.0.
-- **Counter semantics.** Cumulative SQL Server values (waits) are exported as
-  gauges, so `rate()` works only while the counter is monotonic; SQL Server
-  restarts reset it.
+- **Counter semantics.** Cumulative SQL Server values are exported as gauges:
+  `heartbeat_sqlserver_wait_time_ms`, and the `Batch Requests/sec` and
+  `Transactions/sec` values of `heartbeat_sqlserver_throughput` (cumulative
+  despite their names). `rate()` still handles SQL Server restarts as counter
+  resets, and the wait recording rule relies on that, but the metric type is
+  wrong for tooling. The dashboard's Top Wait Types and Throughput panels show
+  raw cumulative values rather than rates. Tracked in TODO §15.0.
 - **No alert delivery.** Prometheus has no `alerting` block, so alerts do not
   reach Alertmanager.
 - **Diagnostic endpoints.** `GET /admin/config` is unauthenticated. Tracked in

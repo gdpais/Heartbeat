@@ -50,6 +50,13 @@
       "managerFilePatterns": ["/^Makefile$/"],
       "matchStrings": ["KIND_NODE_IMAGE := (?<depName>kindest/node):(?<currentValue>v[\\d.]+)@(?<currentDigest>sha256:[a-f0-9]+)"],
       "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Prometheus image used for promtool in the Makefile.",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": ["PROMETHEUS_IMAGE := (?<depName>prom/prometheus):(?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "datasourceTemplate": "docker"
     }
   ]
 }

@@ -535,7 +535,8 @@ is [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
 ## 15. Feature track: Integrations and hardening
 
 ### 15.0 Collector recovery and high availability
-- [ ] Align SQL Server Prometheus recording-rule names and gauge/counter semantics with the current probe catalog; validate the rules against emitted metrics
+- [x] Align SQL Server Prometheus recording-rule names with the current probe catalog; validate the rules against emitted metrics (promtool unit tests in `make rules-check`, Go test for metric-name drift)
+- [ ] Export cumulative SQL Server values (waits, throughput counters) as counters and show rates in the dashboard
 - [x] Document the planned HA improvements and late-stage Alloy comparison in architecture and roadmap docs
 - [x] Isolate probe/target failures so one failed target cannot stop unrelated collection
 - [x] Retry transient collection failures with bounded exponential backoff and jitter; expose persistent failures without retry storms
