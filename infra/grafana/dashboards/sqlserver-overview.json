@@ -67,10 +67,11 @@
       },
       "targets": [
         {
-          "expr": "sum(heartbeat_sqlserver_blocked_requests{environment=~\"$environment\",target=~\"$target\"})",
+          "expr": "sum(heartbeat_sqlserver_blocked_requests{environment=~\"$environment\",target=~\"$target\"}) or sum(heartbeat_collector_target_up{environment=~\"$environment\",target=~\"$target\"} == 1) * 0",
           "refId": "A"
         }
       ],
+      "description": "Requests currently waiting on another session. The probe exports nothing while nothing is blocked, so this shows 0 when at least one selected target completed its last cycle, and No data when none did (unknown, not zero). Assumes the blocking probe is enabled for the selected targets.",
       "title": "Blocked Requests",
       "type": "stat"
     },

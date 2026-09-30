@@ -60,7 +60,11 @@ counters from SQL Server but are exported as gauges; see
 | `throughput` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_throughput` | `counter_name` |
 
 A failed probe clears its series instead of exporting stale values, and a
-removed collector's series are deleted. The catalog lives in
+removed collector's series are deleted. A probe that returns no rows exports no
+series: `heartbeat_sqlserver_blocked_requests` is absent, not 0, while nothing
+is blocked. Queries that need a zero fall back to targets whose last cycle
+succeeded (`heartbeat_collector_target_up == 1`), as the dashboard's Blocked
+Requests panel does, so an unreachable target never reads as 0. The catalog lives in
 [`catalog.go`](../../services/db-collector/internal/probes/sqlserver/catalog.go).
 
 ### Collector self-observability
