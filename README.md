@@ -216,9 +216,12 @@ The local Kubernetes files now mean:
 Roadmap summary:
 
 - Phase 0 -> scaffolding, local stack, shared schemas, migrations
-- Phase 1 -> API bootstrap, inventory, telemetry source onboarding, investigation metadata
-- Phase 2 -> OutSystems normalization, alert policy management, reporting orchestration
-- Phase 3 -> SQL Server collector runtime, DB-backed investigation enrichment, hardening, K8s rollout
+- Phase 1 -> DB collector (TODO section 2)
+- Phase 2 -> OTel gateway (TODO section 3)
+- Phase 3 -> API / control plane (TODO section 4)
+- Phase 4 -> Web UI (TODO section 5)
+
+See [the roadmap](docs/product/roadmap.md) for prerequisites, validation and later work.
 
 ## Key docs
 
@@ -227,7 +230,7 @@ Start here:
 - `Plan.md`
 - `TODO.md`
 - `docs/product/requirements.md`
-- `docs/product/phased-roadmap.md`
+- `docs/product/roadmap.md`
 - `docs/architecture/overview.md`
 - `docs/architecture/database-observability.md`
 - `docs/architecture/session-analysis.md`
