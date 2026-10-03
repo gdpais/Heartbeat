@@ -58,3 +58,15 @@ tests:
         exp_samples:
           - labels: 'heartbeat:sqlserver_sessions:sum{environment="dev",target="db1"}'
             value: 44
+
+  - name: Watchdog fires with no input at all
+    interval: 1m
+    alert_rule_test:
+      - alertname: Watchdog
+        eval_time: 1m
+        exp_alerts:
+          - exp_labels:
+              severity: none
+            exp_annotations:
+              summary: "Heartbeat alerting pipeline is alive"
+              description: "Always firing. If the dead-man's switch stops receiving it, Heartbeat alerting is down."

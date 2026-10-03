@@ -23,10 +23,10 @@ func TestRulesAndDashboardsReferenceCatalogMetrics(t *testing.T) {
 	}
 
 	patterns := []string{
-		"infra/prometheus/rules/*.yml",
-		"infra/prometheus/rules/generated/*.yml",
-		"infra/prometheus/rules/tests/*.yml",
-		"infra/grafana/dashboards/*.json",
+		"infra/helm/heartbeat/files/prometheus/rules/*.yml",
+		"infra/helm/heartbeat/files/prometheus/rules/generated/*.yml",
+		"infra/helm/heartbeat/files/prometheus/rules/tests/*.yml",
+		"infra/helm/heartbeat/files/grafana/dashboards/*.json",
 	}
 	var files []string
 	for _, pattern := range patterns {

@@ -27,6 +27,16 @@ groups:
 
   - name: heartbeat-alerts
     rules:
+      # Always firing. Alertmanager routes it to an external dead-man's switch,
+      # which notifies when it stops arriving: that means the Prometheus ->
+      # Alertmanager -> notification path is broken (ADR 0005).
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Heartbeat alerting pipeline is alive"
+          description: "Always firing. If the dead-man's switch stops receiving it, Heartbeat alerting is down."
       - alert: HeartbeatServiceDown
         expr: up{job=~"db-collector|otel-gateway|otel-collector"} == 0
         for: 2m

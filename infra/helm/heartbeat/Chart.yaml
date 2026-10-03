@@ -1,0 +1,35 @@
+apiVersion: v2
+name: heartbeat
+description: >-
+  Heartbeat monitoring platform: the DB collector, the OTel gateway, their
+  integrations config, Prometheus rules and Grafana dashboards, plus pinned
+  observability engines that each environment can turn off.
+type: application
+# Chart version. Bump on every chart change that ships (ADR 0005).
+version: 0.1.0
+# Default tag for the Heartbeat images when values do not set one.
+appVersion: "0.1.0"
+home: https://github.com/gdpais/heartbeat
+sources:
+  - https://github.com/gdpais/heartbeat
+# Third-party engines. Namespaced charts only and no CRDs (ADR 0003); each is
+# turned off with <name>.enabled=false so production can use shared services.
+# Versions are pinned exactly and updated by Renovate (ADR 0005).
+dependencies:
+  - name: prometheus
+    version: 29.35.0
+    repository: https://prometheus-community.github.io/helm-charts
+    condition: prometheus.enabled
+  - name: grafana
+    version: 13.2.7
+    repository: https://grafana-community.github.io/helm-charts
+    condition: grafana.enabled
+  - name: loki
+    version: 18.13.7
+    repository: https://grafana-community.github.io/helm-charts
+    condition: loki.enabled
+  - name: opentelemetry-collector
+    alias: otelCollector
+    version: 0.175.0
+    repository: https://open-telemetry.github.io/opentelemetry-helm-charts
+    condition: otelCollector.enabled

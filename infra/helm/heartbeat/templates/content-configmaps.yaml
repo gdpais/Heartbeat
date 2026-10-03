@@ -1,0 +1,39 @@
+{{- if .Values.prometheusRules.enabled }}
+# Rule files from files/prometheus/rules (and generated/). Prometheus mounts this
+# ConfigMap at /etc/prometheus-rules; its config reloader reloads on changes.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: heartbeat-prometheus-rules
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "heartbeat.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus-rules
+data:
+  {{- range $path, $_ := .Files.Glob "files/prometheus/rules/*.yml" }}
+  {{ base $path }}: |
+    {{- $.Files.Get $path | nindent 4 }}
+  {{- end }}
+  {{- range $path, $_ := .Files.Glob "files/prometheus/rules/generated/*.yml" }}
+  {{ base $path }}: |
+    {{- $.Files.Get $path | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- if .Values.grafanaDashboards.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: heartbeat-dashboards
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "heartbeat.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana-dashboards
+    # Discovery label for Grafana's dashboard sidecar in shared Grafanas.
+    grafana_dashboard: "1"
+data:
+  {{- range $path, $_ := .Files.Glob "files/grafana/dashboards/*.json" }}
+  {{ base $path }}: |
+    {{- $.Files.Get $path | nindent 4 }}
+  {{- end }}
+{{- end }}

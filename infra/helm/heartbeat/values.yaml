@@ -1,0 +1,461 @@
+# Heartbeat chart defaults. Environment files in infra/helm/values/ override
+# them: kind.yaml (local and CI), minimal.yaml, sqlserver-dev.yaml and
+# production.example.yaml.
+#
+# Rules this chart follows (ADR 0003, ADR 0005):
+# - One release per namespace. Object names are fixed (db-collector,
+#   prometheus, loki, ...) so in-cluster endpoints match integrations.yaml.
+# - Rendering is deterministic: no random values, no lookups, no hooks. Secrets
+#   are created outside the chart and referenced by name.
+# - The chart does not create its namespace.
+
+# ---------------------------------------------------------------------------
+# Heartbeat workloads
+# ---------------------------------------------------------------------------
+
+dbCollector:
+  enabled: true
+  # The collector is a singleton: replicas are fixed at 1 until replicas can
+  # share targets safely (ADR 0003). There is deliberately no replicas value.
+  image:
+    repository: heartbeat/db-collector
+    # Defaults to the chart appVersion. Production pins a digest instead.
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Secret holding the bearer token for POST /admin/config/reload.
+  adminToken:
+    existingSecret: heartbeat-runtime
+    key: admin-token
+  # Secret whose keys are HEARTBEAT_CREDENTIAL_<REF> variables, loaded with
+  # envFrom (docs/reference/configuration.md#credential-resolution). Empty
+  # means no SQL Server credentials are mounted.
+  credentials:
+    existingSecret: ""
+  # How often the collector re-reads the mounted integrations.yaml. ConfigMap
+  # updates reach the pod after kubelet propagation (up to about a minute).
+  configWatchInterval: 5s
+  sqlserver:
+    # Trusts any server certificate. Only for throwaway local targets.
+    trustServerCertificate: false
+  # Covers the bounded shutdown: HTTP drain 10s + poller stop 20s + 5s.
+  terminationGracePeriodSeconds: 45
+  service:
+    type: ClusterIP
+    port: 8082
+    # Only used when type is NodePort.
+    nodePort: null
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  extraEnv: []
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+otelGateway:
+  enabled: true
+  image:
+    repository: heartbeat/otel-gateway
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  replicas: 1
+  service:
+    type: ClusterIP
+    port: 8083
+    nodePort: null
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+  extraEnv: []
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Pod and container hardening shared by both Heartbeat workloads. The images
+# are distroless and run as the nonroot user.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# The complete integrations.yaml for this environment, rendered into the
+# heartbeat-integrations ConfigMap. It must pass the integrations schema
+# (values.schema.json embeds packages/config-schema/src/integrations.schema.json)
+# and the Go loader (tests/chart_values_test.go). Lists replace, not merge,
+# when an environment file sets them.
+integrations:
+  grafana:
+    base_url: http://localhost:3000
+    dashboard_templates:
+      sqlserver-overview: /d/sqlserver-overview
+      heartbeat-overview: /d/heartbeat-overview
+      outsystems-overview: /d/outsystems-overview
+    deep_link_templates:
+      loki-logs: /explore?orgId=1&left=${loki_query}
+      sqlserver-target: /d/sqlserver-overview?var-target=${target}
+  loki:
+    base_url: http://localhost:3100
+    endpoint: http://loki:3100/loki/api/v1/push
+  alertmanager:
+    base_url: http://localhost:9093
+    endpoint: http://alertmanager:9093/api/v2/alerts
+  opentelemetry:
+    endpoint: http://otel-collector:4318
+  notification_channels:
+    - id: default-webhook
+      channel_type: webhook
+      target_ref: http://alertmanager:9093/api/v2/alerts
+      credential_ref: env/HEARTBEAT_WEBHOOK_TOKEN
+      config:
+        timeout: 10s
+  credential_refs:
+    sqlserver-default: env/HEARTBEAT_SQLSERVER_PASSWORD
+    webhook-default: env/HEARTBEAT_WEBHOOK_TOKEN
+  collectors:
+    - id: sqlserver-default
+      kind: sqlserver
+      enabled: true
+      credential_ref: kv/sqlserver-default
+      config:
+        environment: local
+        scrape_interval: 30s
+        target_names: []
+        probes:
+          - name: waits
+          - name: blocking
+          - name: sessions
+          - name: memory_pressure
+          - name: storage
+          - name: throughput
+        targets: []
+
+# Heartbeat content shipped as ConfigMaps. They are created even when the
+# bundled engines are off, so shared Prometheus and Grafana instances can load
+# them (Grafana's dashboard sidecar finds them by the grafana_dashboard label).
+prometheusRules:
+  enabled: true
+grafanaDashboards:
+  enabled: true
+
+# ---------------------------------------------------------------------------
+# Third-party engines (pinned dependencies, see Chart.yaml)
+# ---------------------------------------------------------------------------
+
+prometheus:
+  enabled: true
+  # Static and DNS service discovery only: no cluster-wide RBAC.
+  rbac:
+    create: false
+  kube-state-metrics:
+    enabled: false
+  prometheus-node-exporter:
+    enabled: false
+  prometheus-pushgateway:
+    enabled: false
+  configmapReload:
+    prometheus:
+      # Reload on rule changes too, not only prometheus.yml.
+      extraConfigmapMounts:
+        - name: heartbeat-rules
+          mountPath: /etc/prometheus-rules
+          configMap: heartbeat-prometheus-rules
+          readOnly: true
+      extraVolumeDirs:
+        - /etc/prometheus-rules
+  server:
+    fullnameOverride: prometheus
+    retention: 15d
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    # Prometheus -> Alertmanager. Static, so no Kubernetes discovery RBAC.
+    alertmanagers:
+      - static_configs:
+          - targets: ["alertmanager:9093"]
+    extraConfigmapMounts:
+      - name: heartbeat-rules
+        mountPath: /etc/prometheus-rules
+        configMap: heartbeat-prometheus-rules
+        readOnly: true
+    persistentVolume:
+      enabled: true
+      size: 8Gi
+    service:
+      type: ClusterIP
+      servicePort: 9090
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  serverFiles:
+    prometheus.yml:
+      rule_files:
+        - /etc/prometheus-rules/*.yml
+  # Keyed by job name so environment files can disable or add single jobs.
+  scrapeConfigs:
+    kubernetes-api-servers: {enabled: false}
+    kubernetes-nodes: {enabled: false}
+    kubernetes-nodes-cadvisor: {enabled: false}
+    kubernetes-service-endpoints: {enabled: false}
+    kubernetes-service-endpoints-slow: {enabled: false}
+    prometheus-pushgateway: {enabled: false}
+    kubernetes-services: {enabled: false}
+    kubernetes-pods: {enabled: false}
+    kubernetes-pods-slow: {enabled: false}
+    # The headless Service publishes the collector even while it is unready, so
+    # an unready collector is still scraped and its failure metrics are kept.
+    db-collector:
+      dns_sd_configs:
+        - names: ["db-collector-headless"]
+          type: A
+          port: 8082
+    otel-gateway:
+      static_configs:
+        - targets: ["otel-gateway:8083"]
+    otel-collector:
+      static_configs:
+        - targets: ["otel-collector:8889"]
+    alertmanager:
+      static_configs:
+        - targets: ["alertmanager:9093"]
+    loki:
+      static_configs:
+        - targets: ["loki:3100"]
+
+  alertmanager:
+    enabled: true
+    fullnameOverride: alertmanager
+    persistence:
+      enabled: true
+      size: 1Gi
+    service:
+      type: ClusterIP
+      port: 9093
+    config:
+      global: {}
+      templates: []
+      route:
+        receiver: default
+        group_by: ["alertname", "job", "environment"]
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 4h
+        routes:
+          # The Watchdog alert always fires. An external dead-man's switch
+          # notifies when it stops arriving (ADR 0005). Defaults to a receiver
+          # with no integrations; production points it at healthchecks.io.
+          - receiver: deadmans-switch
+            matchers: ['alertname="Watchdog"']
+            group_wait: 0s
+            group_interval: 1m
+            repeat_interval: 1m
+      receivers:
+        - name: default
+          webhook_configs:
+            - url: http://otel-gateway:8083/v1/heartbeat/alerts
+              send_resolved: true
+        - name: deadmans-switch
+
+grafana:
+  enabled: true
+  fullnameOverride: grafana
+  # Created outside the chart (ADR 0005); keys admin-user and admin-password.
+  admin:
+    existingSecret: grafana-admin
+  # Dashboards come from ConfigMaps, so Grafana needs no Kubernetes API access.
+  rbac:
+    create: false
+  testFramework:
+    enabled: false
+  # Stateless: dashboards and datasources come from source.
+  persistence:
+    enabled: false
+  service:
+    type: ClusterIP
+    port: 3000
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          uid: prometheus
+          type: prometheus
+          access: proxy
+          url: http://prometheus:9090
+          isDefault: true
+        - name: Loki
+          uid: loki
+          type: loki
+          access: proxy
+          url: http://loki:3100
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: heartbeat
+          orgId: 1
+          folder: Heartbeat
+          type: file
+          disableDeletion: true
+          editable: false
+          options:
+            path: /var/lib/grafana/dashboards/heartbeat
+  dashboardsConfigMaps:
+    heartbeat: heartbeat-dashboards
+  grafana.ini:
+    analytics:
+      check_for_updates: false
+      reporting_enabled: false
+    auth.anonymous:
+      enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+loki:
+  enabled: true
+  fullnameOverride: loki
+  deploymentMode: Monolithic
+  loki:
+    auth_enabled: false
+    commonConfig:
+      replication_factor: 1
+    storage:
+      type: filesystem
+    schemaConfig:
+      configs:
+        - from: "2024-01-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    # Low-cardinality labels; investigation fields stay in structured metadata.
+    limits_config:
+      allow_structured_metadata: true
+      max_label_names_per_series: 15
+      max_label_value_length: 256
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+  # Namespaced RBAC only.
+  rbac:
+    namespaced: true
+  singleBinary:
+    replicas: 1
+    sidecar: false
+    persistence:
+      enabled: true
+      size: 10Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  backend:
+    replicas: 0
+  read:
+    replicas: 0
+  write:
+    replicas: 0
+  gateway:
+    enabled: false
+  chunksCache:
+    enabled: false
+  resultsCache:
+    enabled: false
+  memcached:
+    enabled: false
+  lokiCanary:
+    enabled: false
+  test:
+    enabled: false
+
+otelCollector:
+  enabled: true
+  fullnameOverride: otel-collector
+  mode: deployment
+  image:
+    repository: otel/opentelemetry-collector-contrib
+  command:
+    name: otelcol-contrib
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    # memory_limiter is a percentage of this limit.
+    limits:
+      memory: 512Mi
+  ports:
+    jaeger-compact: {enabled: false}
+    jaeger-thrift: {enabled: false}
+    jaeger-grpc: {enabled: false}
+    zipkin: {enabled: false}
+    prom-exporter:
+      enabled: true
+      containerPort: 8889
+      servicePort: 8889
+      protocol: TCP
+  # Merged over the chart's default config; null removes a default entry.
+  config:
+    receivers:
+      jaeger: null
+      zipkin: null
+      prometheus: null
+    processors:
+      resource:
+        attributes:
+          - key: heartbeat.source
+            value: otel-collector
+            action: upsert
+      attributes/low_cardinality_logs:
+        actions:
+          - key: user_id
+            action: delete
+          - key: session_id
+            action: delete
+          - key: request_id
+            action: delete
+          - key: client_ip
+            action: delete
+    exporters:
+      prometheus:
+        endpoint: ${env:MY_POD_IP}:8889
+      # Loki's native OTLP ingestion; resource attributes such as service.name
+      # become index labels and the rest structured metadata.
+      otlp_http/loki:
+        endpoint: http://loki:3100/otlp
+    service:
+      pipelines:
+        traces: null
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [prometheus, debug]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, attributes/low_cardinality_logs, batch]
+          exporters: [otlp_http/loki, debug]

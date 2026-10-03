@@ -14,3 +14,6 @@ config/integrations.local-dev.yaml
 # Dated working documents for decision review; outcomes go to docs/architecture/decisions/
 docs/plans/
 docs/reviews/
+
+# Chart dependencies: fetched by `make chart-deps` from the versions in Chart.lock
+infra/helm/heartbeat/charts/

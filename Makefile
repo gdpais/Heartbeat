@@ -1,4 +1,4 @@
-.PHONY: help tools-check rules-check up down config migrate health test test-integration test-race vet sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down sqlserver-dev-config sqlserver-dev-health k8s-up k8s-down k8s-apply k8s-port-forward build-db-collector-image kind-load-db-collector-image
+.PHONY: help tools-check install-tools rules-check chart-deps chart-check kind-up kind-down kind-deploy kind-images kind-status kind-e2e up down config migrate health test test-integration test-race vet sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down sqlserver-dev-config sqlserver-dev-health k8s-up k8s-down k8s-apply k8s-port-forward build-db-collector-image kind-load-db-collector-image
 
 COMPOSE_FILE := infra/docker-compose.yml
 SQLSERVER_DEV_COMPOSE_FILE := infra/docker-compose.sqlserver-dev.yml
@@ -12,6 +12,16 @@ DB_COLLECTOR_IMAGE := heartbeat/db-collector:local
 KIND_VERSION := v0.33.0
 KIND_NODE_IMAGE := kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed
 HELM_MIN_VERSION := v4.2.0
+# Exact versions CI installs (make install-tools). Helm 3 only checks that the
+# chart still renders with it (ADR 0005).
+KUBECTL_VERSION := v1.36.4
+HELM_VERSION := v4.2.4
+HELM3_VERSION := v3.22.0
+TOOLS_DIR ?= .tmp/bin
+HELM ?= helm
+CHART_DIR := infra/helm/heartbeat
+# full: every component. minimal: collector, Prometheus, Alertmanager, Grafana.
+PROFILE ?= full
 # promtool comes from the same image as the Prometheus server.
 PROMETHEUS_IMAGE := prom/prometheus:v3.15.0
 
@@ -19,6 +29,15 @@ help:
 	@printf '%s\n' \
 		'Heartbeat developer commands:' \
 		'  make tools-check         Verify docker, kind, kubectl, helm and go against the pinned versions' \
+		'  make install-tools       Install the pinned kind, kubectl, helm and helm3 into $$TOOLS_DIR (CI)' \
+		'  make kind-up             Create the kind cluster, build and load images, deploy the chart (PROFILE=full|minimal)' \
+		'  make kind-deploy         Redeploy the chart to the existing kind cluster' \
+		'  make kind-images         Rebuild both images and load them into kind' \
+		'  make kind-status         Show pods and services in the kind cluster' \
+		'  make kind-down           Delete the kind cluster' \
+		'  make kind-e2e            Run the acceptance checks on a separate, temporary kind cluster' \
+		'  make chart-deps          Fetch the chart dependencies listed in Chart.lock' \
+		'  make chart-check         Lint and render the chart for every values profile (needs chart-deps)' \
 		'  make up                  Start postgres + db-collector with Docker Compose' \
 		'  make down                Stop the local Docker Compose stack and remove volumes' \
 		'  make config              Validate the Docker Compose file' \
@@ -102,9 +121,38 @@ test-race:
 vet:
 	GOCACHE=$$(pwd)/.tmp/gocache go vet ./...
 
+install-tools:
+	@KIND_VERSION=$(KIND_VERSION) KUBECTL_VERSION=$(KUBECTL_VERSION) HELM_VERSION=$(HELM_VERSION) HELM3_VERSION=$(HELM3_VERSION) scripts/install-tools.sh $(TOOLS_DIR)
+
+kind-up:
+	@KIND_NODE_IMAGE='$(KIND_NODE_IMAGE)' PROFILE=$(PROFILE) scripts/kind.sh up
+
+kind-deploy:
+	@PROFILE=$(PROFILE) scripts/kind.sh deploy
+
+kind-images:
+	@scripts/kind.sh images
+
+kind-status:
+	@scripts/kind.sh status
+
+kind-down:
+	@scripts/kind.sh down
+
+kind-e2e:
+	@KIND_NODE_IMAGE='$(KIND_NODE_IMAGE)' scripts/kind-e2e.sh
+
+chart-deps:
+	scripts/chart-deps.sh
+
+# HELM=<path> repeats the checks with another Helm binary (CI uses Helm 3).
+chart-check:
+	$(HELM) lint --strict $(CHART_DIR) -f infra/helm/values/kind.yaml
+	HELM=$(HELM) GOCACHE=$$(pwd)/.tmp/gocache go test -tags=chart -count=1 -run TestChartProfiles ./tests
+
 rules-check:
-	docker run --rm -v "$$(pwd)/infra/prometheus/rules:/rules:ro" --entrypoint promtool $(PROMETHEUS_IMAGE) check rules /rules/heartbeat.rules.yml /rules/generated/heartbeat-rendered.rules.yml
-	docker run --rm -v "$$(pwd)/infra/prometheus/rules:/rules:ro" -w /rules/tests --entrypoint promtool $(PROMETHEUS_IMAGE) test rules heartbeat.rules.test.yml
+	docker run --rm -v "$$(pwd)/infra/helm/heartbeat/files/prometheus/rules:/rules:ro" --entrypoint promtool $(PROMETHEUS_IMAGE) check rules /rules/heartbeat.rules.yml /rules/generated/heartbeat-rendered.rules.yml
+	docker run --rm -v "$$(pwd)/infra/helm/heartbeat/files/prometheus/rules:/rules:ro" -w /rules/tests --entrypoint promtool $(PROMETHEUS_IMAGE) test rules heartbeat.rules.test.yml
 
 build-db-collector-image:
 	docker build -t $(DB_COLLECTOR_IMAGE) -f services/db-collector/Dockerfile .

@@ -1,0 +1,102 @@
+{{- if .Values.otelGateway.enabled }}
+{{- $g := .Values.otelGateway }}
+{{- $sel := dict "root" $ "component" "otel-gateway" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "heartbeat.componentLabels" $sel | nindent 4 }}
+spec:
+  replicas: {{ $g.replicas }}
+  selector:
+    matchLabels:
+      {{- include "heartbeat.selectorLabels" $sel | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "heartbeat.componentLabels" $sel | nindent 8 }}
+      annotations:
+        # The gateway reads integrations.yaml only at startup, so a config
+        # change rolls the pods.
+        checksum/integrations: {{ include "heartbeat.integrationsYaml" . | sha256sum }}
+        {{- with $g.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: otel-gateway
+          image: {{ include "heartbeat.image" (dict "root" $ "image" $g.image) | quote }}
+          imagePullPolicy: {{ $g.image.pullPolicy }}
+          env:
+            - name: HEARTBEAT_OTEL_GATEWAY_LISTEN_ADDR
+              value: ":8083"
+            - name: HEARTBEAT_INTEGRATIONS_PATH
+              value: /app/config/integrations.yaml
+            {{- with $g.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8083
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml $g.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "heartbeat.integrationsConfigMap" . }}
+      {{- with $g.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $g.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $g.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "heartbeat.componentLabels" $sel | nindent 4 }}
+spec:
+  type: {{ $g.service.type }}
+  selector:
+    {{- include "heartbeat.selectorLabels" $sel | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $g.service.port }}
+      targetPort: http
+      {{- if and (eq $g.service.type "NodePort") $g.service.nodePort }}
+      nodePort: {{ $g.service.nodePort }}
+      {{- end }}
+{{- end }}
