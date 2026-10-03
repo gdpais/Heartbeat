@@ -131,7 +131,7 @@ does not emit.
   in `sys.dm_os_performance_counters`, and the `throughput` probe drops
   `instance_name`, so every cycle logs `duplicate series` and keeps one
   arbitrary row. The `counter_name` label also keeps SQL Server's trailing
-  padding.
+  padding. Tracked in [#4](https://github.com/gdpais/Heartbeat/issues/4).
 - **Alert delivery stops at the gateway.** Alerts reach Alertmanager, but the
   default receiver is the OTel gateway webhook, which only counts them. Chat
   and WhatsApp receivers exist only in
