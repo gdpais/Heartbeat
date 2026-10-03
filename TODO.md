@@ -49,8 +49,11 @@ is [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
 - [x] Bump engines to latest stable under Compose first (Prometheus, Grafana, Loki, Alertmanager, otelcol); add Renovate
 - [ ] Install the Renovate GitHub App on the repository (config is in `renovate.json`)
 - [ ] Before the first production deploy: document where the monitored SQL Servers sit relative to the EKS VPC; set up the WhatsApp Business Account and alert template
-- [ ] Build the Helm chart and kind workflow; adapt Make and CI; pass the ADR 0003 acceptance criteria
-- [ ] Retire the platform Compose definition and the Kustomize bundle
+- [x] Build the Helm chart and kind workflow; adapt Make and CI; pass the ADR 0003 acceptance criteria (`make chart-check`, `make kind-e2e`; evidence in ADR 0003)
+- [x] Retire the platform Compose definition and the Kustomize bundle
+- [ ] Agree the local loop's time and resource budget (measured: about 2.0 GiB RAM for the full profile)
+- [ ] Production track (ADR 0005): `heartbeat-deploy` repo with Argo CD Applications and values; CI pushes images and the chart to ECR via GitHub OIDC; EKS infrastructure; External Secrets; healthchecks.io; Discord receiver, then Slack/Teams/WhatsApp
+- [ ] Optional: rehearse Argo CD on kind before the first production deploy
 
 ---
 
@@ -404,7 +407,7 @@ is [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
 - [x] Add OutSystems recording rules
 - [x] Add SQL Server recording rules
 - [x] Add alert rule output path (`rules/generated/`, loaded by Prometheus; nothing renders into it yet)
-- [ ] Add an `alerting` block so Prometheus sends alerts to Alertmanager
+- [x] Add an `alerting` block so Prometheus sends alerts to Alertmanager (plus an always-firing Watchdog routed to a dead-man's switch)
 
 ### 9.2 Loki
 - [x] Provision Loki for app logs
@@ -590,12 +593,12 @@ Design details: [Collector recovery and high availability](docs/architecture/dat
 - [ ] reconciliation diff logic
 
 ### 16.2 Integration tests
-- [ ] collector -> Prometheus
+- [x] collector -> Prometheus (`make kind-e2e`, against a Docker SQL Server)
 - [ ] OTLP ingest -> normalized logs/metrics
 - [ ] API -> PostgreSQL
-- [ ] alert rules -> Alertmanager routing
+- [x] alert rules -> Alertmanager routing (`make kind-e2e`: Watchdog reaches Alertmanager)
 - [ ] investigation query -> evidence assembly
-- [ ] failed reload keeps previous active config
+- [x] failed reload keeps previous active config (`make kind-e2e`)
 
 ### 16.3 End-to-end tests
 - [ ] onboard OutSystems telemetry source
@@ -606,7 +609,7 @@ Design details: [Collector recovery and high availability](docs/architecture/dat
 - [ ] generate report end-to-end
 
 ### 16.4 K8s/runtime tests
-- [ ] ConfigMap reload semantics
+- [x] ConfigMap reload semantics (`make kind-e2e`: valid update hot-reloads in place; invalid update rejected while collection continues)
 - [ ] fsnotify parent-directory watcher behavior if enabled
 - [ ] `SIGHUP` reload path
 - [ ] `/admin/config/reload` path

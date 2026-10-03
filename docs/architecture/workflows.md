@@ -104,11 +104,11 @@ Validate which OutSystems fields are reliably present early.
 - **Grafana links** in alert evidence are generated from YAML URL templates,
   not database tables.
 
-Planned rendering path: API → `infra/prometheus/rules/generated/` (loaded by
+Planned rendering path: API → `infra/helm/heartbeat/files/prometheus/rules/generated/` (loaded by
 Prometheus) and API → Alertmanager routes. Who renders `generated/` (the API or
 a build step) is an [open question](overview.md#open-questions).
 
-**Current state:** `infra/prometheus/rules/heartbeat.rules.yml` holds hand-written
+**Current state:** `infra/helm/heartbeat/files/prometheus/rules/heartbeat.rules.yml` holds hand-written
 rules. Prometheus has no `alerting` block, so alerts do not reach Alertmanager
 yet. Alertmanager routes everything to the gateway's
 `POST /v1/heartbeat/alerts` endpoint, which only counts deliveries. The SQL

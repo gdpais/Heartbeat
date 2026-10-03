@@ -9,7 +9,6 @@ __pycache__/
 .pytest_cache/
 infra/data/
 .hermes/
-config/integrations.local-dev.yaml
 
 # Dated working documents for decision review; outcomes go to docs/architecture/decisions/
 docs/plans/

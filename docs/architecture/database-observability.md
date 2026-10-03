@@ -33,7 +33,7 @@ emits today. Metric names and labels are listed in the
 Output expectations: stable metric names; labels for environment, target,
 database, instance and, where safe, application; dashboards for overview,
 waits/locks, sessions, storage and regressions. Only
-`infra/grafana/dashboards/sqlserver-overview.json` exists so far.
+`infra/helm/heartbeat/files/grafana/dashboards/sqlserver-overview.json` exists so far.
 
 ## Safety rules
 - Credentials are referenced by `credential_ref` only.

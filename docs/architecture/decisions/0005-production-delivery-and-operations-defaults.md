@@ -1,6 +1,9 @@
 # 0005. Production delivery and operations defaults
 
-- Status: Accepted. Implementation not started.
+- Status: Accepted. Chart side implemented 2026-10-03 (exact version pins,
+  chart rules below, Watchdog route, `production.example.yaml`); the production
+  infrastructure, config repository and Argo CD are not built yet. The kind
+  profile has no Discord receiver yet.
 - Date: 2026-09-30
 
 ## Context

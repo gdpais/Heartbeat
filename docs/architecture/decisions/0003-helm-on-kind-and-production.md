@@ -1,6 +1,7 @@
 # 0003. Deliver the platform with Helm on kind and production Kubernetes
 
-- Status: Accepted (direction). Implementation not started.
+- Status: Accepted. Implemented for kind and CI on 2026-10-03; production
+  delivery follows [ADR 0005](0005-production-delivery-and-operations-defaults.md).
 - Date: 2026-09-29
 
 ## Context
@@ -28,7 +29,7 @@ The collector hardening work depends on exactly that behavior.
 - Keep the **collector a singleton** until explicit target ownership across
   replicas exists; never scale it by raising the replica count.
 
-## Proposed design (current working plan, subject to change)
+## Proposed design (as planned; see Implementation for what changed)
 
 - One umbrella chart `heartbeat` owns Heartbeat workloads and content
   (collector, gateway, integrations config, Prometheus rules, Grafana
@@ -97,6 +98,53 @@ The migration is done when these pass with retained evidence:
 - A stateful restart keeps data designated as persistent; concurrent CI runs
   are isolated and cannot delete developer resources.
 - The daily development loop meets an agreed time and resource budget.
+
+## Implementation (2026-10-03)
+
+The chart is [`infra/helm/heartbeat`](../../../infra/helm/heartbeat), values are
+in [`infra/helm/values`](../../../infra/helm/values), and the workflow is
+`make kind-*` ([guide](../../guides/kubernetes-local.md)). The proposed design
+was followed, with these differences:
+
+- Object names are fixed (`db-collector`, `prometheus`, `alertmanager`, `loki`,
+  `otel-collector`, ...) and one release runs per namespace, so in-cluster
+  addresses match the Compose-era names that `integrations.yaml` and the engine
+  configs already used.
+- Grafana and Loki come from the `grafana-community` chart repository, where
+  Grafana moved those charts. Every engine chart pins the same engine version
+  Compose ran.
+- The integrations schema is embedded in the chart's `values.schema.json`, so
+  Helm rejects invalid config before applying anything; a Go test keeps the
+  copy in sync and loads each rendered profile with the Go loader.
+- Loki has no host port: its chart cannot set a NodePort. It is reached through
+  Grafana or `kubectl port-forward`.
+- PostgreSQL, Redis and the platform Compose stack were removed. Compose
+  remains only as the disposable PostgreSQL test fixture.
+- Helm 4 upgrades with server-side apply, so a hand edit to a chart-owned field
+  makes the next upgrade conflict until the chart's version is re-applied.
+
+Acceptance criteria and how they are checked (`make chart-check` and
+`make kind-e2e`, both in CI). Measurements are from one kind run on an AMD64
+host; the e2e script prints them on every run.
+
+| Criterion | Check | Result |
+| --- | --- | --- |
+| Fresh cluster loads both images on the node's architecture; all workloads ready | e2e; `kind.sh` refuses an architecture mismatch | All 7 workloads ready; full deploy about 50s after images load |
+| One chart renders for kind, CI and production values | chart-check over 5 profiles, Helm 4 and Helm 3 | Pass |
+| A pod reaches the Docker SQL target (DNS, TCP, auth, TLS) without widening exposure | e2e; SQL Server on the kind network, no host port in CI, loopback only locally | Target up |
+| A code change produces a new running image | Content-derived tags, `imagePullPolicy: Never`; e2e compares the running image to the built tag | Pass |
+| Target metrics fresh in Prometheus; Grafana shows the target | e2e queries Prometheus and Grafana's datasource proxy | Pass |
+| Valid ConfigMap update changes the config version | e2e, same pod | About 65s (kubelet sync dominates) |
+| Invalid ConfigMap update rejected visibly while collection continues | e2e checks `last_reload_err`, version and freshness | Reported after about 90s; collection uninterrupted |
+| Partial reload failure rolls back or reports divergence | Unit tests in the collector (not repeated on kind) | Pass |
+| Unavailable target shows failed; others continue; no restart | e2e stops the SQL container; a second, unresolvable target stays failed | Down after about 20s, recovered about 60s after restart, restartCount 0 |
+| Singleton update drains the old pod first; gap and SQL concurrency measured | e2e samples running pods and SQL Server sessions every second during a rollout | Never more than 1 collector or 2 sessions; collection gap 12s and 31s in two runs at a 20s scrape interval |
+| Stateful restart keeps persistent data | e2e replaces the Prometheus and Alertmanager pods | TSDB and silences kept |
+| Concurrent CI runs isolated, cannot delete developer resources | e2e uses its own cluster name, kubeconfig and container names, and deletes only those | By construction |
+| Daily loop meets an agreed budget | Measured, budget not yet agreed | Full profile about 2.0 GiB RAM in the kind node (SQL Server sandbox +0.9 GiB); redeploy under a minute; `minimal` profile for smaller machines |
+
+Not covered by kind (risk 4): cloud storage classes, ingress and TLS, IAM and
+External Secrets, ECR pulls, and SQL connectivity from the EKS VPC.
 
 ## Open decisions
 
