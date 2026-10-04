@@ -1,4 +1,4 @@
-.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down chart-deps chart-check rules-check test test-integration test-race vet
+.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet
 
 SQLSERVER_DEV_ENV_FILE := .env.sqlserver-dev
 # Health checks fail fast on HTTP errors (keeping the body) and never hang.
@@ -41,6 +41,7 @@ help:
 		'  make rules-check         Validate Prometheus rules and run their promtool unit tests (requires Docker)' \
 		'  make test                Run all Go tests without Docker integration tests' \
 		'  make test-integration    Run isolated PostgreSQL integration tests (requires Docker)' \
+		'  make test-sqlserver      Run every SQL Server probe against a disposable SQL Server container (requires Docker)' \
 		'  make test-race           Run all Docker-free tests with the race detector' \
 		'  make vet                 Run Go static checks'
 
@@ -110,6 +111,9 @@ test:
 
 test-integration:
 	GOCACHE=$$(pwd)/.tmp/gocache go test -tags=integration -count=1 -timeout=10m ./tests
+
+test-sqlserver:
+	scripts/sqlserver-test.sh
 
 test-race:
 	GOCACHE=$$(pwd)/.tmp/gocache go test -race ./...

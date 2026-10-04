@@ -48,12 +48,13 @@ Done:
 - Failure isolation, bounded backoff, freshness metrics, stale-series cleanup,
   readiness that reflects collector state, reload rollback [2.6]
 - SQL Server overview dashboard; local SQL Server sandbox
+- Server-wide, unpadded throughput series
+  ([#4](https://github.com/gdpais/Heartbeat/issues/4)); every probe runs
+  against a real SQL Server in CI [2.3]
 
 Remaining:
 
-- Fix the duplicate `Transactions/sec` series
-  ([#4](https://github.com/gdpais/Heartbeat/issues/4)) and export cumulative
-  values as counters [2.3–2.4]
+- Export cumulative values as counters and show rates in the dashboard [2.4]
 - Per-probe error counters; least-privilege review of all production queries;
   probe review/versioning process [2.2, 2.6]
 - Collector endpoint security: authenticated diagnostics, full redaction,

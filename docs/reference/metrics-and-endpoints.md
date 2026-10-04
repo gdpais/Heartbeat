@@ -63,7 +63,7 @@ counters from SQL Server but are exported as gauges; see
 | `sessions` | `sys.dm_exec_sessions` | `heartbeat_sqlserver_sessions` | `status` |
 | `memory_pressure` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_memory_kb` | `metric` |
 | `storage` | `sys.master_files` | `heartbeat_sqlserver_database_file_size_mb` | `database_name`, `file_name`, `file_type` |
-| `throughput` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_throughput` | `counter_name` |
+| `throughput` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_throughput` | `counter_name` (server-wide `Batch Requests/sec` and `Transactions/sec`) |
 
 A failed probe clears its series instead of exporting stale values, and a
 removed collector's series are deleted. A probe that returns no rows exports no
@@ -127,11 +127,6 @@ does not emit.
   resets, and the wait recording rule relies on that, but the metric type is
   wrong for tooling. The dashboard's Top Wait Types and Throughput panels show
   raw cumulative values rather than rates. Tracked in TODO §2.4.
-- **Duplicate throughput series.** `Transactions/sec` has one row per database
-  in `sys.dm_os_performance_counters`, and the `throughput` probe drops
-  `instance_name`, so every cycle logs `duplicate series` and keeps one
-  arbitrary row. The `counter_name` label also keeps SQL Server's trailing
-  padding. Tracked in [#4](https://github.com/gdpais/Heartbeat/issues/4).
 - **Alert delivery stops at the gateway.** Alerts reach Alertmanager, but the
   default receiver is the OTel gateway webhook, which only counts them. Chat
   and WhatsApp receivers exist only in

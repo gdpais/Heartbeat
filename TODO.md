@@ -171,7 +171,8 @@ defer them to general hardening [15.2].
 - [x] Implement storage probes
 - [x] Implement throughput/latency probes as needed
 - [x] Replace generic column-to-metric decoding with explicit per-probe metric descriptors
-- [ ] Fix the `throughput` probe's duplicate `Transactions/sec` series and padded `counter_name` labels; check `memory_pressure` for the same padding ([#4](https://github.com/gdpais/Heartbeat/issues/4))
+- [x] Fix the `throughput` probe's duplicate `Transactions/sec` series and padded `counter_name` labels; check `memory_pressure` for the same padding ([#4](https://github.com/gdpais/Heartbeat/issues/4))
+- [x] Run every built-in probe against a real SQL Server in CI (`make test-sqlserver`): no duplicate series, no padded label values
 
 ### 2.4 Metrics and evidence output
 - [x] Normalize SQL Server outputs into Prometheus-friendly metrics
