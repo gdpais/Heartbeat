@@ -98,7 +98,7 @@ phase-by-phase status and [TODO.md](../../TODO.md) for the task list.
 
 ## Open questions
 
-- Which OutSystems versions and deployment models are in phase 1, and which
+- Which OutSystems versions and deployment models are in the first release, and which
   telemetry export paths are available?
 - Which user, session and request identifiers are reliably present in
   OutSystems logs?

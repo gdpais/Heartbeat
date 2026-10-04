@@ -126,7 +126,7 @@ does not emit.
   despite their names). `rate()` still handles SQL Server restarts as counter
   resets, and the wait recording rule relies on that, but the metric type is
   wrong for tooling. The dashboard's Top Wait Types and Throughput panels show
-  raw cumulative values rather than rates. Tracked in TODO §15.0.
+  raw cumulative values rather than rates. Tracked in TODO §2.4.
 - **Duplicate throughput series.** `Transactions/sec` has one row per database
   in `sys.dm_os_performance_counters`, and the `throughput` probe drops
   `instance_name`, so every cycle logs `duplicate series` and keeps one
@@ -137,4 +137,4 @@ does not emit.
   and WhatsApp receivers exist only in
   [`production.example.yaml`](../../infra/helm/values/production.example.yaml).
 - **Diagnostic endpoints.** `GET /admin/config` is unauthenticated. Tracked in
-  TODO §15.2.
+  TODO §2.7.

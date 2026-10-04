@@ -52,6 +52,6 @@ curl -s -X POST http://localhost:8083/v1/heartbeat/events \
 
 ## Next steps
 
-Tracked in [TODO.md](../../TODO.md) §4.3: OutSystems parsers, forwarding
+Tracked in [TODO.md](../../TODO.md) §3.3: OutSystems parsers, forwarding
 normalized events to the OTel Collector, and deciding what the alert endpoint
 becomes ([open questions](../../docs/architecture/overview.md#open-questions)).
