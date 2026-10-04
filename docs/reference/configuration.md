@@ -47,6 +47,13 @@ loads each profile's rendered file with the Go loader.
 | `alertmanager.endpoint` | no | Absolute URL (alerts API) |
 | `opentelemetry.endpoint` | no | Absolute URL of the OTel Collector (OTLP HTTP) |
 
+No URL may embed credentials (`https://user:password@host`): the loader rejects
+userinfo in every `base_url`, `endpoint`, dashboard and deep-link template, and
+channel `target_ref`, for all four integrations. Put secrets in a
+`credential_ref` instead; URLs end up in logs, diagnostics and browser links.
+The check also catches templates with `${variables}` in the host and the
+forms browsers accept (`http:\\user@host`, `http:user@host`).
+
 ### Notification channels
 
 ```yaml
@@ -116,6 +123,9 @@ same login, so review it with the DBAs; see the
   `runtime_diverged` is reported and `/readyz` returns 503.
 - Reload triggers: `SIGHUP`, authenticated `POST /admin/config/reload`, and file
   polling when `HEARTBEAT_CONFIG_WATCH_INTERVAL` is set.
+- `GET /admin/config` shows the active config redacted: credential values and
+  every notification channel `config` value are masked, and userinfo is
+  stripped from URLs.
 
 ## Credential resolution
 
@@ -147,9 +157,9 @@ environment variable. Changing it requires restarting the collector
 | --- | --- | --- |
 | `HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR` | `:8082` | HTTP listen address |
 | `HEARTBEAT_INTEGRATIONS_PATH` | `config/integrations.yaml` | Integrations file path |
-| `HEARTBEAT_ADMIN_TOKEN` | unset | Bearer token for `POST /admin/config/reload`; reload is refused without it |
+| `HEARTBEAT_ADMIN_TOKEN` | unset | Bearer token for `GET /admin/config` and `POST /admin/config/reload`; both answer 401 without it, and startup logs a warning. Surrounding whitespace is ignored |
 | `HEARTBEAT_CONFIG_WATCH_INTERVAL` | unset (off) | Go duration; poll the config file for changes (the chart sets `5s`, `dbCollector.configWatchInterval`) |
-| `HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE` | `false` | Skip TLS certificate verification. **Local dev container only**; applies to every target |
+| `HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE` | `false` | Skip TLS certificate verification. **Local dev container only**; applies to every target. When set, startup logs a warning and `GET /admin/config` lists it under `warnings` |
 | `HEARTBEAT_CREDENTIAL_<REF>` | — | Target credentials, see above |
 
 ### OTel gateway
