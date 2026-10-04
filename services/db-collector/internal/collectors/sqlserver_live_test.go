@@ -81,6 +81,7 @@ func TestCatalogProbesAgainstSQLServer(t *testing.T) {
 			if len(samples) == 0 && !mayBeEmpty[name] {
 				t.Fatal("probe returned no samples")
 			}
+			t.Logf("%d samples", len(samples))
 			probe, _ := executor.Catalog.Get(name)
 			emitted := map[string]bool{}
 			seen := map[string]bool{}

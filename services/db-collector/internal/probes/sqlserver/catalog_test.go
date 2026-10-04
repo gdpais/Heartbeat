@@ -95,3 +95,29 @@ func TestMetricConvertAppliesScale(t *testing.T) {
 		})
 	}
 }
+
+func TestWaitsProbeExcludesBenignWaits(t *testing.T) {
+	probe, _ := DefaultCatalog().Get("waits")
+	waitType := regexp.MustCompile(`^[A-Z0-9_]+$`)
+	seen := map[string]bool{}
+	for _, wait := range benignWaitTypes {
+		if !waitType.MatchString(wait) {
+			t.Errorf("benign wait %q is not a wait type name", wait)
+		}
+		if seen[wait] {
+			t.Errorf("benign wait %q listed twice", wait)
+		}
+		seen[wait] = true
+		if !strings.Contains(probe.QueryTemplate, "N'"+wait+"'") {
+			t.Errorf("waits query does not exclude %s", wait)
+		}
+	}
+	for _, idle := range []string{"SLEEP_TASK", "LAZYWRITER_SLEEP", "XE_TIMER_EVENT", "REQUEST_FOR_DEADLOCK_SEARCH"} {
+		if !seen[idle] {
+			t.Errorf("%s must be excluded", idle)
+		}
+	}
+	if got := sqlStringList([]string{"A", "B'C"}); got != "N'A', N'B''C'" {
+		t.Errorf("sqlStringList = %s", got)
+	}
+}
