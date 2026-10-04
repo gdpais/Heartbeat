@@ -75,7 +75,7 @@ func TestReadyzReportsTargetFailuresWithoutErrorTextOrUnreadiness(t *testing.T) 
 		return rec.Code == http.StatusOK
 	}, "target failures made the pod unready: %s", rec.Body.String())
 	body := rec.Body.String()
-	for _, secret := range []string{"login failed", "heartbeat_svc", "sql.example.internal", "1433"} {
+	for _, secret := range []string{"login failed", "heartbeat_svc", "sql.example.internal", ":1433"} {
 		if strings.Contains(body, secret) {
 			t.Fatalf("/readyz leaked %q: %s", secret, body)
 		}

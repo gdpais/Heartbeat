@@ -198,7 +198,11 @@ func healthyPoller(id string, state collectors.TargetState) pollerBehavior {
 	}
 }
 
-// eventually polls cond until it holds or the deadline passes.
+// eventually polls cond until it holds or the deadline passes. cond is checked
+// once more after the deadline, so a test goroutine starved past the deadline
+// on a busy CI runner does not fail without looking. Wrap args in lazy so the
+// failure message shows the final state rather than the state before polling
+// began.
 func eventually(t *testing.T, timeout time.Duration, cond func() bool, format string, args ...any) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -208,8 +212,16 @@ func eventually(t *testing.T, timeout time.Duration, cond func() bool, format st
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+	if cond() {
+		return
+	}
 	t.Fatalf(format, args...)
 }
+
+// lazy defers evaluating a format argument until it is printed.
+type lazy func() any
+
+func (f lazy) Format(s fmt.State, verb rune) { fmt.Fprintf(s, fmt.FormatString(s, verb), f()) }
 
 // serve issues one request against handler.
 func serve(handler http.Handler, method, path, token string) *httptest.ResponseRecorder {
