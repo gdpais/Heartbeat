@@ -73,7 +73,7 @@ func TestReadyzServesOnlyStatusAndDiagnosticsNeedTheToken(t *testing.T) {
 	eventually(t, time.Second, func() bool {
 		rec = serve(handler, http.MethodGet, "/readyz", "")
 		return rec.Code == http.StatusOK
-	}, "target failures made the pod unready: %s", rec.Body.String())
+	}, "target failures made the pod unready: %s", lazy(func() any { return rec.Body.String() }))
 	if body := strings.TrimSpace(rec.Body.String()); body != `{"status":"ready"}` {
 		t.Fatalf("/readyz must serve only its status, got %s", body)
 	}
