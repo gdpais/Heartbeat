@@ -109,6 +109,10 @@ const (
 	// check, so a login granted or stripped of sysadmin is noticed within
 	// about one connection lifetime.
 	defaultLoginCheckInterval = defaultConnMaxLifetime
+	// minRedactedPasswordLen is the shortest password redactError replaces
+	// wherever it appears in error text; shorter ones would mangle the text
+	// and reveal the password by the pattern of replacements.
+	minRedactedPasswordLen = 8
 )
 
 // LockTimeout is how long a collector statement waits for a lock before SQL
@@ -398,12 +402,20 @@ func (m Manager) logLogin(target collectormetadata.DatabaseTarget, state loginSt
 // redactedSecret replaces credential material in error text.
 const redactedSecret = "xxxxx"
 
-// redactError removes credential material from err: the userinfo of the URL
-// of every [*url.Error] in its chain (edited in place, so errors.As callers
-// see the redacted URL too, and replaced in err's text, which wrappers such
-// as fmt.Errorf compute when they are created), and any remaining occurrence
-// of the password, raw or URL-escaped.  The chain is preserved for errors.Is
-// and errors.As.  It returns nil for a nil err.
+// redactError removes credential material from a driver error, before the
+// caller wraps it:
+//
+//   - the userinfo of the URL of every [*url.Error] in its chain, edited in
+//     place (so errors.As callers see the redacted URL too) and replaced in
+//     the text, raw and in the quoted form url.Error prints, because wrappers
+//     such as fmt.Errorf format their text when they are created;
+//   - the userinfo ("user:password@", URL-escaped as in the DSN) anywhere in
+//     the text;
+//   - the password itself, raw or URL-escaped, but only when it has at least
+//     minRedactedPasswordLen characters.
+//
+// The chain is preserved for errors.Is and errors.As.  It returns nil for a
+// nil err.
 func redactError(err error, creds Credential) error {
 	if err == nil {
 		return nil
@@ -411,9 +423,13 @@ func redactError(err error, creds Credential) error {
 	text := err.Error()
 	redacted := text
 	for original, safe := range redactURLErrors(err, map[string]string{}) {
+		redacted = strings.ReplaceAll(redacted, strconv.Quote(original), strconv.Quote(safe))
 		redacted = strings.ReplaceAll(redacted, original, safe)
 	}
-	if creds.Password != "" {
+	if creds.Username != "" || creds.Password != "" {
+		redacted = strings.ReplaceAll(redacted, url.UserPassword(creds.Username, creds.Password).String()+"@", redactedSecret+"@")
+	}
+	if len(creds.Password) >= minRedactedPasswordLen {
 		userinfo := strings.TrimPrefix(url.UserPassword("", creds.Password).String(), ":")
 		for _, secret := range []string{creds.Password, userinfo, url.QueryEscape(creds.Password), url.PathEscape(creds.Password)} {
 			redacted = strings.ReplaceAll(redacted, secret, redactedSecret)

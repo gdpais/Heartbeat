@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -920,40 +921,55 @@ func secretForms(password string) []string {
 
 // go-mssqldb parses the DSN when it connects, and its parse errors quote the
 // whole DSN.  A host that already carries a port makes the parse fail before
-// any dial, so the real driver reproduces the leak without a server.
+// any dial, so the real driver reproduces the leak without a server.  Quotes
+// and backslashes in the host or login change how url.Error quotes the DSN.
 func TestOpenErrorsNeverContainCredentials(t *testing.T) {
-	const password = "S3cret!@/?#:%+ x'"
-	resolver := &mapResolver{creds: map[string]Credential{"ref-a": {Username: "collector", Password: password}}}
-	tg := target("bad-host", "db.example:1433", "ref-a")
 	for _, tc := range []struct {
-		name    string
-		manager Manager
+		name, host string
+		creds      Credential
 	}{
-		{"pooled", NewManager(resolver)},
-		{"unpooled", Manager{Resolver: resolver, DialTimeout: time.Second}},
+		{"port in host", "db.example:1433", Credential{Username: "collector", Password: "S3cret!@/?#:%+ x'"}},
+		{"quote in host and login", `db"x:1`, Credential{Username: `col"lector`, Password: `pa"ss\word-long`}},
+		{"backslash in host", `db\x:1`, Credential{Username: `dom\collector`, Password: "S3cret-password"}},
+		{"short password", "db.example:1433", Credential{Username: "collector", Password: "e"}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Cleanup(func() { _ = tc.manager.Close() })
-			_, _, err := tc.manager.Open(context.Background(), tg)
-			if err == nil {
-				t.Fatal("Open succeeded for a malformed host")
-			}
-			if !strings.Contains(err.Error(), "invalid host") {
-				t.Fatalf("err = %v, want the DSN parse failure", err)
-			}
-			for _, secret := range append(secretForms(password), "collector:") {
-				if strings.Contains(err.Error(), secret) {
-					t.Fatalf("error contains credential material %q: %v", secret, err)
+		resolver := &mapResolver{creds: map[string]Credential{"ref-a": tc.creds}}
+		tg := target("bad-host", tc.host, "ref-a")
+		for _, manager := range []struct {
+			name string
+			m    Manager
+		}{
+			{"pooled", NewManager(resolver)},
+			{"unpooled", Manager{Resolver: resolver, DialTimeout: time.Second}},
+		} {
+			t.Run(tc.name+"/"+manager.name, func(t *testing.T) {
+				t.Cleanup(func() { _ = manager.m.Close() })
+				_, _, err := manager.m.Open(context.Background(), tg)
+				if err == nil {
+					t.Fatal("Open succeeded for a malformed host")
 				}
-			}
-			var urlErr *url.Error
-			if !errors.As(err, &urlErr) {
-				t.Fatalf("error chain lost the *url.Error: %v", err)
-			}
-			if strings.Contains(urlErr.URL, "@") {
-				t.Fatalf("url.Error.URL keeps userinfo: %q", urlErr.URL)
-			}
-		})
+				if !strings.Contains(err.Error(), "parse ") {
+					t.Fatalf("err = %v, want the DSN parse failure", err)
+				}
+				userinfo := url.UserPassword(tc.creds.Username, tc.creds.Password).String()
+				secrets := []string{userinfo, strconv.Quote(userinfo), tc.creds.Username + ":", url.User(tc.creds.Username).String() + ":"}
+				if len(tc.creds.Password) >= minRedactedPasswordLen {
+					secrets = append(secrets, secretForms(tc.creds.Password)...)
+				}
+				for _, secret := range secrets {
+					if strings.Contains(err.Error(), secret) {
+						t.Fatalf("error contains credential material %q: %v", secret, err)
+					}
+				}
+				var urlErr *url.Error
+				if !errors.As(err, &urlErr) {
+					t.Fatalf("error chain lost the *url.Error: %v", err)
+				}
+				if strings.Contains(urlErr.URL, "@") {
+					t.Fatalf("url.Error.URL keeps userinfo: %q", urlErr.URL)
+				}
+			})
+		}
 	}
 }
 
@@ -972,6 +988,9 @@ func TestRedactError(t *testing.T) {
 			`check: parse "sqlserver://[db:1]:1433?database=master": sentinel`},
 		{"joined url error", errors.Join(sentinel, &url.Error{Op: "parse", URL: dsn, Err: sentinel}),
 			"sentinel\n" + `parse "sqlserver://[db:1]:1433?database=master": sentinel`},
+		{"quoted url error with a quote in the host", fmt.Errorf("check: %w", &url.Error{Op: "parse", URL: `sqlserver://collector:` + strings.TrimPrefix(url.UserPassword("", creds.Password).String(), ":") + `@[d"b:1]:1433`, Err: sentinel}),
+			`check: parse "sqlserver://[d\"b:1]:1433": sentinel`},
+		{"userinfo in text", fmt.Errorf("dsn %s: %w", dsn, sentinel), "dsn sqlserver://xxxxx@[db:1]:1433?database=master: sentinel"},
 		{"raw password in text", fmt.Errorf("login %s: %w", creds.Password, sentinel), "login xxxxx: sentinel"},
 		{"query-escaped password in text", fmt.Errorf("dsn password=%s: %w", url.QueryEscape(creds.Password), sentinel), "dsn password=xxxxx: sentinel"},
 	} {
@@ -993,6 +1012,29 @@ func TestRedactError(t *testing.T) {
 				if strings.Contains(got.Error(), secret) {
 					t.Fatalf("redacted error contains %q", secret)
 				}
+			}
+		})
+	}
+}
+
+// A short password is redacted only where it appears as part of the DSN
+// userinfo; replacing it everywhere would mangle the text and reveal it.
+func TestRedactErrorShortPassword(t *testing.T) {
+	creds := Credential{Username: "collector", Password: "e"}
+	sentinel := errors.New("sentinel")
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"plain text untouched", fmt.Errorf("login error: %w", sentinel), "login error: sentinel"},
+		{"userinfo removed", fmt.Errorf("dsn sqlserver://collector:e@db: %w", sentinel), "dsn sqlserver://xxxxx@db: sentinel"},
+		{"url error scrubbed", fmt.Errorf("check: %w", &url.Error{Op: "parse", URL: "sqlserver://collector:e@[db:1]:1433", Err: sentinel}),
+			`check: parse "sqlserver://[db:1]:1433": sentinel`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redactError(tc.err, creds).Error(); got != tc.want {
+				t.Fatalf("redactError() = %q, want %q", got, tc.want)
 			}
 		})
 	}
