@@ -235,7 +235,7 @@ sample_concurrency() {
 	while [ ! -f "$WORK/stop-sampling" ]; do
 		pods=$(k -n "$NAMESPACE" get pods -l app.kubernetes.io/name=db-collector -o json |
 			jq '[.items[] | select(.status.containerStatuses[0].state.running != null)] | length')
-		sql=$(docker exec -e SQLCMDPASSWORD="$password" "$SQL_CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
+		sql=$(SQLCMDPASSWORD=$password docker exec -e SQLCMDPASSWORD "$SQL_CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
 			-S localhost -U sa -C -h -1 -W -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE program_name = 'HeartbeatDBCollector'" 2>/dev/null | tr -dc '0-9')
 		[ "${pods:-0}" -gt "$max_pods" ] && max_pods=$pods
 		[ "${sql:-0}" -gt "$max_sql" ] && max_sql=$sql

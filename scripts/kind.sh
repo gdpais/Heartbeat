@@ -217,7 +217,13 @@ cmd_sqlserver_up() {
 	MSSQL_SA_PASSWORD=$password HEARTBEAT_COLLECTOR_LOGIN=$collector_login HEARTBEAT_COLLECTOR_PASSWORD=${credential#*:} \
 		scripts/sqlserver-login.sh "$SQLSERVER_CONTAINER"
 	cmd_secrets
-	apply_secret heartbeat-sqlserver-dev-credentials --from-literal=HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV="$credential"
+	# The credential reaches kubectl in a 0600 file, never on its command line.
+	secret_env=$(mktemp "${TMPDIR:-/tmp}/heartbeat-sqlserver-credential.XXXXXX")
+	trap 'rm -f "$secret_env"' EXIT
+	trap 'exit 130' INT TERM
+	printf 'HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV=%s\n' "$credential" >"$secret_env"
+	apply_secret heartbeat-sqlserver-dev-credentials --from-env-file="$secret_env"
+	rm -f "$secret_env"
 	mkdir -p "$STATE_DIR"
 	touch "$STATE_DIR/sqlserver-dev"
 	cmd_deploy

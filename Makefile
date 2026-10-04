@@ -85,16 +85,29 @@ health:
 # Generates random per-machine passwords instead of copying shared ones: sa
 # for container setup, and the collector's least-privilege login
 # (scripts/sqlserver-login.sh). A file from before the dedicated login, whose
-# collector credential is sa, gets one added. The "Dev-" prefix plus hex
-# digits satisfies SQL Server password complexity.
+# collector credential is sa (or missing), gets one added; the SA password is
+# kept. The file must hold plain KEY=value lines, which is how scripts/kind.sh
+# reads it: no `export`, no quotes. The "Dev-" prefix plus hex digits
+# satisfies SQL Server password complexity.
 sqlserver-dev-init:
 	@set -eu; umask 077; file=$(SQLSERVER_DEV_ENV_FILE); key=HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV; \
+	unreadable() { echo "error: cannot read $$file" >&2; exit 2; }; \
 	if [ ! -f "$$file" ]; then \
 		printf 'MSSQL_SA_PASSWORD=Dev-%s\n' "$$(openssl rand -hex 16)" > "$$file"; \
 		echo "Created $$file with a random SA password"; \
 	fi; \
-	if ! grep -q "^$$key=" "$$file" || grep -qi "^$$key=sa:" "$$file"; then \
-		{ grep -v "^$$key=" "$$file" || true; printf '%s=heartbeat_collector:Dev-%s\n' "$$key" "$$(openssl rand -hex 16)"; } > "$$file.tmp"; \
+	status=0; grep -Eq "^[[:space:]]*export[[:space:]]|^[A-Za-z_][A-Za-z0-9_]*=[\"']" "$$file" || status=$$?; \
+	case $$status in \
+	0) echo "error: $$file must hold plain KEY=value lines (no export, no quotes)" >&2; exit 1 ;; \
+	1) ;; \
+	*) unreadable ;; \
+	esac; \
+	current=$$(grep "^$$key=" "$$file") || [ $$? -eq 1 ] || unreadable; \
+	user=$$(printf '%s\n' "$$current" | head -n 1 | cut -d= -f2- | cut -s -d: -f1 | tr 'A-Z' 'a-z'); \
+	if [ -z "$$user" ] || [ "$$user" = sa ]; then \
+		rest=$$(grep -v "^$$key=" "$$file") || [ $$? -eq 1 ] || unreadable; \
+		{ if [ -n "$$rest" ]; then printf '%s\n' "$$rest"; fi; \
+			printf '%s=heartbeat_collector:Dev-%s\n' "$$key" "$$(openssl rand -hex 16)"; } > "$$file.tmp"; \
 		mv "$$file.tmp" "$$file"; \
 		echo "Added a least-privilege collector login to $$file"; \
 	fi
