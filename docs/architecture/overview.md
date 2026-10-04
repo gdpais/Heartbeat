@@ -9,61 +9,20 @@ PostgreSQL holds the durable metadata used by the planned control plane.
 - Arrows follow the direction data moves. Labels say whether it is *pulled*
   (scraped/queried by the receiver) or *pushed* by the sender.
 - Colour encodes status only: **blue** implemented, **amber** partial,
-  **dashed gray** planned or idle. Shape encodes type: cylinder = store,
-  parallelogram = configuration, rounded = person.
-- Solid edges are implemented or configured connections, not proof of a
-  successful live deployment. Dashed edges are planned; the **amber edge** marks
-  a known gap in otherwise-implemented components.
+  **dashed gray** planned or idle. Solid gray boxes are external systems,
+  configuration and people. Dashed outlines group components by environment
+  or plane.
+- Solid arrows are implemented or configured connections, not proof of a
+  successful live deployment. Dashed arrows are planned; the **amber arrow**
+  marks a known gap in otherwise-implemented components.
+- The diagrams are SVG files in [`diagrams/`](diagrams/). Edit them together
+  with this page when the architecture changes.
 
 ## Current runtime
 
 This diagram reflects the checked-in services and Compose configuration.
 
-```mermaid
-flowchart LR
-    sql[("SQL Server targets<br/>no Heartbeat agent")]
-    otlp["OTLP clients"]
-
-    subgraph env["Heartbeat monitoring environment · Compose"]
-        config[/"integrations.yaml<br/>targets · probes · credential_ref"/]
-        secrets[/"Environment secrets<br/>HEARTBEAT_CREDENTIAL_*"/]
-        db["DB collector · :8082<br/>/metrics · /readyz<br/>/admin/config/reload"]
-        otel["OTel Collector<br/>OTLP :4317 / :4318<br/>Prometheus export :8889"]
-        gateway["OTel gateway · :8083<br/>normalize endpoint: no caller yet<br/>alert intake: count only"]
-        prom[("Prometheus<br/>15s scrape · rule files")]
-        loki[("Loki")]
-        am["Alertmanager<br/>webhook route"]
-        grafana["Grafana<br/>provisioned dashboards"]
-        idle[("PostgreSQL · Redis<br/>provisioned, no consumers")]
-    end
-
-    operator(["Operator"])
-
-    sql -->|"probe results · pulled"| db
-    otlp -->|"OTLP · pushed"| otel
-    config -->|"load + hot reload"| db
-    config -->|"load"| gateway
-    secrets -->|"resolve credential_ref"| db
-    db -->|"scraped"| prom
-    otel -->|"scraped"| prom
-    gateway -->|"scraped"| prom
-    otel -->|"logs · pushed"| loki
-    prom -.->|"GAP: no alerting block"| am
-    am -->|"webhook · pushed"| gateway
-    prom -->|"PromQL"| grafana
-    loki -->|"LogQL"| grafana
-    grafana -->|"dashboards · Explore"| operator
-
-    classDef ok fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
-    classDef partial fill:#fef3c7,stroke:#b45309,color:#78350f
-    classDef idle fill:#f8fafc,stroke:#64748b,color:#334155,stroke-dasharray:5 5
-    classDef external fill:#f1f5f9,stroke:#64748b,color:#0f172a
-    class db,otel,prom,loki,am,grafana ok
-    class gateway partial
-    class idle idle
-    class sql,otlp,config,secrets,operator external
-    linkStyle 9 stroke:#d97706,stroke-width:2px,color:#b45309
-```
+![Current runtime: SQL Server targets and OTLP clients feed the DB collector and OTel Collector; Prometheus, Loki and Alertmanager; Grafana and the operator](diagrams/current-runtime.svg)
 
 The default integration file has no SQL Server targets. Configure a target using
 the [database onboarding runbook](../guides/database-targets.md), or use the
@@ -89,78 +48,12 @@ is still pending.
 ## Target platform
 
 The target adds operator workflows around the telemetry path. The implemented
-collection pipeline and the Prometheus/Loki pair are collapsed into single
-nodes; see [Current runtime](#current-runtime) for their internals. Columns
-are the planes described in [Core systems](#core-systems). An existing store does not
-imply that its planned consumers are implemented.
+collectors are collapsed into one node and Prometheus and Loki into one
+*Stores* group; see [Current runtime](#current-runtime) for their internals.
+The dashed groups are the planes described in [Core systems](#core-systems).
+An existing store does not imply that its planned consumers are implemented.
 
-```mermaid
-flowchart TB
-    sql[("SQL Server targets")]
-    apps["OutSystems apps"]
-
-    subgraph telemetry["Telemetry · see Current runtime"]
-        direction TB
-        pipeline["Collection pipeline<br/>DB collector · OTel · gateway"]
-        stores[("Prometheus · Loki<br/>metrics · logs · rules")]
-        am["Alertmanager"]
-    end
-
-    subgraph analysis["Analysis jobs"]
-        direction TB
-        analyzer["Session analyzer<br/>correlation · baselines"]
-        reporting["Reporting<br/>report generation"]
-        artifacts[("Report storage<br/>backend TBD")]
-    end
-
-    subgraph control["Control plane"]
-        direction TB
-        config[/"YAML / Kubernetes config"/]
-        api["Go API<br/>inventory · policies · investigations"]
-        pg[("PostgreSQL<br/>durable metadata")]
-        redis[("Redis<br/>queues · locks · retries")]
-    end
-
-    subgraph present["Presentation"]
-        direction TB
-        grafana["Grafana"]
-        web["React web UI"]
-    end
-
-    delivery["Email / webhooks"]
-    operator(["Operator / SRE"])
-
-    sql -->|"probes · pulled"| pipeline
-    apps -.->|"source ingestion"| pipeline
-    pipeline --> stores
-    stores -.->|"GAP: alerts"| am
-    am -.->|"notify"| delivery
-    am -->|"alert webhook · role TBD"| pipeline
-    stores -->|"PromQL / LogQL"| grafana
-    stores -.->|"PromQL / LogQL"| analysis
-    analysis -.->|"summaries · run metadata"| pg
-    reporting -.->|"report files"| artifacts
-    redis -.->|"jobs"| analysis
-    api -.->|"enqueue"| redis
-    api <-.->|"metadata"| pg
-    config -.->|"endpoints · templates"| api
-    api -.->|"policy · baseline rules"| stores
-    api -.->|"notification routes"| am
-    api <-.->|"HTTPS API"| web
-    web -.->|"deep links"| grafana
-    grafana -->|"dashboards"| operator
-    web <-.->|"manage · investigate"| operator
-
-    classDef ok fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
-    classDef partial fill:#fef3c7,stroke:#b45309,color:#78350f
-    classDef planned fill:#f8fafc,stroke:#64748b,color:#334155,stroke-dasharray:5 5
-    classDef external fill:#f1f5f9,stroke:#64748b,color:#0f172a
-    class grafana,pg,redis,stores,am ok
-    class pipeline partial
-    class web,api,analyzer,reporting,artifacts,apps,delivery planned
-    class operator,sql,config external
-    linkStyle 3 stroke:#d97706,stroke-width:2px,color:#b45309
-```
+![Target platform: telemetry (collectors, Prometheus and Loki stores, Alertmanager) across the top; presentation, analysis jobs and the control plane below, with the operator underneath](diagrams/target-platform.svg)
 
 Session analysis owns correlation and baselines; reporting owns report
 generation. Their queue protocol, scheduling details, artifact backend, and
@@ -216,7 +109,7 @@ source/configuration review, not live runtime validation.
 
 ## Core systems
 
-Heartbeat is organized into four planes, the same four columns as the
+Heartbeat is organized into four planes, the same four groups as the
 [target platform](#target-platform) diagram.
 
 | Plane | Components | Status | Details |
