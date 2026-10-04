@@ -30,13 +30,15 @@ func repoRoot(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The generator is a nested module, so look for the docs index rather
+	// than the nearest go.mod.
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, "docs", "README.md")); err == nil {
 			return dir
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatal("go.mod not found")
+			t.Fatal("repository root (docs/README.md) not found")
 		}
 		dir = parent
 	}

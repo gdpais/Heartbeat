@@ -95,7 +95,7 @@ infra/helm/values/     values per environment (kind, minimal, SQL Server sandbox
 infra/kind/            local kind cluster config
 infra/docker-compose.test.yml  disposable PostgreSQL fixture for integration tests
 tests/                 repository, migration and integration tests
-tools/docsite/         Markdown-to-HTML docs site generator
+tools/docsite/         Markdown-to-HTML docs site generator (separate Go module)
 docs/                  documentation (index: docs/README.md; HTML site: docs/site/)
 ```
 

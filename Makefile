@@ -23,7 +23,10 @@ PROMETHEUS_IMAGE := prom/prometheus:v3.15.0
 # The HTML docs link source files (Go, YAML, SQL, ...) to this repository URL.
 DOCS_REPO_URL := https://github.com/gdpais/Heartbeat
 DOCS_REPO_REF := master
-DOCSITE := GOCACHE=$$(pwd)/.tmp/gocache go run ./tools/docsite/cmd/docsite -repo-url $(DOCS_REPO_URL) -ref $(DOCS_REPO_REF)
+# The generator is its own Go module (tools/docsite/go.mod), so the services'
+# module does not depend on its Markdown parser.
+DOCSITE_MODULE := tools/docsite
+DOCSITE := GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) run ./cmd/docsite -root ../.. -repo-url $(DOCS_REPO_URL) -ref $(DOCS_REPO_REF)
 
 help:
 	@printf '%s\n' \
@@ -114,6 +117,7 @@ rules-check:
 
 test:
 	GOCACHE=$$(pwd)/.tmp/gocache go test ./...
+	GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) test ./...
 
 test-integration:
 	GOCACHE=$$(pwd)/.tmp/gocache go test -tags=integration -count=1 -timeout=10m ./tests
@@ -123,9 +127,11 @@ test-sqlserver:
 
 test-race:
 	GOCACHE=$$(pwd)/.tmp/gocache go test -race ./...
+	GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) test -race ./...
 
 vet:
 	GOCACHE=$$(pwd)/.tmp/gocache go vet ./...
+	GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) vet ./...
 
 docs-site:
 	$(DOCSITE)
