@@ -321,6 +321,10 @@ func TestUserinfoDetectionAndStripping(t *testing.T) {
 		{raw: "http:u:p@host/x", has: true, stripped: "http:host/x"},
 		{raw: "http:/u:p@host", has: true, stripped: "http:/host"},
 		{raw: "otlp://u:p@collector:4318", has: true, stripped: "otlp://collector:4318"},
+		// Browsers drop tabs and newlines anywhere before parsing.
+		{raw: "ht\ttp://u:p@host", has: true, stripped: "http://host"},
+		{raw: "http:/\t/u:p@host", has: true, stripped: "http://host"},
+		{raw: "http://u:p\r\n@host/x", has: true, stripped: "http://host/x"},
 		// '@' outside the authority is not userinfo.
 		{raw: "http://host/path@x", stripped: "http://host/path@x"},
 		{raw: "http://host?q=a@b", stripped: "http://host?q=a@b"},
@@ -453,5 +457,95 @@ collectors: []
 				t.Fatalf("error echoes the credential: %v", err)
 			}
 		})
+	}
+}
+
+func TestTargetRefCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		ref      string
+		has      bool
+		redacted string
+	}{
+		{ref: "http://alertmanager:9093/api/v2/alerts", redacted: "http://alertmanager:9093/api/v2/alerts"},
+		{ref: "https://hook:secret@hooks.example.internal/x", has: true, redacted: "https://hooks.example.internal/x"},
+		// A bare user:password@host is read as credentials by tools like curl.
+		{ref: "hook:secret@hooks.example.internal/x", has: true, redacted: "hooks.example.internal/x"},
+		{ref: "hook:@hooks.example.internal", has: true, redacted: "hooks.example.internal"},
+		{ref: "ops@example.com", redacted: "ops@example.com"},
+		{ref: "mailto:ops@example.com", redacted: "mailto:ops@example.com"},
+		{ref: "#alerts", redacted: "#alerts"},
+		{ref: "hooks.example.internal/x?u=a:b@c", redacted: "hooks.example.internal/x?u=a:b@c"},
+	} {
+		t.Run(tc.ref, func(t *testing.T) {
+			if got := targetRefCredentials(tc.ref); got != tc.has {
+				t.Fatalf("targetRefCredentials(%q) = %t, want %t", tc.ref, got, tc.has)
+			}
+			if got := redactTargetRef(tc.ref); got != tc.redacted {
+				t.Fatalf("redactTargetRef(%q) = %q, want %q", tc.ref, got, tc.redacted)
+			}
+		})
+	}
+}
+
+func TestValidHost(t *testing.T) {
+	for _, tc := range []struct {
+		host string
+		want bool
+	}{
+		{"sql.example.internal", true},
+		{"heartbeat-sqlserver-dev", true},
+		{"sql_01.corp", true},
+		{"10.0.0.5", true},
+		{"2001:db8::5", true},
+		{"::1", true},
+		// A port, brackets or IPv4 in IPv6 form would be joined into a broken URL.
+		{"db.example:1433", false},
+		{"[2001:db8::5]", false},
+		{"::ffff:10.0.0.5", false},
+		{"fe80::1%eth0", false},
+		{"user:secret@db", false},
+		{"user@db", false},
+		{"db/instance", false},
+		{`db\instance`, false},
+		{"db example", false},
+		{"db\texample", false},
+		{"db\x00", false},
+		{"db%2f", false},
+	} {
+		t.Run(tc.host, func(t *testing.T) {
+			if got := validHost(tc.host); got != tc.want {
+				t.Fatalf("validHost(%q) = %t, want %t", tc.host, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadRuntimeConfigRejectsHostThatBreaksTheConnectionURL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "integrations.yaml")
+	content := []byte(`grafana:
+  base_url: http://grafana:3000
+loki:
+  base_url: http://loki:3100
+alertmanager:
+  base_url: http://alertmanager:9093
+collectors:
+  - id: sql
+    kind: sqlserver
+    enabled: true
+    config:
+      targets:
+        - name: core-db
+          host: db.example:1433
+          port: 1433
+`)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_, err := LoadRuntimeConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "collector sql target core-db host must be") {
+		t.Fatalf("expected a host error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "db.example") {
+		t.Fatalf("error echoes the host value: %v", err)
 	}
 }

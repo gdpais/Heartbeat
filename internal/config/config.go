@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"sort"
@@ -194,7 +195,7 @@ func (c RuntimeConfig) Redacted() RuntimeConfig {
 		if channel.CredentialRef != "" {
 			channel.CredentialRef = redactRef(channel.CredentialRef)
 		}
-		channel.TargetRef = stripUserinfo(channel.TargetRef)
+		channel.TargetRef = redactTargetRef(channel.TargetRef)
 		for key := range channel.Config {
 			channel.Config[key] = redactedValue
 		}
@@ -387,7 +388,7 @@ func validate(cfg RuntimeConfig) error {
 		if channel.ChannelType == "" || channel.TargetRef == "" {
 			return fmt.Errorf("notification channel %s requires channel_type and target_ref", channel.ID)
 		}
-		if hasUserinfo(channel.TargetRef) {
+		if targetRefCredentials(channel.TargetRef) {
 			return fmt.Errorf("notification channel %s target_ref %s", channel.ID, embeddedCredentialsHint)
 		}
 		if channel.CredentialRef != "" && !validSecretRef(channel.CredentialRef) {
@@ -409,6 +410,9 @@ func validateTargets(collector CollectorRuntimeConfig) error {
 		targets[target.Name] = struct{}{}
 		if target.Host == "" {
 			return fmt.Errorf("collector %s target %s host is required", collector.ID, target.Name)
+		}
+		if !validHost(target.Host) {
+			return fmt.Errorf("collector %s target %s host must be a host name, an IPv4 address or a bare IPv6 address, with no port, brackets, credentials or path; set the port in port", collector.ID, target.Name)
 		}
 		if target.Port < 1 || target.Port > 65535 {
 			return fmt.Errorf("collector %s target %s port must be between 1 and 65535", collector.ID, target.Name)
@@ -554,18 +558,96 @@ func schemeEnd(raw string) int {
 
 // hasUserinfo reports whether raw is a URL or URL template with userinfo.
 func hasUserinfo(raw string) bool {
-	_, _, ok := userinfoSpan(raw)
+	_, _, ok := userinfoSpan(removeTabsAndNewlines(raw))
 	return ok
 }
 
 // stripUserinfo removes userinfo from raw and leaves everything else,
-// including template placeholders and encoding, unchanged.
+// including template placeholders and encoding, unchanged apart from the
+// tabs and newlines browsers ignore.
 func stripUserinfo(raw string) string {
+	raw = removeTabsAndNewlines(raw)
 	start, end, ok := userinfoSpan(raw)
 	if !ok {
 		return raw
 	}
 	return raw[:start] + raw[end:]
+}
+
+// removeTabsAndNewlines drops ASCII tab, CR and LF anywhere in raw, as the
+// WHATWG URL parser does before parsing, so "ht\ttp://u:p@h" is scanned as
+// the browser sees it.
+func removeTabsAndNewlines(raw string) string {
+	if !strings.ContainsAny(raw, "\t\r\n") {
+		return raw
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\r' || r == '\n' {
+			return -1
+		}
+		return r
+	}, raw)
+}
+
+// bareUserinfoEnd returns the index just past the '@' of a scheme-less
+// "user:password@host" value, or -1. Such a value is not a URL with an
+// authority, but tools like curl read it as credentials for http://host.
+// "mailto:" is the one opaque scheme a target_ref legitimately uses with an
+// '@', so it is exempt; a bare address such as ops@example.com has no ':' and
+// never matches.
+func bareUserinfoEnd(raw string) int {
+	raw = removeTabsAndNewlines(raw)
+	head := strings.TrimLeftFunc(raw, func(r rune) bool { return r <= ' ' })
+	offset := len(raw) - len(head)
+	if stop := strings.IndexAny(head, "/\\?#"); stop >= 0 {
+		head = head[:stop]
+	}
+	at := strings.LastIndexByte(head, '@')
+	if at < 0 {
+		return -1
+	}
+	user, _, hasColon := strings.Cut(head[:at], ":")
+	if !hasColon || strings.EqualFold(user, "mailto") {
+		return -1
+	}
+	return offset + at + 1
+}
+
+// targetRefCredentials reports whether a notification channel target_ref
+// carries credentials, as URL userinfo or as a bare user:password@host.
+func targetRefCredentials(ref string) bool {
+	return hasUserinfo(ref) || bareUserinfoEnd(ref) >= 0
+}
+
+// redactTargetRef strips credentials from a notification channel target_ref.
+func redactTargetRef(ref string) string {
+	ref = stripUserinfo(ref) // also drops tabs and newlines
+	if end := bareUserinfoEnd(ref); end >= 0 {
+		return ref[end:]
+	}
+	return ref
+}
+
+// validHost reports whether host is safe to join with a port into the
+// connection URL: a DNS name or IPv4 address made of letters, digits, '.',
+// '-' and '_', or a bare IPv6 literal (net.JoinHostPort adds the brackets, so
+// a bracketed value would be double-bracketed). Anything else, such as
+// "db:1433", "user@db", "db/instance", "db\instance", whitespace or control
+// characters, makes the driver fail to parse the connection URL, and its
+// parse error would quote the URL, password included.
+func validHost(host string) bool {
+	if strings.Contains(host, ":") {
+		ip := net.ParseIP(host)
+		return ip != nil && ip.To4() == nil
+	}
+	for _, c := range []byte(host) {
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9', c == '.', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func validSecretRef(ref string) bool {
