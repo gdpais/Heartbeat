@@ -162,13 +162,13 @@ count.
 
 ### 2.2 SQL Server connectivity and safety
 - [x] Implement secure SQL Server connector manager
-- [ ] Enforce least-privilege credentials: run `make test-sqlserver` and `make kind-e2e` as a login holding only the documented grants (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`), not `sa`
-- [ ] Warn at startup, in the log and a metric, when the collector login is `sysadmin`
-- [ ] Set `LOCK_TIMEOUT` and `DEADLOCK_PRIORITY LOW` on every collector session so a probe never waits on locks or wins a deadlock against the application
+- [x] Enforce least-privilege credentials: run `make test-sqlserver` and `make kind-e2e` as a login holding only the documented grants (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`), not `sa`
+- [x] Warn at startup, in the log and a metric, when the collector login is `sysadmin`
+- [x] Set `LOCK_TIMEOUT` and `DEADLOCK_PRIORITY LOW` on every collector session so a probe never waits on locks or wins a deadlock against the application
 - [x] Enforce query timeout/budget guards
 - [x] Pool SQL Server connections per target
-- [ ] Review all production queries for non-blocking behavior
-- [ ] Define safe probe review/versioning process: write the probe review checklist now; probe versioning comes with API probe definitions [4.5]
+- [x] Review all production queries for non-blocking behavior
+- [x] Define safe probe review/versioning process: write the probe review checklist now; probe versioning comes with API probe definitions [4.5]
 
 ### 2.3 Probe implementation
 - [x] Implement waits probes
