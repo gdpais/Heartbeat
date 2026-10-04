@@ -576,3 +576,32 @@ func TestPoolKeyDoesNotContainSecrets(t *testing.T) {
 		t.Fatal("credential hash should distinguish username/password splits")
 	}
 }
+
+func TestSessionSettingsMatchLockTimeout(t *testing.T) {
+	want := fmt.Sprintf("SET LOCK_TIMEOUT %d;", LockTimeout.Milliseconds())
+	if !strings.HasPrefix(SessionSettings, want) {
+		t.Fatalf("SessionSettings = %q, want prefix %q", SessionSettings, want)
+	}
+	if !strings.Contains(SessionSettings, "SET DEADLOCK_PRIORITY LOW;") {
+		t.Fatalf("SessionSettings = %q, want DEADLOCK_PRIORITY LOW", SessionSettings)
+	}
+	// The settings must end their statement so any query can follow.
+	if !strings.HasSuffix(strings.TrimSpace(SessionSettings), ";") {
+		t.Fatalf("SessionSettings %q does not end with a statement terminator", SessionSettings)
+	}
+}
+
+func TestWithSessionSettings(t *testing.T) {
+	for _, tc := range []struct{ name, query string }{
+		{"select", "SELECT status FROM sys.dm_exec_sessions"},
+		{"cte", "WITH s AS (SELECT 1 AS n) SELECT n FROM s"},
+		{"multi statement", "SET NOCOUNT ON; SELECT 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := WithSessionSettings(tc.query)
+			if got != SessionSettings+tc.query {
+				t.Fatalf("WithSessionSettings(%q) = %q", tc.query, got)
+			}
+		})
+	}
+}

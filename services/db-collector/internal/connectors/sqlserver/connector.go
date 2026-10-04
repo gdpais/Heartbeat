@@ -11,6 +11,10 @@
 // all of them.  The caller must invoke the cleanup function returned by Open
 // when it has finished with the handle.
 //
+// Every batch the collector sends must start with [SessionSettings] (see
+// [WithSessionSettings]), so a collector query never waits long on a lock and
+// is always the preferred deadlock victim.
+//
 // The default credential resolver, [EnvCredentialResolver], reads credentials
 // from environment variables of the form:
 //
@@ -99,6 +103,32 @@ const (
 	// defaultDriverName is the database/sql driver registered by go-mssqldb.
 	defaultDriverName = "sqlserver"
 )
+
+// LockTimeout is how long a collector statement waits for a lock before SQL
+// Server cancels it with error 1222.  It is far below the default probe
+// timeout (half the scrape interval, at most 10s), so a lock wait fails fast
+// with a specific error instead of keeping the probe queued behind, and in
+// front of, application lock requests until the probe deadline.
+const LockTimeout = time.Second
+
+// SessionSettings is the T-SQL prefix of every collector batch.  It caps lock
+// waits at [LockTimeout] and makes the collector's session the preferred
+// deadlock victim, so a probe never wins a deadlock against the application.
+//
+// The settings are sent in the same batch as the query instead of through a
+// session initialisation statement, which go-mssqldb would run as an extra
+// round trip on every pooled connection reuse.  Pooled connections are reset
+// before the batch runs, so the settings hold for exactly that batch.  The
+// LOCK_TIMEOUT value is [LockTimeout] in milliseconds; a test keeps them in
+// sync.
+const SessionSettings = "SET LOCK_TIMEOUT 1000; SET DEADLOCK_PRIORITY LOW;\n"
+
+// WithSessionSettings returns query prefixed with [SessionSettings].  Every
+// statement the collector sends to a target, including operator
+// query_template overrides, must go through it.
+func WithSessionSettings(query string) string {
+	return SessionSettings + query
+}
 
 // ErrManagerClosed is returned by [Manager.Open] after [Manager.Close] has
 // been called on a pooled Manager (or any copy of it).

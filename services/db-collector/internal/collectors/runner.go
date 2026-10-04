@@ -613,13 +613,9 @@ func (e SQLExecutor) RunProbe(ctx context.Context, item collectormetadata.Schedu
 	if !ok {
 		return nil, nil, fmt.Errorf("unknown probe %s", item.Definition.Name)
 	}
-	query := item.Definition.QueryTemplate
-	if query == "" {
-		query = probe.QueryTemplate
-	}
 	probeCtx, cancel := context.WithTimeout(ctx, timeoutFor(item))
 	defer cancel()
-	rows, err := db.QueryContext(probeCtx, query)
+	rows, err := db.QueryContext(probeCtx, probeQuery(item, probe))
 	if err != nil {
 		return nil, nil, fmt.Errorf("query probe: %w", err)
 	}
@@ -629,6 +625,17 @@ func (e SQLExecutor) RunProbe(ctx context.Context, item collectormetadata.Schedu
 		return nil, nil, err
 	}
 	return decodeRows(item, probe, maps), buildEvidence(item, probe, maps), nil
+}
+
+// probeQuery returns the batch to run for item: its query_template override,
+// or the catalog query, prefixed with the collector session settings so the
+// probe never waits long on a lock or wins a deadlock.
+func probeQuery(item collectormetadata.ScheduledProbe, probe catalogsqlserver.Probe) string {
+	query := item.Definition.QueryTemplate
+	if query == "" {
+		query = probe.QueryTemplate
+	}
+	return connector.WithSessionSettings(query)
 }
 
 // timeoutFor returns the effective timeout for one probe execution based on
