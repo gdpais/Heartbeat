@@ -104,7 +104,7 @@ func (s *service) handleConfig(w http.ResponseWriter, _ *http.Request) {
 		RuntimeDiverged: snapshot.RuntimeDiverged,
 		RollbackErr:     snapshot.RollbackErr,
 		Warnings:        s.warnings,
-		Readiness:       s.readiness(),
+		Readiness:       s.readiness(snapshot, true),
 		Config:          snapshot.Config.Redacted(),
 	})
 }

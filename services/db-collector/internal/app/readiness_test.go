@@ -131,3 +131,20 @@ func TestReadyzUnreadyUntilFirstCycleThenStaleAfterDeadline(t *testing.T) {
 		t.Fatalf("expected stale reason, got %q", got)
 	}
 }
+
+func TestEvaluateReadinessAddsErrorTextOnlyWhenAsked(t *testing.T) {
+	now := time.Now()
+	state := collectorState{
+		Collector: collectorConfig("sql-a", "prod"), Phase: phaseRunning, Started: now, HasCycle: true,
+		LastCycle: collectors.CycleResult{CollectorID: "sql-a", Finished: now, Targets: []collectors.TargetResult{
+			{Target: "core-db", State: collectors.TargetFailed, Err: errors.New("login failed for user 'heartbeat_svc'")},
+		}},
+	}
+	for _, withErrors := range []bool{false, true} {
+		report, _ := evaluateReadiness(readinessInput{initialized: true, warm: true, collectors: []collectorState{state}, grace: time.Second, now: now, withErrors: withErrors})
+		got := report.Collectors[0].Targets[0].Error
+		if (got != "") != withErrors {
+			t.Fatalf("withErrors=%t: error text %q", withErrors, got)
+		}
+	}
+}

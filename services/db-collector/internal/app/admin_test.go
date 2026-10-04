@@ -249,3 +249,12 @@ func TestRunWarnsAboutTrustServerCertificate(t *testing.T) {
 		t.Fatalf("no startup warning logged: %s", logs.String())
 	}
 }
+
+func TestAdminConfigReportsOneSnapshot(t *testing.T) {
+	manager, _ := newTestConfigManager(t)
+	handler := routes(prometheus.NewRegistry(), newTestService(t, manager, newFakePollers().run))
+	_, diag := adminConfig(t, handler)
+	if diag.Version == "" || diag.Readiness.ConfigVersion != diag.Version || diag.Config.Version != diag.Version {
+		t.Fatalf("versions differ: top %q, readiness %q, config %q", diag.Version, diag.Readiness.ConfigVersion, diag.Config.Version)
+	}
+}

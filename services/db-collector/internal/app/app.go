@@ -320,7 +320,7 @@ func routes(registry *prometheus.Registry, svc *service) http.Handler {
 	mux.HandleFunc("/healthz", health)
 	mux.HandleFunc("/healthcheck", health)
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		report := svc.readiness()
+		report := svc.readiness(svc.configManager.Snapshot(), false)
 		writeJSON(w, report.httpStatus(), readinessStatus{Status: report.Status})
 	})
 	mux.HandleFunc("/admin/config", svc.requireAdmin(http.MethodGet, svc.handleConfig))
@@ -346,7 +346,7 @@ type reloadResponse struct {
 // success.
 func (s *service) handleReload(w http.ResponseWriter, r *http.Request) {
 	if !s.initialized.Load() {
-		writeJSON(w, http.StatusServiceUnavailable, reloadResponse{Result: "not_ready", Error: "initial reconcile not complete", Readiness: s.readiness()})
+		writeJSON(w, http.StatusServiceUnavailable, reloadResponse{Result: "not_ready", Error: "initial reconcile not complete", Readiness: s.readiness(s.configManager.Snapshot(), true)})
 		return
 	}
 	// Detach from the client connection: a caller that disconnects or times
@@ -368,7 +368,7 @@ func (s *service) handleReload(w http.ResponseWriter, r *http.Request) {
 			response.RolledBack = &rolledBack
 		}
 	}
-	response.Readiness = s.readiness()
+	response.Readiness = s.readiness(s.configManager.Snapshot(), true)
 	writeJSON(w, status, response)
 }
 
@@ -589,20 +589,24 @@ type targetReport struct {
 	ConsecutiveFailures int        `json:"consecutive_failures"`
 	LastSuccess         *time.Time `json:"last_success"`
 	NextAttempt         *time.Time `json:"next_attempt,omitempty"`
-	// Error is the last cycle's raw probe or driver error, which can name the
-	// host, port and login. Admin endpoints only.
+	// Error is the last cycle's raw probe or driver error. It can name the
+	// host, port and login but never the password: hosts are validated at
+	// config load so the connection URL always parses. Admin endpoints only.
 	Error string `json:"error,omitempty"`
 }
 
-// readiness evaluates readiness now, latches warm-up, and logs transitions.
-func (s *service) readiness() readinessReport {
+// readiness evaluates readiness now against snapshot, latches warm-up, and
+// logs transitions. withErrors adds raw target error text, for the
+// authenticated endpoints only.
+func (s *service) readiness(snapshot heartbeatconfig.Snapshot, withErrors bool) readinessReport {
 	report, allCycled := evaluateReadiness(readinessInput{
 		initialized: s.initialized.Load(),
 		warm:        s.warm.Load(),
-		snapshot:    s.configManager.Snapshot(),
+		snapshot:    snapshot,
 		collectors:  s.lifecycle.states(),
 		grace:       s.timeouts.staleGrace,
 		now:         s.now(),
+		withErrors:  withErrors,
 	})
 	if s.initialized.Load() && allCycled {
 		s.warm.Store(true)
@@ -635,6 +639,8 @@ type readinessInput struct {
 	collectors  []collectorState
 	grace       time.Duration
 	now         time.Time
+	// withErrors fills targetReport.Error; /readyz leaves it off.
+	withErrors bool
 }
 
 // evaluateReadiness applies the readiness rules. Readiness means "this
@@ -715,7 +721,7 @@ func collectorReadiness(state collectorState, in readinessInput) (collectorRepor
 		age := in.now.Sub(finished).Seconds()
 		report.LastCycleFinished = &finished
 		report.CycleAgeSeconds = &age
-		addTargets(&report, state.LastCycle.Targets)
+		addTargets(&report, state.LastCycle.Targets, in.withErrors)
 	}
 
 	var reason string
@@ -739,8 +745,9 @@ func collectorReadiness(state collectorState, in readinessInput) (collectorRepor
 	return report, reason
 }
 
-// addTargets fills the target counts and per-target details of report.
-func addTargets(report *collectorReport, targets []collectors.TargetResult) {
+// addTargets fills the target counts and per-target details of report, with
+// raw error text when withErrors is set.
+func addTargets(report *collectorReport, targets []collectors.TargetResult, withErrors bool) {
 	for _, target := range targets {
 		report.TargetsTotal++
 		switch target.State {
@@ -752,7 +759,7 @@ func addTargets(report *collectorReport, targets []collectors.TargetResult) {
 			report.TargetsBackoff++
 		}
 		var errText string
-		if target.Err != nil {
+		if withErrors && target.Err != nil {
 			errText = target.Err.Error()
 		}
 		report.Targets = append(report.Targets, targetReport{
