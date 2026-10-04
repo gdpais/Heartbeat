@@ -169,23 +169,34 @@ func (c RuntimeConfig) EnabledCollectors(kind string) []CollectorRuntimeConfig {
 	return out
 }
 
+// redactedValue replaces secret values in diagnostics.
+const redactedValue = "<redacted>"
+
 // Redacted returns a copy suitable for diagnostics. Secret references remain
-// visible, but their concrete values are masked.
+// visible, but their concrete values are masked. Notification channel config
+// values are masked too, since channel settings such as SMTP or webhook
+// options can carry secrets, and userinfo (user:password@) is stripped from
+// every URL-bearing field.
 func (c RuntimeConfig) Redacted() RuntimeConfig {
 	out := c
-	out.Grafana = cloneEndpoint(c.Grafana)
-	out.Loki = cloneEndpoint(c.Loki)
-	out.Alertmanager = cloneEndpoint(c.Alertmanager)
-	out.OpenTelemetry = cloneEndpoint(c.OpenTelemetry)
+	out.Grafana = redactEndpoint(c.Grafana)
+	out.Loki = redactEndpoint(c.Loki)
+	out.Alertmanager = redactEndpoint(c.Alertmanager)
+	out.OpenTelemetry = redactEndpoint(c.OpenTelemetry)
 	out.Collectors = cloneCollectors(c.Collectors)
 	out.NotificationChannels = cloneNotificationChannels(c.NotificationChannels)
 	out.CredentialRefs = map[string]string{}
 	for key := range c.CredentialRefs {
-		out.CredentialRefs[key] = "<redacted>"
+		out.CredentialRefs[key] = redactedValue
 	}
 	for i := range out.NotificationChannels {
-		if out.NotificationChannels[i].CredentialRef != "" {
-			out.NotificationChannels[i].CredentialRef = redactRef(out.NotificationChannels[i].CredentialRef)
+		channel := &out.NotificationChannels[i]
+		if channel.CredentialRef != "" {
+			channel.CredentialRef = redactRef(channel.CredentialRef)
+		}
+		channel.TargetRef = stripUserinfo(channel.TargetRef)
+		for key := range channel.Config {
+			channel.Config[key] = redactedValue
 		}
 	}
 	for i := range out.Collectors {
@@ -193,6 +204,21 @@ func (c RuntimeConfig) Redacted() RuntimeConfig {
 		for j := range out.Collectors[i].Targets {
 			out.Collectors[i].Targets[j].CredentialRef = redactRef(out.Collectors[i].Targets[j].CredentialRef)
 		}
+	}
+	return out
+}
+
+// redactEndpoint returns a copy of in with userinfo stripped from its URLs
+// and URL templates.
+func redactEndpoint(in Endpoint) Endpoint {
+	out := cloneEndpoint(in)
+	out.BaseURL = stripUserinfo(out.BaseURL)
+	out.Endpoint = stripUserinfo(out.Endpoint)
+	for key, value := range out.DashboardTemplates {
+		out.DashboardTemplates[key] = stripUserinfo(value)
+	}
+	for key, value := range out.DeepLinkTemplates {
+		out.DeepLinkTemplates[key] = stripUserinfo(value)
 	}
 	return out
 }
@@ -301,6 +327,9 @@ func normalizeProbes(docs []probeDocument) []ProbeRuntimeConfig {
 }
 
 func validate(cfg RuntimeConfig) error {
+	if err := validateEndpointCredentials(cfg); err != nil {
+		return err
+	}
 	if err := validateURL("grafana.base_url", cfg.Grafana.BaseURL, true); err != nil {
 		return err
 	}
@@ -358,6 +387,9 @@ func validate(cfg RuntimeConfig) error {
 		if channel.ChannelType == "" || channel.TargetRef == "" {
 			return fmt.Errorf("notification channel %s requires channel_type and target_ref", channel.ID)
 		}
+		if hasUserinfo(channel.TargetRef) {
+			return fmt.Errorf("notification channel %s target_ref %s", channel.ID, embeddedCredentialsHint)
+		}
 		if channel.CredentialRef != "" && !validSecretRef(channel.CredentialRef) {
 			return fmt.Errorf("notification channel %s credential_ref must be a secret reference", channel.ID)
 		}
@@ -410,6 +442,130 @@ func validateURL(name, raw string, required bool) error {
 		return fmt.Errorf("%s must be an absolute URL", name)
 	}
 	return nil
+}
+
+// embeddedCredentialsHint ends validation errors for URLs with userinfo. The
+// URL itself is never echoed, since it contains the credential.
+const embeddedCredentialsHint = "must not embed credentials (user:password@); use a credential reference"
+
+// validateEndpointCredentials rejects userinfo in every URL-bearing endpoint
+// field: base_url, endpoint and the dashboard and deep-link templates of
+// grafana, loki, alertmanager and opentelemetry. Credentials belong in secret
+// references; a URL is copied into logs, diagnostics, browser links and
+// error messages.
+func validateEndpointCredentials(cfg RuntimeConfig) error {
+	for _, section := range []struct {
+		name     string
+		endpoint Endpoint
+	}{
+		{"grafana", cfg.Grafana},
+		{"loki", cfg.Loki},
+		{"alertmanager", cfg.Alertmanager},
+		{"opentelemetry", cfg.OpenTelemetry},
+	} {
+		if hasUserinfo(section.endpoint.BaseURL) {
+			return fmt.Errorf("%s.base_url %s", section.name, embeddedCredentialsHint)
+		}
+		if hasUserinfo(section.endpoint.Endpoint) {
+			return fmt.Errorf("%s.endpoint %s", section.name, embeddedCredentialsHint)
+		}
+		for _, templates := range []struct {
+			field  string
+			values map[string]string
+		}{
+			{"dashboard_templates", section.endpoint.DashboardTemplates},
+			{"deep_link_templates", section.endpoint.DeepLinkTemplates},
+		} {
+			for key, value := range templates.values {
+				if hasUserinfo(value) {
+					return fmt.Errorf("%s.%s.%s %s", section.name, templates.field, key, embeddedCredentialsHint)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// specialSchemes are the WHATWG "special" schemes. Browsers parse an
+// authority after them even with backslashes, one slash or none
+// ("http:\\user:pass@host", "http:user:pass@host").
+var specialSchemes = map[string]bool{"http": true, "https": true, "ws": true, "wss": true, "ftp": true, "file": true}
+
+// userinfoSpan returns the byte range [start, end) of the userinfo in raw,
+// including its trailing '@', and whether raw has userinfo at all.
+//
+// It works on the text rather than on url.Parse, so it also covers values
+// url.Parse rejects (templates with ${placeholders} in the host) and the
+// lenient forms browsers accept for special schemes. As in net/url, the
+// authority ends at the first '/', '?' or '#' (and, for special schemes as in
+// browsers, '\'), and userinfo ends at the last '@' in it.
+func userinfoSpan(raw string) (start, end int, ok bool) {
+	isSlash := func(c byte) bool { return c == '/' || c == '\\' }
+	// Browsers strip leading C0 controls and spaces before parsing.
+	i := len(raw) - len(strings.TrimLeftFunc(raw, func(r rune) bool { return r <= ' ' }))
+	delimiters := "/?#"
+	if colon := schemeEnd(raw[i:]); colon > 0 {
+		scheme := strings.ToLower(raw[i : i+colon])
+		i += colon + 1
+		if specialSchemes[scheme] {
+			delimiters = "/\\?#"
+		} else if !strings.HasPrefix(raw[i:], "//") {
+			return 0, 0, false // opaque, such as mailto:ops@example.com
+		}
+	} else if len(raw)-i < 2 || !isSlash(raw[i]) || !isSlash(raw[i+1]) {
+		return 0, 0, false // a path, query or fragment: no authority
+	}
+	for i < len(raw) && isSlash(raw[i]) {
+		i++
+	}
+	authority := raw[i:]
+	if stop := strings.IndexAny(authority, delimiters); stop >= 0 {
+		authority = authority[:stop]
+	}
+	at := strings.LastIndexByte(authority, '@')
+	if at < 0 {
+		return 0, 0, false
+	}
+	return i, i + at + 1, true
+}
+
+// schemeEnd returns the index of the ':' that ends raw's URL scheme, or -1
+// when raw does not start with a scheme.
+func schemeEnd(raw string) int {
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z':
+		case '0' <= c && c <= '9', c == '+', c == '-', c == '.':
+			if i == 0 {
+				return -1
+			}
+		case c == ':':
+			if i == 0 {
+				return -1
+			}
+			return i
+		default:
+			return -1
+		}
+	}
+	return -1
+}
+
+// hasUserinfo reports whether raw is a URL or URL template with userinfo.
+func hasUserinfo(raw string) bool {
+	_, _, ok := userinfoSpan(raw)
+	return ok
+}
+
+// stripUserinfo removes userinfo from raw and leaves everything else,
+// including template placeholders and encoding, unchanged.
+func stripUserinfo(raw string) string {
+	start, end, ok := userinfoSpan(raw)
+	if !ok {
+		return raw
+	}
+	return raw[:start] + raw[end:]
 }
 
 func validSecretRef(ref string) bool {
