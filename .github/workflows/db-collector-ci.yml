@@ -23,6 +23,8 @@ jobs:
         run: make rules-check
       - name: Run isolated PostgreSQL integration tests
         run: make test-integration
+      - name: Run every SQL Server probe against a disposable SQL Server
+        run: make test-sqlserver
 
   chart:
     name: Helm chart

@@ -102,6 +102,7 @@ scaffold directories hold `.gitkeep` files until their service is implemented.
 ## CI
 
 GitHub Actions (`.github/workflows/db-collector-ci.yml`) runs `make test`,
-`make test-race`, `make vet`, `make rules-check` and `make test-integration`;
+`make test-race`, `make vet`, `make rules-check`, `make test-integration` and
+`make test-sqlserver`;
 `make chart-check` with Helm 4 and Helm 3; and `make kind-e2e`, the acceptance
 checks on a fresh kind cluster.
