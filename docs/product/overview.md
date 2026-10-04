@@ -43,7 +43,7 @@ replacing them. The focus is on gaps those tools leave:
 | Capability | MVP outcome |
 | --- | --- |
 | Application observability | OutSystems first (Traditional and Reactive): normalized logs in Loki, derived metrics in Prometheus, health/errors/latency dashboards, compatibility with default OutSystems log fields |
-| Database observability | SQL Server: waits, blocking, sessions, memory, storage and throughput metrics, collector self-observability, dashboards ([signal coverage](../architecture/database-observability.md#sql-server-signal-coverage)) |
+| Database observability | SQL Server: waits, blocking, sessions, memory, storage, throughput, CPU, buffer cache and file I/O metrics, collector self-observability, dashboards ([signal coverage](../architecture/database-observability.md#sql-server-signal-coverage)) |
 | Telemetry ingestion | OTLP metrics and logs through the OpenTelemetry Collector |
 | Session investigation | Query by application + user/IP/session/request + time range; timeline, anomaly windows and evidence links into Grafana/Loki |
 | Alerting | Static rules plus adaptive baselines, rendered to Prometheus and routed by Alertmanager |

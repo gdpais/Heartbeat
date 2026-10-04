@@ -64,8 +64,15 @@ bytes) and a `_total` suffix on counters only.
 | `storage` | `sys.master_files` | `heartbeat_sqlserver_database_file_size_bytes` | gauge | `database_name`, `file_name`, `file_type` | one per database file; tempdb files report their configured startup size, not their current size |
 | `throughput` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_batch_requests_total` | counter | none | 1 |
 | `throughput` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_transactions_total` | counter | none | 1 (server-wide `_Total`) |
+| `cpu` | `sys.dm_os_ring_buffers` | `heartbeat_sqlserver_cpu_sql_process_ratio` | gauge | none | 1 |
+| `cpu` | `sys.dm_os_ring_buffers` | `heartbeat_sqlserver_cpu_other_process_ratio` | gauge | none | 1 on Windows, none on Linux |
+| `buffer_cache` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_page_life_expectancy_seconds` | gauge | none | 1 |
+| `buffer_cache` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_buffer_cache_hit_ratio` | gauge | none | 1 |
+| `file_io` | `sys.dm_io_virtual_file_stats`, `sys.master_files` | `heartbeat_sqlserver_database_file_reads_total`, `heartbeat_sqlserver_database_file_writes_total` | counter | `database_name`, `file_name`, `file_type` | one per database file each |
+| `file_io` | `sys.dm_io_virtual_file_stats`, `sys.master_files` | `heartbeat_sqlserver_database_file_read_bytes_total`, `heartbeat_sqlserver_database_file_written_bytes_total` | counter | `database_name`, `file_name`, `file_type` | one per database file each |
+| `file_io` | `sys.dm_io_virtual_file_stats`, `sys.master_files` | `heartbeat_sqlserver_database_file_read_stall_seconds_total`, `heartbeat_sqlserver_database_file_write_stall_seconds_total` | counter | `database_name`, `file_name`, `file_type` | one per database file each |
 
-**Counters.** Waits and throughput are cumulative in SQL Server (the
+**Counters.** Waits, throughput and file I/O are cumulative in SQL Server (the
 `Batch Requests/sec` and `Transactions/sec` performance counters are totals
 despite their names), so they are exported as counters with the value SQL
 Server reports. Query them with `rate()` or `increase()`, never raw. A SQL
@@ -83,6 +90,35 @@ waiting for work, timers such as `SLEEP_TASK`, `LAZYWRITER_SLEEP` or
 and would dominate top-N panels. The list follows Paul Randal's widely used
 wait statistics query and lives in
 [`catalog.go`](../../services/db-collector/internal/probes/sqlserver/catalog.go).
+
+**CPU.** SQL Server's scheduler monitor writes one record a minute with the
+host's CPU split over that minute: the SQL Server process, other processes,
+and idle. The `cpu` probe reads only the newest record, so both ratios (0–1,
+of all the CPUs SQL Server sees) change once a minute whatever the scrape
+interval, and lag the real load by up to a minute; idle is `1 -` their sum.
+SQL Server on Linux reports no idle time (always 0, measured on 2019 and
+2022), so `heartbeat_sqlserver_cpu_other_process_ratio` is exported on Windows
+only. Nothing is exported in the first minute after SQL Server starts. The
+probe needs SQL Server 2017 or later (`sys.dm_os_host_info`).
+
+**Buffer cache.** Page life expectancy (seconds) and the buffer cache hit ratio
+(0–1) come from the server-wide `Buffer Manager` performance counters, on
+default and named instances alike. There is no fixed good page life
+expectancy; compare a target with its own baseline. The hit ratio stays close
+to 1 on most servers even under memory pressure, so read it together with page
+life expectancy and file reads.
+
+**File I/O.** `file_io` exports six counters per database file, labelled like
+the `storage` probe's file size: read and write operations, bytes read and
+written, and I/O stall seconds (the time SQL Server waited for reads or writes
+to complete). Average latency per operation is the stall rate over the
+operation rate, e.g.
+`rate(heartbeat_sqlserver_database_file_read_stall_seconds_total[5m]) / (rate(heartbeat_sqlserver_database_file_reads_total[5m]) > 0)`,
+where `> 0` leaves no value instead of dividing by zero for an idle file. The
+counters restart at 0 when SQL Server restarts or a database comes back online,
+which `rate()` treats as a reset. A stock instance has about 10 files (60
+series); budget 6 series per file, so a server with 100 databases and two files
+each exports about 1,200.
 
 A target, identified by environment and name, may be enabled in only one
 sqlserver collector: configuration that lists it twice is rejected, because
@@ -127,7 +163,7 @@ series of removed targets and probes.
 
 Per target, the self-observability series are 3 target gauges plus, per
 scheduled probe, 13 histogram series (10 buckets, `+Inf`, sum, count) and 4
-error counters: 105 series for a target with the 6 built-in probes. Probe
+error counters: 156 series for a target with the 9 built-in probes. Probe
 metric series are listed in the table above.
 
 ### OTel gateway

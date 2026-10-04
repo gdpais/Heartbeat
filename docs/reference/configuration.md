@@ -95,7 +95,7 @@ collectors:
 ```
 
 Built-in probe names: `waits`, `blocking`, `sessions`, `memory_pressure`,
-`storage`, `throughput`. See the
+`storage`, `throughput`, `cpu`, `buffer_cache`, `file_io`. See the
 [metrics reference](metrics-and-endpoints.md#sql-server-probe-metrics).
 
 Probe timeout defaults to `min(scrape_interval / 2, 10s)`; `timeout_ms` overrides
