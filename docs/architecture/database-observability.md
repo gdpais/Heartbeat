@@ -44,8 +44,9 @@ waits/locks, sessions, storage and regressions. Only
 ## Collector recovery and high availability (planned)
 
 Status: items 1-3 are implemented for a single collector replica (failure
-isolation, backoff, freshness metrics, per-probe error counters and
-durations, stale-series cleanup, readiness, reload rollback); see the [DB collector README](../../services/db-collector/README.md). Items 4-5 remain planned.
+isolation, a hard deadline per probe so a query the driver cannot cancel never
+stalls collection, backoff, freshness metrics, per-probe error counters and
+durations, stale-series cleanup, readiness, reload rollback); see the [DB collector README](../../services/db-collector/README.md#failure-isolation-and-readiness). Items 4-5 remain planned.
 
 The remaining items are planned improvements, not guarantees of the current runtime. The
 current SQL path is remote queries -> custom collector's in-memory metrics ->

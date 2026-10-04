@@ -71,6 +71,16 @@ succeeds.
   one at a time. Each cycle is bounded by the scrape interval, and each probe
   by `min(interval/2, 10s)` unless `timeout_ms` overrides it (capped at the
   interval).
+- Every probe also has a hard deadline: if it has not returned 2s after its
+  timeout, the cycle deadline or a stop, the collector abandons it, reports a
+  `timeout`, and moves on, so a query the SQL Server driver cannot cancel (it
+  waits for the server to acknowledge the cancel, which a frozen or vanished
+  server never does) never stalls the cycle, other targets, or shutdown. The
+  abandoned call finishes in the background and its result is discarded;
+  until it returns, the target's probes are not started (`not_started`) and
+  the target counts as failed, so a dead target holds at most one connection.
+  The driver's 30s socket timeout (`connection timeout`) bounds that wait: a
+  dead connection fails and leaves the pool within about a minute.
 - A failing probe only affects its own target. The first failure retries on
   the next cycle; repeated failures back off exponentially (capped at 5m, with
   jitter). Every probe failure is logged as structured JSON with collector,

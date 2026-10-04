@@ -99,7 +99,10 @@ Built-in probe names: `waits`, `blocking`, `sessions`, `memory_pressure`,
 [metrics reference](metrics-and-endpoints.md#sql-server-probe-metrics).
 
 Probe timeout defaults to `min(scrape_interval / 2, 10s)`; `timeout_ms` overrides
-it and is capped at the interval. A `query_template` override runs with the
+it and is capped at the interval. A probe that has not stopped 2s after its
+timeout is abandoned and fails as a timeout. Every database read also gives up
+after 30s, so a `timeout_ms` above 30s only helps queries that return data at
+least every 30s. A `query_template` override runs with the
 same login, so review it with the DBAs; see the
 [login permissions](../guides/database-targets.md#collector-login-permissions).
 

@@ -209,6 +209,7 @@ Replica ownership and outage testing are section 19. Design details:
 - [x] Add per-probe cumulative error counters
 - [x] Make readiness reflect expected collector state and add deployment health probes and restart/recovery policies
 - [x] Validate safe reloads, including partial reconciliation failure (rollback) and replacement-poller startup failure (unit-tested)
+- [x] Bound every probe with a hard deadline so a probe the driver cannot cancel never stalls the collector cycle; keep at most one abandoned call per target and bound dead connections with a driver socket timeout
 
 ### 2.7 Collector endpoint security
 - [ ] Diagnostics: require the admin token for `GET /admin/config`; keep `/readyz` to status only and move raw driver errors (host, port, login) behind auth
