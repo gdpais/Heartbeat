@@ -216,3 +216,51 @@ func BenchmarkRecordScope(b *testing.B) {
 		_ = exporter.RecordScope(scope, samples)
 	}
 }
+
+// gatherBenchTargets and gatherBenchWaits size the Gather benchmarks like a
+// large deployment: 50 targets with 1,000 wait types each.
+const (
+	gatherBenchTargets = 50
+	gatherBenchWaits   = 1000
+)
+
+// BenchmarkGather measures one scrape of the exporter's series.
+func BenchmarkGather(b *testing.B) {
+	reg := prometheus.NewRegistry()
+	exporter := NewPrometheusExporter(reg)
+	for i := range gatherBenchTargets {
+		target := fmt.Sprintf("db-%02d", i)
+		samples := waitSamples(gatherBenchWaits)
+		for k := range samples {
+			samples[k].Labels["target"] = target
+		}
+		if err := exporter.RecordScope(Scope{Collector: "c", Target: target, Probe: "waits"}, samples); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := reg.Gather(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkGatherGaugeVecBaseline scrapes the same series from a plain
+// GaugeVec, the lower bound for comparison with BenchmarkGather.
+func BenchmarkGatherGaugeVecBaseline(b *testing.B) {
+	reg := prometheus.NewRegistry()
+	vec := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "heartbeat_test_wait_seconds_total", Help: "Wait time."}, []string{"environment", "target", "wait_type"})
+	reg.MustRegister(vec)
+	for i := range gatherBenchTargets {
+		for j := range gatherBenchWaits {
+			vec.WithLabelValues("prod", fmt.Sprintf("db-%02d", i), fmt.Sprintf("WAIT_%d", j)).Set(float64(j))
+		}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := reg.Gather(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

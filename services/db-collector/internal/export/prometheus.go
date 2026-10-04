@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // labelValueSeparator joins label values into a series key.  0xff never
@@ -35,7 +36,7 @@ const labelValueSeparator = 0xff
 // Recording a sample for an existing series does not allocate.  Scrapes copy
 // a family's series under a read lock and build the exposition after
 // releasing it, so a scrape never blocks collection for longer than that
-// copy.
+// copy.  Label pairs are built once per series, not on every scrape.
 //
 // PrometheusExporter is safe for concurrent use.
 type PrometheusExporter struct {
@@ -67,9 +68,9 @@ type family struct {
 type series struct {
 	family *family
 	key    string
-	// labelValues follow family.labelNames and are never modified after the
-	// series is created, so scrapes share them without copying.
-	labelValues []string
+	// labelPairs are built once when the series is created and never
+	// modified, so every scrape shares them instead of rebuilding them.
+	labelPairs []*dto.LabelPair
 	value       float64
 	// owners counts the scopes that currently report the series.
 	owners int
@@ -309,7 +310,7 @@ func (f *family) newSeries(key string, labels map[string]string) (*series, error
 		}
 		values[i] = value
 	}
-	s := &series{family: f, key: key, labelValues: values}
+	s := &series{family: f, key: key, labelPairs: prometheus.MakeLabelPairs(f.desc, values)}
 	f.series[key] = s
 	return s, nil
 }
@@ -323,12 +324,6 @@ type familyCollector struct {
 	family   *family
 }
 
-// point is a copy of one series taken during a scrape.
-type point struct {
-	labelValues []string
-	value       float64
-}
-
 // Describe implements [prometheus.Collector].  It must not take the
 // exporter's lock: registration happens while that lock is held.
 func (c familyCollector) Describe(ch chan<- *prometheus.Desc) {
@@ -336,21 +331,45 @@ func (c familyCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 // Collect implements [prometheus.Collector].  It copies the family's series
-// under a read lock and builds the metrics after releasing it.
+// into one slice under a read lock and sends them after releasing it.  The
+// copies share each series' prebuilt label pairs, so a scrape allocates one
+// slice per family plus one value per series.
 func (c familyCollector) Collect(ch chan<- prometheus.Metric) {
 	c.exporter.mu.RLock()
-	points := make([]point, 0, len(c.family.series))
+	metrics := make([]seriesMetric, 0, len(c.family.series))
 	for _, s := range c.family.series {
-		points = append(points, point{labelValues: s.labelValues, value: s.value})
+		metrics = append(metrics, seriesMetric{family: c.family, labelPairs: s.labelPairs, value: s.value})
 	}
 	c.exporter.mu.RUnlock()
-	for _, p := range points {
-		metric, err := prometheus.NewConstMetric(c.family.desc, c.family.valueType, p.value, p.labelValues...)
-		if err != nil {
-			metric = prometheus.NewInvalidMetric(c.family.desc, err)
-		}
-		ch <- metric
+	for i := range metrics {
+		ch <- &metrics[i]
 	}
+}
+
+// seriesMetric is the scrape-time copy of one series.  It implements
+// [prometheus.Metric] like a const metric, but reuses the series' label pairs
+// instead of rebuilding and re-validating them on every scrape.
+type seriesMetric struct {
+	family     *family
+	labelPairs []*dto.LabelPair
+	value      float64
+}
+
+// Desc implements [prometheus.Metric].
+func (m *seriesMetric) Desc() *prometheus.Desc {
+	return m.family.desc
+}
+
+// Write implements [prometheus.Metric].  The label pairs are shared and must
+// not be modified by the caller, as for client_golang's const metrics.
+func (m *seriesMetric) Write(out *dto.Metric) error {
+	out.Label = m.labelPairs
+	if m.family.valueType == prometheus.CounterValue {
+		out.Counter = &dto.Counter{Value: &m.value}
+	} else {
+		out.Gauge = &dto.Gauge{Value: &m.value}
+	}
+	return nil
 }
 
 var _ ScopedRecorder = (*PrometheusExporter)(nil)
