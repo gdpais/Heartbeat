@@ -180,7 +180,7 @@ count.
 - [x] Replace generic column-to-metric decoding with explicit per-probe metric descriptors
 - [x] Fix the `throughput` probe's duplicate `Transactions/sec` series and padded `counter_name` labels; check `memory_pressure` for the same padding ([#4](https://github.com/gdpais/Heartbeat/issues/4))
 - [x] Run every built-in probe against a real SQL Server in CI (`make test-sqlserver`): no duplicate series, no padded label values
-- [ ] Add core signals before the first production deploy (after counter support [2.4]): CPU utilisation, page life expectancy and buffer cache hit ratio, file I/O from `sys.dm_io_virtual_file_stats`; dashboard panels for each. The rest of the signal set stays in [11.2]
+- [x] Add core signals before the first production deploy (after counter support [2.4]): CPU utilisation, page life expectancy and buffer cache hit ratio, file I/O from `sys.dm_io_virtual_file_stats`; dashboard panels for each. The rest of the signal set stays in [11.2]
 
 ### 2.4 Metrics and evidence output
 - [x] Normalize SQL Server outputs into Prometheus-friendly metrics
