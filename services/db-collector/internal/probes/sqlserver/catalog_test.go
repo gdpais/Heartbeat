@@ -2,6 +2,7 @@ package sqlserver
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 
 func TestCatalogContainsRequiredProbes(t *testing.T) {
 	catalog := DefaultCatalog()
-	required := []string{"waits", "blocking", "sessions", "memory_pressure", "storage", "throughput"}
+	required := []string{"waits", "blocking", "sessions", "memory_pressure", "storage", "throughput", "cpu", "buffer_cache", "file_io"}
 	for _, name := range required {
 		probe, ok := catalog.Get(name)
 		if !ok {
@@ -86,6 +87,7 @@ func TestMetricConvertAppliesScale(t *testing.T) {
 		{"milliseconds to seconds", 0.001, 1500, 1.5},
 		{"KB to bytes", 1024, 2, 2048},
 		{"8 KB pages to bytes", 8192, 3, 24576},
+		{"percent to ratio", 0.01, 50, 0.5},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -119,5 +121,31 @@ func TestWaitsProbeExcludesBenignWaits(t *testing.T) {
 	}
 	if got := sqlStringList([]string{"A", "B'C"}); got != "N'A', N'B''C'" {
 		t.Errorf("sqlStringList = %s", got)
+	}
+}
+
+// The scheduler monitor ring buffer holds up to 256 records; converting each
+// to XML would cost far more than the one value read.  The query must pick
+// the newest raw record first and convert only that one.
+func TestCPUProbeConvertsOnlyTheLatestRecord(t *testing.T) {
+	probe, _ := DefaultCatalog().Get("cpu")
+	query := probe.QueryTemplate
+	top, convert := strings.Index(query, "TOP (1)"), strings.Index(query, "CONVERT(xml")
+	if top < 0 || convert < top || strings.Count(query, "CONVERT(xml") != 1 {
+		t.Errorf("cpu query must select TOP (1) record before its only CONVERT(xml): %s", query)
+	}
+}
+
+// File I/O and file size series of one file share their labels, so panels
+// and queries can join them.
+func TestFileIOProbeLabelsMatchStorage(t *testing.T) {
+	catalog := DefaultCatalog()
+	storage, _ := catalog.Get("storage")
+	fileIO, _ := catalog.Get("file_io")
+	want := storage.Metrics[0].LabelColumns
+	for _, metric := range fileIO.Metrics {
+		if !slices.Equal(metric.LabelColumns, want) {
+			t.Errorf("%s labels %v, want the storage probe's %v", metric.Name, metric.LabelColumns, want)
+		}
 	}
 }

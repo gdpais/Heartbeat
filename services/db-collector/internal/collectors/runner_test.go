@@ -179,6 +179,49 @@ func TestCatalogProbesDecodeToBaseUnitsAndTypes(t *testing.T) {
 			rows:  []map[string]any{{"batch_requests": int64(1200), "transactions": nil}},
 			want:  []want{{"heartbeat_sqlserver_batch_requests_total", collectorexport.Counter, 1200, ""}},
 		},
+		{
+			// Percent from the scheduler monitor record becomes a 0-1 ratio.
+			probe: "cpu",
+			rows:  []map[string]any{{"sql_process_percent": int64(25), "other_process_percent": int64(10)}},
+			want: []want{
+				{"heartbeat_sqlserver_cpu_sql_process_ratio", collectorexport.Gauge, 0.25, ""},
+				{"heartbeat_sqlserver_cpu_other_process_ratio", collectorexport.Gauge, 0.1, ""},
+			},
+		},
+		{
+			// The driver returns the float division as float64.
+			probe: "buffer_cache",
+			rows:  []map[string]any{{"page_life_expectancy_seconds": int64(3600), "buffer_cache_hit_ratio": 0.995}},
+			want: []want{
+				{"heartbeat_sqlserver_page_life_expectancy_seconds", collectorexport.Gauge, 3600, ""},
+				{"heartbeat_sqlserver_buffer_cache_hit_ratio", collectorexport.Gauge, 0.995, ""},
+			},
+		},
+		{
+			// A zero hit ratio base is NULL after NULLIF: no sample rather
+			// than a division by zero.
+			probe: "buffer_cache",
+			rows:  []map[string]any{{"page_life_expectancy_seconds": int64(3600), "buffer_cache_hit_ratio": nil}},
+			want:  []want{{"heartbeat_sqlserver_page_life_expectancy_seconds", collectorexport.Gauge, 3600, ""}},
+		},
+		{
+			// One file row yields six counters, stall time in seconds.
+			probe: "file_io",
+			rows: []map[string]any{{
+				"database_name": "sales", "file_name": "sales_log", "file_type": "LOG",
+				"num_of_reads": int64(10), "num_of_writes": int64(400),
+				"num_of_bytes_read": int64(81920), "num_of_bytes_written": int64(1 << 20),
+				"io_stall_read_ms": int64(30), "io_stall_write_ms": int64(1500),
+			}},
+			want: []want{
+				{"heartbeat_sqlserver_database_file_reads_total", collectorexport.Counter, 10, "file_name=sales_log"},
+				{"heartbeat_sqlserver_database_file_writes_total", collectorexport.Counter, 400, "file_type=LOG"},
+				{"heartbeat_sqlserver_database_file_read_bytes_total", collectorexport.Counter, 81920, "database_name=sales"},
+				{"heartbeat_sqlserver_database_file_written_bytes_total", collectorexport.Counter, 1 << 20, "database_name=sales"},
+				{"heartbeat_sqlserver_database_file_read_stall_seconds_total", collectorexport.Counter, 0.03, "database_name=sales"},
+				{"heartbeat_sqlserver_database_file_write_stall_seconds_total", collectorexport.Counter, 1.5, "database_name=sales"},
+			},
+		},
 	}
 	item := collectormetadata.ScheduledProbe{Target: collectormetadata.DatabaseTarget{Name: "core-db", EnvironmentSlug: "prod"}}
 	for _, tt := range tests {
