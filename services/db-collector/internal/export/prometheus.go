@@ -25,6 +25,13 @@ const labelValueSeparator = 0xff
 // The label set and type of a metric are fixed on first registration;
 // subsequent samples with a different label set or type are rejected.
 //
+// Gauge series may be shared by several scopes.  Counter series are
+// single-owner: while one scope reports a counter series, writes to it from
+// any other scope or through Record are rejected.  Two sources taking turns
+// on one counter, such as two collectors scraping the same target, would make
+// it jump between their readings, and rate() would read every drop as a
+// reset.
+//
 // Recording a sample for an existing series does not allocate.  Scrapes copy
 // a family's series under a read lock and build the exposition after
 // releasing it, so a scrape never blocks collection for longer than that
@@ -94,16 +101,22 @@ func NewPrometheusExporter(reg prometheus.Registerer) *PrometheusExporter {
 // Record implements [Recorder].  For each sample it lazily registers the
 // metric family on first encounter and then sets the series to sample.Value.
 // An error is returned if Prometheus rejects the registration or if a sample
-// does not match the label set or type of its already-registered family.
-// Series written through Record are never deleted; prefer
-// [PrometheusExporter.RecordScope] for probe results.
+// does not match the label set or type of its already-registered family, or
+// writes a counter series a scope owns.  Series written through Record are
+// owned by no scope and are deleted only when a scope that also reported
+// them drops them; prefer [PrometheusExporter.RecordScope] for probe results.
 func (e *PrometheusExporter) Record(samples []Sample) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, sample := range samples {
-		if _, err := e.setLocked(sample); err != nil {
+		s, err := e.seriesLocked(sample)
+		if err != nil {
 			return err
 		}
+		if s.family.metricType == Counter && s.owners > 0 {
+			return counterOwnedError(sample)
+		}
+		s.value = sample.Value
 	}
 	return nil
 }
@@ -124,15 +137,21 @@ func (e *PrometheusExporter) RecordScope(scope Scope, samples []Sample) error {
 	}
 	var errs []error
 	for _, sample := range samples {
-		s, err := e.setLocked(sample)
+		s, err := e.seriesLocked(sample)
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
 		if s.written == generation {
+			s.value = sample.Value
 			errs = append(errs, duplicateSeriesError(sample))
 			continue
 		}
+		if s.family.metricType == Counter && s.owners > 0 && s.owned != generation {
+			errs = append(errs, counterOwnedError(sample))
+			continue
+		}
+		s.value = sample.Value
 		s.written = generation
 		if s.owned != generation {
 			s.owners++
@@ -196,10 +215,16 @@ func release(s *series) {
 	}
 }
 
-// setLocked registers the family of sample on first use, validates the
-// sample against it, and sets the value of its series, creating the series
-// if needed.  e.mu must be held.
-func (e *PrometheusExporter) setLocked(sample Sample) (*series, error) {
+// counterOwnedError reports a write to a counter series that another scope
+// owns.
+func counterOwnedError(sample Sample) error {
+	return fmt.Errorf("counter %s: series %v is already reported by another scope; is the target scraped twice?", sample.Metric, sample.Labels)
+}
+
+// seriesLocked registers the family of sample on first use, validates the
+// sample against it, and returns its series, creating the series if needed.
+// The caller sets the value.  e.mu must be held.
+func (e *PrometheusExporter) seriesLocked(sample Sample) (*series, error) {
 	fam, ok := e.families[sample.Metric]
 	if !ok {
 		var err error
@@ -237,7 +262,6 @@ func (e *PrometheusExporter) setLocked(sample Sample) (*series, error) {
 			return nil, err
 		}
 	}
-	s.value = sample.Value
 	return s, nil
 }
 

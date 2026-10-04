@@ -89,9 +89,14 @@ type Scope struct {
 // so series that disappear from a probe's result are deleted instead of
 // being exported with their last value forever.
 //
-// A series written by several scopes is deleted only once no scope reports
-// it any more.  Series written through plain Record are not owned by any
-// scope and are never deleted.
+// A gauge series written by several scopes is deleted only once no scope
+// reports it any more.  A counter series has a single owner: implementations
+// may reject a write from another scope while its owner still reports it,
+// because two sources alternating on one counter would read as resets.
+// Series written through plain Record are not owned by any scope, so
+// ClearScope and ForgetCollector never delete them unless a scope also
+// reports them: once the last scope reporting a series drops it, the series
+// is deleted even if Record wrote it too.
 type ScopedRecorder interface {
 	Recorder
 	// RecordScope replaces the series owned by scope with samples: series
@@ -199,7 +204,9 @@ func duplicateSeriesError(sample Sample) error {
 
 // InMemoryExporter implements [ScopedRecorder] by storing the most-recently
 // recorded value for each metric name and for each individual series.  It is
-// intended for use in unit tests.
+// intended for use in unit tests: it tracks scope ownership like
+// [PrometheusExporter] but does not validate samples, so it accepts label set
+// or type changes and writes to counters other scopes own.
 //
 // InMemoryExporter is safe for concurrent use.
 type InMemoryExporter struct {
