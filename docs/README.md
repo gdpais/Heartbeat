@@ -15,6 +15,8 @@ to it instead of repeating it.
 
 **Developers**
 
+- [Walkthrough](guides/kind-walkthrough.md): a guided first run on kind, from
+  installing the tools to breaking the database on purpose
 - [Local development](guides/local-development.md): run the stack on kind, the
   SQL Server sandbox, tests, image builds
 - [Kubernetes delivery](guides/kubernetes-local.md): the Helm chart, values,

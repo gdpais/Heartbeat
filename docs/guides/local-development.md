@@ -3,6 +3,9 @@
 Run the Heartbeat stack on a local kind cluster, test it, and point the DB
 collector at a throwaway SQL Server.
 
+First time? Follow the [walkthrough](kind-walkthrough.md): it installs the
+tools, starts everything and shows what each step should look like.
+
 Prerequisites: Docker, Go 1.27+, and kind, kubectl and Helm at the pinned
 versions (kind v0.33, kubectl within one minor of Kubernetes 1.36, Helm 4.2+).
 `make tools-check` verifies all of them and says how to fix any mismatch. Run

@@ -50,7 +50,9 @@ make sqlserver-dev-up
 curl http://localhost:8082/metrics
 ```
 
-More in the [local development guide](docs/guides/local-development.md):
+First time? The [walkthrough](docs/guides/kind-walkthrough.md) takes you
+through a full live test step by step. More in the
+[local development guide](docs/guides/local-development.md):
 profiles, tests, the kind acceptance checks and reloads; and in
 [Kubernetes delivery](docs/guides/kubernetes-local.md). To monitor a real
 database, see [onboarding SQL Server targets](docs/guides/database-targets.md).
