@@ -22,6 +22,18 @@
       "groupName": "go toolchain"
     },
     {
+      "description": "kubectl stays on the kind node's Kubernetes minor (ADR 0005): patch updates only.",
+      "matchDepNames": ["kubernetes/kubernetes"],
+      "matchUpdateTypes": ["major", "minor"],
+      "enabled": false
+    },
+    {
+      "description": "HELM3_VERSION only checks that the chart still renders with Helm 3; keep it on Helm 3.",
+      "matchDepNames": ["helm/helm"],
+      "matchCurrentValue": "/^v3\\./",
+      "allowedVersions": "<4"
+    },
+    {
       "description": "The kind node image must match both the kind release and the newest Kubernetes minor Amazon EKS supports (ADR 0005); update it by hand from the kind release notes.",
       "matchPackageNames": ["kindest/node"],
       "enabled": false
@@ -42,6 +54,22 @@
       "managerFilePatterns": ["/^Makefile$/"],
       "matchStrings": ["HELM_MIN_VERSION := (?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
       "depNameTemplate": "helm/helm",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "Exact Helm versions CI installs (make install-tools).",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": ["HELM_VERSION := (?<currentValue>v\\d+\\.\\d+\\.\\d+)", "HELM3_VERSION := (?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "helm/helm",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "kubectl version CI installs (make install-tools).",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": ["KUBECTL_VERSION := (?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "kubernetes/kubernetes",
       "datasourceTemplate": "github-releases"
     },
     {

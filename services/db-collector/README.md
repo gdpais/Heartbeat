@@ -7,7 +7,9 @@ metrics.
 The current implementation is intentionally narrow:
 
 - SQL Server is the only supported engine.
-- Collector desired state comes from `config/integrations.yaml`.
+- Collector desired state comes from `integrations.yaml` (the Helm chart's
+  `integrations` values when deployed; `config/integrations.yaml` when run
+  directly).
 - Probe definitions are implemented as a built-in SQL Server catalog.
 - Metrics are exported to Prometheus.
 - Structured evidence is produced for blocking/session-style probes, but the
@@ -178,7 +180,8 @@ To add a new SQL Server probe:
 
 To add a new collector:
 
-1. Declare it in `config/integrations.yaml`.
+1. Declare it in the environment's `integrations` values (or
+   `config/integrations.yaml` when running the binary directly).
 2. Ensure the collector kind is `sqlserver`.
 3. Provide target credentials through the configured credential reference.
 4. Confirm the collector appears in `/readyz` and exports metrics on

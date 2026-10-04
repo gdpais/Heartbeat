@@ -10,7 +10,7 @@ follows the product priorities and can be revisited. Task-level detail lives in
 | --- | --- | --- |
 | 0 | Foundations | Done |
 | 1 | SQL Server collection path | In progress |
-| 2 | Kubernetes delivery (kind + Helm) | Planned, next |
+| 2 | Kubernetes delivery (kind + Helm) | kind and CI done; production next |
 | 3 | Control plane and operator UI | Not started |
 | 4 | Application observability (OutSystems first) | Not started (gateway partial) |
 | 5 | Investigations, alerting and reporting | Not started |
@@ -20,7 +20,8 @@ follows the product priorities and can be revisited. Task-level detail lives in
 
 ## Phase 0 — Foundations (done)
 
-- Monorepo scaffolding, local Docker Compose stack, CI [0.2]
+- Monorepo scaffolding, local platform stack (Compose, since replaced by the
+  Helm chart), CI [0.2]
 - Shared JSON-schema contracts for config, telemetry, investigations, alerts and
   reports [0.3]
 - PostgreSQL schema migrations and tests ([data model](../architecture/data-model.md)) [1]
@@ -47,14 +48,29 @@ Remaining:
 - Remaining SQL Server signals and dashboards
   ([signal coverage](../architecture/database-observability.md#sql-server-signal-coverage)) [11]
 
-## Phase 2 — Kubernetes delivery (planned, next)
+## Phase 2 — Kubernetes delivery (kind and CI done; production next)
+
+Done:
 
 - One Helm chart for kind, CI and production; SQL Server stays a Docker test
-  target; Make and CI adapted; platform Compose retired
-  ([ADR 0003](../architecture/decisions/0003-helm-on-kind-and-production.md))
-- Connect Prometheus to Alertmanager and add a Watchdog dead-man's switch
-- Answer the open production decisions (cloud, registry, deploy mechanism,
-  secrets, Grafana SSO)
+  target; Make and CI adapted; platform Compose and the Kustomize bundle
+  retired. The acceptance checks run on kind in CI
+  ([ADR 0003](../architecture/decisions/0003-helm-on-kind-and-production.md)) [0.4]
+- Prometheus sends alerts to Alertmanager; Watchdog dead-man's-switch route [9.1]
+- Production decisions: EKS, Argo CD, ECR, Secrets Manager with External
+  Secrets, alert channels
+  ([ADR 0005](../architecture/decisions/0005-production-delivery-and-operations-defaults.md))
+
+Remaining (production track, ADR 0005):
+
+- `heartbeat-deploy` config repository with Argo CD `Application`s and
+  per-environment values; optional Argo CD rehearsal on kind
+- CI publishes multi-arch images and the chart to ECR through GitHub OIDC
+- EKS infrastructure as code; External Secrets; healthchecks.io; Discord, then
+  Slack, Teams and WhatsApp receivers
+- Where the monitored SQL Servers sit relative to the EKS VPC; WhatsApp
+  Business Account and template
+- Agree a time and resource budget for the local loop (measurements in ADR 0003)
 
 ## Phase 3 — Control plane and operator UI
 

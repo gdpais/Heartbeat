@@ -4,20 +4,26 @@ Ports, HTTP endpoints and Prometheus metrics exposed by the local stack and
 Heartbeat services. For how the pieces connect, see the
 [architecture overview](../architecture/overview.md).
 
-## Local ports (Docker Compose)
+## Local ports (kind)
+
+The kind cluster ([`infra/kind/cluster.yaml`](../../infra/kind/cluster.yaml))
+maps fixed NodePorts to these ports on 127.0.0.1 only.
 
 | Service | Host port(s) | Notes |
 | --- | --- | --- |
 | DB collector | 8082 | Heartbeat service |
-| OTel gateway | 8083 | Heartbeat service |
+| OTel gateway | 8083 | Heartbeat service (`full` profile) |
 | Prometheus | 9090 | 15s scrape interval |
 | Grafana | 3000 | Local login `admin`/`admin`, anonymous viewer enabled. **Local only.** |
-| Loki | 3100 | |
 | Alertmanager | 9093 | |
-| OpenTelemetry Collector | 4317 (OTLP gRPC), 4318 (OTLP HTTP), 8889 (Prometheus export), 13133 (health) | |
-| PostgreSQL | 5432 | Schema only; no service uses it yet |
-| Redis | 6379 | No service uses it yet |
-| SQL Server (dev overlay only) | 127.0.0.1:11433 | Loopback-bound; see the [local development guide](../guides/local-development.md) |
+| OpenTelemetry Collector | 4317 (OTLP gRPC), 4318 (OTLP HTTP) | `full` profile |
+| Loki | none | In-cluster only (`loki:3100`); query it through Grafana, or `kubectl port-forward svc/loki 3100` |
+| SQL Server (dev target only) | 127.0.0.1:11433 | Loopback-bound Docker container; see the [local development guide](../guides/local-development.md#sql-server-sandbox) |
+
+Inside the cluster every component keeps its Compose-era name and port
+(`prometheus:9090`, `alertmanager:9093`, `loki:3100`, `otel-collector:4318`,
+`otel-gateway:8083`, `db-collector:8082`). PostgreSQL and Redis are not deployed
+until a service uses them (ADR 0003).
 
 ## DB collector (`:8082`)
 
@@ -85,11 +91,15 @@ Requests panel does, so an unreachable target never reads as 0. The catalog live
 
 ### Prometheus scrape jobs and rules
 
-Scrape jobs ([`prometheus.yml`](../../infra/prometheus/prometheus.yml)):
-`prometheus`, `otel-collector`, `db-collector`, `otel-gateway`, `alertmanager`,
-`loki`.
+Scrape jobs (`prometheus.scrapeConfigs` in the chart's
+[`values.yaml`](../../infra/helm/heartbeat/values.yaml)): `prometheus`,
+`otel-collector`, `db-collector`, `otel-gateway`, `alertmanager`, `loki`; the
+`minimal` profile drops the last three it does not deploy. `db-collector` uses
+DNS discovery on the headless `db-collector-headless` Service, which lists the
+pod even while it is unready, so the collector's failure metrics are still
+scraped. Prometheus sends alerts to `alertmanager:9093`.
 
-Rules ([`heartbeat.rules.yml`](../../infra/prometheus/rules/heartbeat.rules.yml)):
+Rules ([`heartbeat.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules/heartbeat.rules.yml)):
 
 | Rule | Type |
 | --- | --- |
@@ -99,10 +109,12 @@ Rules ([`heartbeat.rules.yml`](../../infra/prometheus/rules/heartbeat.rules.yml)
 | `heartbeat:sqlserver_sessions:sum` | Recording: sessions per target, all statuses |
 | `heartbeat:outsystems_events:rate5m` | Recording |
 | `HeartbeatServiceDown` | Alert: `up == 0` for the collector, gateway or OTel Collector |
+| `Watchdog` | Alert: always firing. Alertmanager routes it to the `deadmans-switch` receiver (healthchecks.io in production, ADR 0005), which notifies when it stops arriving |
 
-`infra/prometheus/rules/generated/` is loaded but empty; it is reserved for
-rules rendered from alert policies. `make rules-check` validates the rules and
-runs their promtool unit tests (`infra/prometheus/rules/tests/`), and a Go test
+`files/prometheus/rules/generated/` (in the chart) is loaded but empty; it is
+reserved for rules rendered from alert policies. The chart ships all rule files
+in the `heartbeat-prometheus-rules` ConfigMap. `make rules-check` validates the
+rules and runs their promtool unit tests (`files/prometheus/rules/tests/`), and a Go test
 fails if a rule or dashboard references a SQL Server metric the probe catalog
 does not emit.
 
@@ -115,7 +127,14 @@ does not emit.
   resets, and the wait recording rule relies on that, but the metric type is
   wrong for tooling. The dashboard's Top Wait Types and Throughput panels show
   raw cumulative values rather than rates. Tracked in TODO §15.0.
-- **No alert delivery.** Prometheus has no `alerting` block, so alerts do not
-  reach Alertmanager.
+- **Duplicate throughput series.** `Transactions/sec` has one row per database
+  in `sys.dm_os_performance_counters`, and the `throughput` probe drops
+  `instance_name`, so every cycle logs `duplicate series` and keeps one
+  arbitrary row. The `counter_name` label also keeps SQL Server's trailing
+  padding. Tracked in [#4](https://github.com/gdpais/Heartbeat/issues/4).
+- **Alert delivery stops at the gateway.** Alerts reach Alertmanager, but the
+  default receiver is the OTel gateway webhook, which only counts them. Chat
+  and WhatsApp receivers exist only in
+  [`production.example.yaml`](../../infra/helm/values/production.example.yaml).
 - **Diagnostic endpoints.** `GET /admin/config` is unauthenticated. Tracked in
   TODO §15.2.

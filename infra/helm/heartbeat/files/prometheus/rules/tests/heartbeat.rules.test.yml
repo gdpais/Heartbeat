@@ -1,0 +1,72 @@
+# promtool unit tests for heartbeat.rules.yml; run with `make rules-check`.
+rule_files:
+  - ../heartbeat.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: SQL Server wait rate survives a SQL Server restart
+    interval: 1m
+    input_series:
+      # +60000 ms per minute, then the counter resets (restart) and resumes.
+      - series: 'heartbeat_sqlserver_wait_time_ms{collector="c",environment="dev",target="db1",wait_type="LCK_M_S"}'
+        values: '0 60000 120000 180000 240000 300000 0 60000 120000 180000 240000 300000'
+    promql_expr_test:
+      - expr: heartbeat:sqlserver_wait_seconds:rate5m
+        eval_time: 5m
+        exp_samples:
+          - labels: 'heartbeat:sqlserver_wait_seconds:rate5m{environment="dev",target="db1",wait_type="LCK_M_S"}'
+            value: 1
+      - expr: heartbeat:sqlserver_wait_seconds:rate5m
+        eval_time: 11m
+        exp_samples:
+          - labels: 'heartbeat:sqlserver_wait_seconds:rate5m{environment="dev",target="db1",wait_type="LCK_M_S"}'
+            value: 1
+
+  - name: Blocked requests are 0 when idle, counted when blocked, absent when unreachable
+    interval: 1m
+    input_series:
+      - series: 'heartbeat_collector_target_up{collector="c",environment="dev",target="idle"}'
+        values: '1x5'
+      - series: 'heartbeat_collector_target_up{collector="c",environment="dev",target="busy"}'
+        values: '1x5'
+      - series: 'heartbeat_sqlserver_blocked_requests{collector="c",environment="dev",target="busy",blocking_session_id="61"}'
+        values: '2x5'
+      - series: 'heartbeat_sqlserver_blocked_requests{collector="c",environment="dev",target="busy",blocking_session_id="72"}'
+        values: '1x5'
+      - series: 'heartbeat_collector_target_up{collector="c",environment="dev",target="down"}'
+        values: '0x5'
+    promql_expr_test:
+      - expr: heartbeat:sqlserver_blocked_requests:sum
+        eval_time: 5m
+        exp_samples:
+          - labels: 'heartbeat:sqlserver_blocked_requests:sum{environment="dev",target="busy"}'
+            value: 3
+          - labels: 'heartbeat:sqlserver_blocked_requests:sum{environment="dev",target="idle"}'
+            value: 0
+
+  - name: Sessions are summed across statuses
+    interval: 1m
+    input_series:
+      - series: 'heartbeat_sqlserver_sessions{collector="c",environment="dev",target="db1",status="running"}'
+        values: '4x5'
+      - series: 'heartbeat_sqlserver_sessions{collector="c",environment="dev",target="db1",status="sleeping"}'
+        values: '40x5'
+    promql_expr_test:
+      - expr: heartbeat:sqlserver_sessions:sum
+        eval_time: 5m
+        exp_samples:
+          - labels: 'heartbeat:sqlserver_sessions:sum{environment="dev",target="db1"}'
+            value: 44
+
+  - name: Watchdog fires with no input at all
+    interval: 1m
+    alert_rule_test:
+      - alertname: Watchdog
+        eval_time: 1m
+        exp_alerts:
+          - exp_labels:
+              severity: none
+            exp_annotations:
+              summary: "Heartbeat alerting pipeline is alive"
+              description: "Always firing. If the dead-man's switch stops receiving it, Heartbeat alerting is down."

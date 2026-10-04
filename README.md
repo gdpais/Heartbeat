@@ -22,7 +22,7 @@ Early MVP construction. See the [roadmap](docs/product/roadmap.md) and
 | --- | --- | --- |
 | DB collector (SQL Server) | `services/db-collector` | Working: probes, hot reload, failure isolation, readiness. Hardening in progress. |
 | OTel gateway | `services/otel-gateway` | Partial: normalizes events, not yet forwarding |
-| Local platform stack | `infra/` | Compose: PostgreSQL, Redis, Prometheus, Loki, Grafana, Alertmanager, OTel Collector, both services |
+| Kubernetes delivery | `infra/helm`, `infra/kind` | One Helm chart for kind, CI and production: both services plus pinned Prometheus, Alertmanager, Grafana, Loki and OTel Collector; kind workflow and acceptance tests |
 | Metadata schema | `db/migrations` | Migrated and tested; no service uses it yet |
 | Shared contracts | `packages/` | JSON schemas for config and telemetry payloads |
 | API, web UI | `apps/api`, `apps/web` | Not started |
@@ -30,12 +30,13 @@ Early MVP construction. See the [roadmap](docs/product/roadmap.md) and
 
 ## Quick start
 
-Prerequisites: Docker with Compose v2, Go 1.27+.
+Prerequisites: Docker, Go 1.27+, and kind, kubectl and Helm at the pinned
+versions (`make tools-check` verifies them).
 
 ```bash
-make up         # start the local stack
-make migrate    # apply the PostgreSQL schema
-make health     # check PostgreSQL and the DB collector
+make chart-deps # fetch the pinned engine charts (once)
+make kind-up    # create a local kind cluster and deploy the Helm chart
+make health     # check the collector, Prometheus, Alertmanager and Grafana
 make test       # Docker-free Go tests
 ```
 
@@ -49,8 +50,11 @@ make sqlserver-dev-up
 curl http://localhost:8082/metrics
 ```
 
-More in the [local development guide](docs/guides/local-development.md):
-integration tests, image builds, reloads and Kubernetes. To monitor a real
+First time? The [walkthrough](docs/guides/kind-walkthrough.md) takes you
+through a full live test step by step. More in the
+[local development guide](docs/guides/local-development.md):
+profiles, tests, the kind acceptance checks and reloads; and in
+[Kubernetes delivery](docs/guides/kubernetes-local.md). To monitor a real
 database, see [onboarding SQL Server targets](docs/guides/database-targets.md).
 
 ## Architecture at a glance
@@ -82,9 +86,12 @@ packages/
   config-schema/       integrations YAML JSON schema
   telemetry-contracts/ shared payload contracts
 db/migrations/         PostgreSQL schema migrations
-config/                integrations.yaml and local-dev example
-infra/                 Compose stacks, Prometheus, Loki, Grafana, Alertmanager,
-                       OTel Collector config, local Kubernetes bundle
+config/                integrations.yaml for running a service outside Kubernetes
+infra/helm/heartbeat/  Helm chart: workloads, engine config, rules, dashboards
+infra/helm/values/     values per environment (kind, minimal, SQL Server sandbox,
+                       production example)
+infra/kind/            local kind cluster config
+infra/docker-compose.test.yml  disposable PostgreSQL fixture for integration tests
 tests/                 repository, migration and integration tests
 docs/                  documentation (index: docs/README.md)
 ```
@@ -94,6 +101,7 @@ scaffold directories hold `.gitkeep` files until their service is implemented.
 
 ## CI
 
-GitHub Actions (`.github/workflows/db-collector-ci.yml`) validates the Compose
-file and runs `make test`, `make test-race`, `make vet` and
-`make test-integration`.
+GitHub Actions (`.github/workflows/db-collector-ci.yml`) runs `make test`,
+`make test-race`, `make vet`, `make rules-check` and `make test-integration`;
+`make chart-check` with Helm 4 and Helm 3; and `make kind-e2e`, the acceptance
+checks on a fresh kind cluster.

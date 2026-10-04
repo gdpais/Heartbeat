@@ -37,7 +37,11 @@ dev container only.
 
 ## 2. Add the target
 
-Add an entry under `collectors[].config.targets[]`:
+Add an entry under `collectors[].config.targets[]` of the environment's
+`integrations` values (the chart renders them into `integrations.yaml`; see
+[config by environment](../reference/configuration.md#config-files-by-environment)).
+Lists replace rather than merge across values files, so restate the whole
+`collectors` list:
 
 ```yaml
 collectors:
@@ -77,22 +81,30 @@ its series after the reload.
 variable must reach the collector **container**. Keep values out of version
 control.
 
-| Where the collector runs | How to pass the credential |
+Put the variable in a Secret and name it in
+`dbCollector.credentials.existingSecret`; the chart loads every key of that
+Secret into the collector's environment.
+
+| Where the collector runs | How the Secret is created |
 | --- | --- |
-| Docker Compose | A local Compose override or secret mechanism for the `db-collector` service. Exporting it in your host shell is not enough. |
-| SQL Server dev overlay | Already wired from the ignored `.env.sqlserver-dev` |
-| Local Kubernetes | An environment variable on the collector pod, from a Secret |
+| kind | `kubectl -n heartbeat create secret generic <name> --from-literal=HEARTBEAT_CREDENTIAL_ENV_FINANCE_PROD=<user>:<password>` |
+| kind SQL Server sandbox | Already wired: `make sqlserver-dev-up` creates it from the ignored `.env.sqlserver-dev` |
+| Production | An External Secrets Operator `ExternalSecret` from AWS Secrets Manager (ADR 0005) |
 
 ## 4. Apply the change
 
 | Where | Steps |
 | --- | --- |
-| Docker Compose | Edit `config/integrations.yaml`. Config-only changes apply within about 2s through file polling, `SIGHUP` or `POST /admin/config/reload`. **Recreate** `db-collector` when its environment (credentials) changes. |
-| SQL Server dev overlay | Edit `config/integrations.local-dev.yaml` instead |
-| Local Kubernetes | Edit the embedded config in `infra/k8s/local/configmap-config.yaml` and run `make k8s-up` ([guide](kubernetes-local.md)) |
+| kind | Put the values in a file and run `EXTRA_VALUES=<file> make kind-deploy`. |
+| Production | Commit the values to the `heartbeat-deploy` repository; Argo CD syncs them. |
 
-The collector validates the file on load; an invalid file is rejected and the
-previous config keeps running.
+Helm rejects values that fail the integrations schema before anything changes.
+A config-only change does not restart the collector: the ConfigMap reaches the
+pod within about a minute (kubelet sync) and the collector picks it up through
+file polling (5s). To apply it sooner, `POST /admin/config/reload` with the
+admin token. A change to the credentials Secret needs
+`kubectl -n heartbeat rollout restart statefulset/db-collector`. An invalid file
+is rejected and the previous config keeps running.
 
 ## 5. Verify
 

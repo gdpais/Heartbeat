@@ -1,0 +1,13 @@
+# Build context for the service images: Go sources only. Keeping docs, infra and
+# local state out also keeps the content-derived kind image tags stable when
+# only non-code files change (scripts/kind.sh).
+.git
+.github
+.tmp
+.env*
+docs
+infra
+scripts
+tests
+db
+*.md
