@@ -166,6 +166,17 @@ for metric in heartbeat_sqlserver_batch_requests_total heartbeat_sqlserver_trans
 done
 wait_for 120 "batch request rate" has_value "rate(heartbeat_sqlserver_batch_requests_total{target=\"sqlserver-dev\"}[1m])"
 pass "one series per throughput counter, and rate() returns a value"
+# Core CPU, buffer cache and file I/O signals. The scheduler monitor writes its
+# first CPU record about a minute after SQL Server starts.
+wait_for 180 "CPU utilisation" has_value "heartbeat_sqlserver_cpu_sql_process_ratio{target=\"sqlserver-dev\"}"
+for metric in heartbeat_sqlserver_page_life_expectancy_seconds heartbeat_sqlserver_buffer_cache_hit_ratio; do
+	[ -n "$(prom_value "$metric{target=\"sqlserver-dev\"}")" ] || fail "no $metric for sqlserver-dev"
+done
+type=$(metric_type heartbeat_sqlserver_database_file_reads_total)
+[ "$type" = counter ] || fail "heartbeat_sqlserver_database_file_reads_total has type [$type], expected counter"
+files=$(prom_value 'count(heartbeat_sqlserver_database_file_reads_total{target="sqlserver-dev"})')
+wait_for 120 "file read rate" has_value "rate(heartbeat_sqlserver_database_file_reads_total{target=\"sqlserver-dev\"}[1m])"
+pass "cpu, buffer_cache and file_io series present ($files database files)"
 # Self-observability: Go runtime and process metrics, probe durations, and
 # error counters created at 0 for every scheduled probe (4 reasons each).
 for query in 'go_goroutines{job="db-collector"}' 'process_resident_memory_bytes{job="db-collector"}' \
