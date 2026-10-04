@@ -7,6 +7,7 @@ require (
 	github.com/lib/pq v1.10.9
 	github.com/microsoft/go-mssqldb v1.8.2
 	github.com/prometheus/client_golang v1.23.2
+	github.com/yuin/goldmark v1.8.6
 	gopkg.in/yaml.v3 v3.0.1
 )
 

@@ -3,6 +3,10 @@
 Start with the page for your role. Every topic has one home; other pages link
 to it instead of repeating it.
 
+These pages are also a static HTML site in `docs/site/` (open
+`docs/site/index.html`). The Markdown is the source: after editing it, run
+`make docs-site` and commit both; CI's `make docs-check` fails if they differ.
+
 ## By audience
 
 **New to Heartbeat (clients, stakeholders, new team members)**

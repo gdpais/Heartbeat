@@ -11,7 +11,9 @@ installed on monitored database hosts.**
 
 **Documentation: [docs/README.md](docs/README.md)**. Start with the
 [product overview](docs/product/overview.md) and the
-[architecture overview](docs/architecture/overview.md).
+[architecture overview](docs/architecture/overview.md). The same docs are
+committed as a static HTML site: open `docs/site/index.html` in a browser, and
+run `make docs-site` after editing the Markdown.
 
 ## Status
 
@@ -86,7 +88,8 @@ config/                integrations.yaml and local-dev example
 infra/                 Compose stacks, Prometheus, Loki, Grafana, Alertmanager,
                        OTel Collector config, local Kubernetes bundle
 tests/                 repository, migration and integration tests
-docs/                  documentation (index: docs/README.md)
+tools/docsite/         Markdown-to-HTML docs site generator
+docs/                  documentation (index: docs/README.md; HTML site: docs/site/)
 ```
 
 Go services follow `cmd/<service>/main.go` plus `internal/<domain>/`. Empty
@@ -95,5 +98,5 @@ scaffold directories hold `.gitkeep` files until their service is implemented.
 ## CI
 
 GitHub Actions (`.github/workflows/db-collector-ci.yml`) validates the Compose
-file and runs `make test`, `make test-race`, `make vet` and
+file and runs `make test`, `make test-race`, `make vet`, `make docs-check` and
 `make test-integration`.

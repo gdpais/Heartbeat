@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Heartbeat docsite (make docs-site)">
+<meta name="color-scheme" content="light dark">
+<title>Heartbeat DB Collector · Heartbeat docs</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%230369a1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' d='M2 12h4l3-7 4 14 3-7h6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../../assets/style.css?v=8486b06a573b">
+<script defer src="../../assets/site.js?v=5b67932127bb"></script>
+</head>
+<body data-root="../../" data-search-index="assets/search-index.js?v=aa145c824108">
+<a class="skip-link" href="#content">Skip to content</a>
+<header class="topbar">
+  <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    <span class="visually-hidden">Menu</span>
+  </button>
+  <a class="brand" href="../../index.html">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Heartbeat <span class="brand-sub">docs</span>
+  </a>
+</header>
+<div class="layout">
+  <nav class="sidebar" id="sidebar" aria-label="Documentation">
+    <a class="brand" href="../../index.html">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Heartbeat <span class="brand-sub">docs</span>
+    </a>
+    <div class="search" role="search">
+      <label class="visually-hidden" for="search-input">Search the docs</label>
+      <input id="search-input" type="search" placeholder="Search the docs" autocomplete="off" spellcheck="false">
+      <div class="search-results" id="search-results" hidden></div>
+    </div>
+    <div class="nav-groups">
+      <ul class="nav-list">
+        <li><a href="../../index.html">Home</a></li>
+      </ul>
+      <section class="nav-group">
+        <h2>New to Heartbeat</h2><p class="nav-note">clients, stakeholders, new team members</p>
+        <ul class="nav-list">
+          <li><a href="../../product/overview.html">Product overview</a>
+          </li>
+          <li><a href="../../product/roadmap.html">Roadmap</a>
+          </li>
+          <li><a href="../../architecture/overview.html">Architecture overview</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Developers</h2>
+        <ul class="nav-list">
+          <li><a href="../../guides/local-development.html">Local development</a>
+          </li>
+          <li><a href="../../guides/kubernetes-local.html">Kubernetes (local)</a>
+          </li>
+          <li><a href="../../architecture/data-model.html">Data model</a>
+          </li>
+          <li><a href="../../architecture/decisions/index.html">Architecture decisions</a>
+            <ul class="nav-list nav-children">
+              <li><a href="../../architecture/decisions/0001-postgresql-metadata-only.html">0001. PostgreSQL stores durable product metadata only</a></li>
+              <li><a href="../../architecture/decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
+              <li><a href="../../architecture/decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
+              <li><a href="../../architecture/decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+            </ul>
+          </li>
+          <li><a href="index.html" aria-current="page">DB collector</a>
+          </li>
+          <li><a href="../otel-gateway/index.html">OTel gateway</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Operators and SREs</h2>
+        <ul class="nav-list">
+          <li><a href="../../guides/database-targets.html">Onboarding SQL Server targets</a>
+          </li>
+          <li><a href="../../reference/configuration.html">Configuration reference</a>
+          </li>
+          <li><a href="../../reference/metrics-and-endpoints.html">Metrics and endpoints reference</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>More pages</h2>
+        <ul class="nav-list">
+          <li><a href="../../architecture/database-observability.html">Database Observability Architecture</a>
+          </li>
+          <li><a href="../../architecture/workflows.html">Operator Workflows</a>
+          </li>
+        </ul>
+      </section>
+      <ul class="nav-list nav-archive">
+        <li><a href="../../archive/index.html">Archive</a></li>
+      </ul>
+    </div>
+  </nav>
+  <div class="scrim" hidden></div>
+  <main id="content" tabindex="-1">
+    <details class="toc-inline">
+      <summary>On this page</summary>
+      <ul>
+        <li class="toc-h2"><a href="#runtime-flow">Runtime Flow</a></li>
+        <li class="toc-h2"><a href="#collector-model">Collector Model</a></li>
+        <li class="toc-h2"><a href="#failure-isolation-and-readiness">Failure Isolation And Readiness</a></li>
+        <li class="toc-h2"><a href="#probe--extractor-model">Probe / Extractor Model</a></li>
+        <li class="toc-h2"><a href="#how-rows-become-metrics">How Rows Become Metrics</a></li>
+        <li class="toc-h2"><a href="#evidence-path">Evidence Path</a></li>
+        <li class="toc-h2"><a href="#connection-handling">Connection Handling</a></li>
+        <li class="toc-h2"><a href="#configuration-and-endpoints">Configuration and Endpoints</a></li>
+        <li class="toc-h2"><a href="#extending-the-service">Extending The Service</a></li>
+        <li class="toc-h2"><a href="#related-code">Related Code</a></li>
+      </ul>
+    </details>
+    <article class="markdown">
+<h1 id="heartbeat-db-collector">Heartbeat DB Collector<a href="#heartbeat-db-collector" class="anchor" title="Link to this section">#</a></h1>
+<p><code>db-collector</code> is the runtime service that connects to SQL Server targets,
+runs configured probes on an interval, and exports the results as Prometheus
+metrics.</p>
+<p>The current implementation is intentionally narrow:</p>
+<ul>
+<li>SQL Server is the only supported engine.</li>
+<li>Collector desired state comes from <code>config/integrations.yaml</code>.</li>
+<li>Probe definitions are implemented as a built-in SQL Server catalog.</li>
+<li>Metrics are exported to Prometheus.</li>
+<li>Structured evidence is produced for blocking/session-style probes, but the
+default wiring currently discards that evidence instead of persisting it.</li>
+</ul>
+<h2 id="runtime-flow">Runtime Flow<a href="#runtime-flow" class="anchor" title="Link to this section">#</a></h2>
+<p>The implemented path is:</p>
+<ol>
+<li><code>services/db-collector/cmd/db-collector/main.go</code> starts the app.</li>
+<li><code>internal/app/app.go</code> loads integration config and creates the shared
+Prometheus registry, SQL executor, exporter, and collector lifecycle.</li>
+<li>Each enabled collector becomes a background <code>Poller</code>.</li>
+<li>The <code>Poller</code> repeatedly calls <code>Runner.RunOnce</code> on the configured scrape
+interval.</li>
+<li><code>Runner</code> expands the collector into scheduled probes and executes them one
+by one.</li>
+<li><code>SQLExecutor</code> opens a SQL Server connection, runs the probe query, decodes
+rows into samples, and optionally emits evidence.</li>
+<li><code>PrometheusExporter</code> records the samples as gauges exposed on <code>/metrics</code>.</li>
+</ol>
+<h2 id="collector-model">Collector Model<a href="#collector-model" class="anchor" title="Link to this section">#</a></h2>
+<p>A collector is the unit of runtime configuration defined in
+<code>internal/config/config.go</code>.</p>
+<p>Each collector contains:</p>
+<ul>
+<li>an ID and kind</li>
+<li>an enabled/disabled flag</li>
+<li>a scrape interval</li>
+<li>a collector-level credential reference</li>
+<li>one or more targets</li>
+<li>optional target filtering through <code>target_names</code></li>
+</ul>
+<p>The collector lifecycle in <code>internal/app/lifecycle.go</code> supports:</p>
+<ul>
+<li><code>Start</code> for new collectors</li>
+<li><code>Update</code> for changed collectors</li>
+<li><code>Drain</code> for graceful shutdown preparation</li>
+<li><code>Stop</code> for full removal</li>
+</ul>
+<p>Collectors are reconciled by stable ID, so config reloads can restart only the
+collectors that changed.</p>
+<p>Reloads are serialized and bounded (30s). Invalid candidates keep the previous
+configuration running. A valid candidate is diffed against the collectors that
+are actually running, and collectors that are not running (crashed or failed)
+are restarted even if their config is unchanged. If applying fails part-way,
+the applied steps are rolled back in reverse order; if the rollback also fails,
+<code>runtime_diverged</code> is set and <code>/readyz</code> returns 503 until a later reload
+succeeds.</p>
+<h2 id="failure-isolation-and-readiness">Failure Isolation And Readiness<a href="#failure-isolation-and-readiness" class="anchor" title="Link to this section">#</a></h2>
+<ul>
+<li>Targets run concurrently (up to 8 per collector); probes within a target run
+one at a time. Each cycle is bounded by the scrape interval, and each probe
+by <code>min(interval/2, 10s)</code> unless <code>timeout_ms</code> overrides it (capped at the
+interval).</li>
+<li>A failing probe only affects its own target. The first failure retries on
+the next cycle; repeated failures back off exponentially (capped at 5m, with
+jitter). Every probe failure is logged as structured JSON with collector,
+target, and probe.</li>
+<li>A failed probe clears its series instead of exporting stale values, and a
+removed collector's series are deleted.</li>
+<li>Self-observability series: <code>heartbeat_collector_target_up</code>,
+<code>heartbeat_collector_target_consecutive_failures</code>,
+<code>heartbeat_collector_target_last_success_timestamp_seconds</code>, and
+<code>heartbeat_collector_cycle_duration_seconds</code>.</li>
+<li>A crashed poller is restarted with backoff (1s doubling to 1m).</li>
+<li><code>/healthz</code> is liveness only. <code>/readyz</code> returns 503 before every collector
+has completed its first cycle, when a collector is failed or crash-looping,
+when a collector has not completed a cycle within 2x its interval + 10s, or
+when the runtime diverged after a failed rollback. A monitored database
+being down does not make the pod unready; it shows as a failed target in the
+<code>/readyz</code> body and metrics. The body never includes raw error text.</li>
+<li>SQL Server connections are pooled per target (max 2 open, 10m lifetime);
+idle pools are closed after 15m.</li>
+<li>Shutdown is bounded: HTTP drain 10s, poller stop 20s, then pooled
+connections are closed.</li>
+</ul>
+<h2 id="probe--extractor-model">Probe / Extractor Model<a href="#probe--extractor-model" class="anchor" title="Link to this section">#</a></h2>
+<p>In this codebase, the extractor logic lives in the SQL Server probe catalog:
+<code>internal/probes/sqlserver/catalog.go</code>.</p>
+<p>Each probe definition includes:</p>
+<ul>
+<li>a name</li>
+<li>a category</li>
+<li>a default SQL query template</li>
+<li>a list of metric descriptors</li>
+</ul>
+<p>Each metric descriptor tells the runtime how to extract one Prometheus sample
+from the query result:</p>
+<ul>
+<li><code>ValueColumn</code> becomes the numeric gauge value</li>
+<li><code>LabelColumns</code> become Prometheus labels</li>
+<li><code>Name</code> and <code>Help</code> define the exported metric</li>
+</ul>
+<p>The built-in probes, their source views and the metrics they emit are listed
+in the <a href="../../reference/metrics-and-endpoints.html#sql-server-probe-metrics">metrics reference</a>.</p>
+<p>If a collector overrides <code>query_template</code> for a probe, the runtime uses that
+SQL instead of the catalog default.</p>
+<h2 id="how-rows-become-metrics">How Rows Become Metrics<a href="#how-rows-become-metrics" class="anchor" title="Link to this section">#</a></h2>
+<p><code>internal/collectors/runner.go</code> contains the row decoding path:</p>
+<ul>
+<li>query rows are read into <code>map[string]any</code></li>
+<li><code>[]byte</code> values are normalized to strings</li>
+<li>numeric values are converted with <code>toFloat64</code></li>
+<li>label keys are taken from the metric descriptor, not from arbitrary columns</li>
+<li>any row that does not contain the configured value column is skipped</li>
+</ul>
+<p>This means the extractor is schema-driven rather than dynamically inferred.
+Only the columns named in the probe catalog contribute to exported metrics.</p>
+<h2 id="evidence-path">Evidence Path<a href="#evidence-path" class="anchor" title="Link to this section">#</a></h2>
+<p>The runtime also produces structured evidence for some probe categories.
+Today, evidence is emitted for probes in the <code>blocking</code> and <code>sessions</code>
+categories when at least one row is returned.</p>
+<p>Evidence includes:</p>
+<ul>
+<li><code>Kind</code></li>
+<li>a human-readable <code>Title</code></li>
+<li>metadata such as row count</li>
+</ul>
+<p>The default service wiring uses <code>LoggingEvidenceSink</code>, which is a no-op sink.
+That keeps the collector metrics-only for now while preserving the evidence
+API for future alerting or investigation workflows.</p>
+<h2 id="connection-handling">Connection Handling<a href="#connection-handling" class="anchor" title="Link to this section">#</a></h2>
+<p><code>internal/connectors/sqlserver/connector.go</code> owns database access.</p>
+<p>Current behavior:</p>
+<ul>
+<li>credentials are resolved through a <code>CredentialResolver</code></li>
+<li>environment-based credentials use the <code>HEARTBEAT_CREDENTIAL_&lt;REF&gt;</code> naming
+pattern (<a href="../../reference/configuration.html#credential-resolution">resolution rules</a>)</li>
+<li>the DSN enables TLS by default</li>
+<li>each connection is pinged before probe execution begins</li>
+<li>probe execution uses a per-probe timeout</li>
+</ul>
+<h2 id="configuration-and-endpoints">Configuration and Endpoints<a href="#configuration-and-endpoints" class="anchor" title="Link to this section">#</a></h2>
+<ul>
+<li><code>integrations.yaml</code> keys, credential resolution and environment variables:
+<a href="../../reference/configuration.html">configuration reference</a></li>
+<li>HTTP endpoints and metrics:
+<a href="../../reference/metrics-and-endpoints.html#db-collector-8082">metrics and endpoints reference</a></li>
+<li>Adding a monitored database:
+<a href="../../guides/database-targets.html">onboarding guide</a></li>
+</ul>
+<h2 id="extending-the-service">Extending The Service<a href="#extending-the-service" class="anchor" title="Link to this section">#</a></h2>
+<p>To add a new SQL Server probe:</p>
+<ol>
+<li>Add a <code>Probe</code> entry in <code>internal/probes/sqlserver/catalog.go</code>.</li>
+<li>Define the SQL query template.</li>
+<li>Add one or more <code>Metric</code> descriptors with the value column and label
+columns.</li>
+<li>Add or update tests in <code>internal/probes/sqlserver/catalog_test.go</code> and
+<code>internal/collectors/runner_test.go</code>.</li>
+</ol>
+<p>To add a new collector:</p>
+<ol>
+<li>Declare it in <code>config/integrations.yaml</code>.</li>
+<li>Ensure the collector kind is <code>sqlserver</code>.</li>
+<li>Provide target credentials through the configured credential reference.</li>
+<li>Confirm the collector appears in <code>/readyz</code> and exports metrics on
+<code>/metrics</code>.</li>
+</ol>
+<h2 id="related-code">Related Code<a href="#related-code" class="anchor" title="Link to this section">#</a></h2>
+<ul>
+<li><code>services/db-collector/internal/app/app.go</code></li>
+<li><code>services/db-collector/internal/app/lifecycle.go</code></li>
+<li><code>services/db-collector/internal/collectors/runner.go</code></li>
+<li><code>services/db-collector/internal/connectors/sqlserver/connector.go</code></li>
+<li><code>services/db-collector/internal/export/exporter.go</code></li>
+<li><code>services/db-collector/internal/metadata/types.go</code></li>
+<li><code>services/db-collector/internal/probes/sqlserver/catalog.go</code></li>
+</ul>
+
+    </article>
+    <footer class="page-footer">
+      Generated from <a href="https://github.com/gdpais/Heartbeat/blob/master/services/db-collector/README.md"><code>services/db-collector/README.md</code></a> by <code>make docs-site</code>. Edit the Markdown, not this page.
+    </footer>
+  </main>
+  <aside class="toc" aria-label="On this page">
+    <h2>On this page</h2>
+    <ul>
+      <li class="toc-h2"><a href="#runtime-flow">Runtime Flow</a></li>
+      <li class="toc-h2"><a href="#collector-model">Collector Model</a></li>
+      <li class="toc-h2"><a href="#failure-isolation-and-readiness">Failure Isolation And Readiness</a></li>
+      <li class="toc-h2"><a href="#probe--extractor-model">Probe / Extractor Model</a></li>
+      <li class="toc-h2"><a href="#how-rows-become-metrics">How Rows Become Metrics</a></li>
+      <li class="toc-h2"><a href="#evidence-path">Evidence Path</a></li>
+      <li class="toc-h2"><a href="#connection-handling">Connection Handling</a></li>
+      <li class="toc-h2"><a href="#configuration-and-endpoints">Configuration and Endpoints</a></li>
+      <li class="toc-h2"><a href="#extending-the-service">Extending The Service</a></li>
+      <li class="toc-h2"><a href="#related-code">Related Code</a></li>
+    </ul>
+  </aside>
+</div>
+</body>
+</html>

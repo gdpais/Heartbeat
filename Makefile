@@ -1,4 +1,4 @@
-.PHONY: help up down config migrate health test test-integration test-race vet sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down sqlserver-dev-config sqlserver-dev-health k8s-up k8s-down k8s-apply k8s-port-forward build-db-collector-image kind-load-db-collector-image
+.PHONY: help up down config migrate health test test-integration test-race vet sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down sqlserver-dev-config sqlserver-dev-health k8s-up k8s-down k8s-apply k8s-port-forward build-db-collector-image kind-load-db-collector-image docs-site docs-check
 
 COMPOSE_FILE := infra/docker-compose.yml
 SQLSERVER_DEV_COMPOSE_FILE := infra/docker-compose.sqlserver-dev.yml
@@ -7,6 +7,10 @@ K8S_DIR := infra/k8s/local
 # Health checks fail fast on HTTP errors (keeping the body) and never hang.
 CURL_CHECK := curl -sS --fail-with-body --connect-timeout 2 --max-time 5 -w '\n'
 DB_COLLECTOR_IMAGE := heartbeat/db-collector:local
+# The HTML docs link source files (Go, YAML, SQL, ...) to this repository URL.
+DOCS_REPO_URL := https://github.com/gdpais/Heartbeat
+DOCS_REPO_REF := master
+DOCSITE := GOCACHE=$$(pwd)/.tmp/gocache go run ./tools/docsite/cmd/docsite -repo-url $(DOCS_REPO_URL) -ref $(DOCS_REPO_REF)
 
 help:
 	@printf '%s\n' \
@@ -25,6 +29,8 @@ help:
 		'  make test-integration    Run isolated PostgreSQL integration tests (requires Docker)' \
 		'  make test-race           Run all Docker-free tests with the race detector' \
 		'  make vet                 Run Go static checks' \
+		'  make docs-site           Regenerate the HTML docs site in docs/site from the Markdown' \
+		'  make docs-check          Fail if docs/site is out of date with the Markdown' \
 		'  make build-db-collector-image   Build the local db-collector container image' \
 		'  make k8s-apply           Apply the local Kubernetes bundle' \
 		'  make k8s-up              Build the image and apply the local Kubernetes bundle' \
@@ -89,6 +95,12 @@ test-race:
 
 vet:
 	GOCACHE=$$(pwd)/.tmp/gocache go vet ./...
+
+docs-site:
+	$(DOCSITE)
+
+docs-check:
+	$(DOCSITE) -check
 
 build-db-collector-image:
 	docker build -t $(DB_COLLECTOR_IMAGE) -f services/db-collector/Dockerfile .

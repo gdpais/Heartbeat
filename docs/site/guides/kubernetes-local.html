@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Heartbeat docsite (make docs-site)">
+<meta name="color-scheme" content="light dark">
+<title>Kubernetes (local) · Heartbeat docs</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%230369a1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' d='M2 12h4l3-7 4 14 3-7h6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../assets/style.css?v=8486b06a573b">
+<script defer src="../assets/site.js?v=5b67932127bb"></script>
+</head>
+<body data-root="../" data-search-index="assets/search-index.js?v=aa145c824108">
+<a class="skip-link" href="#content">Skip to content</a>
+<header class="topbar">
+  <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    <span class="visually-hidden">Menu</span>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Heartbeat <span class="brand-sub">docs</span>
+  </a>
+</header>
+<div class="layout">
+  <nav class="sidebar" id="sidebar" aria-label="Documentation">
+    <a class="brand" href="../index.html">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Heartbeat <span class="brand-sub">docs</span>
+    </a>
+    <div class="search" role="search">
+      <label class="visually-hidden" for="search-input">Search the docs</label>
+      <input id="search-input" type="search" placeholder="Search the docs" autocomplete="off" spellcheck="false">
+      <div class="search-results" id="search-results" hidden></div>
+    </div>
+    <div class="nav-groups">
+      <ul class="nav-list">
+        <li><a href="../index.html">Home</a></li>
+      </ul>
+      <section class="nav-group">
+        <h2>New to Heartbeat</h2><p class="nav-note">clients, stakeholders, new team members</p>
+        <ul class="nav-list">
+          <li><a href="../product/overview.html">Product overview</a>
+          </li>
+          <li><a href="../product/roadmap.html">Roadmap</a>
+          </li>
+          <li><a href="../architecture/overview.html">Architecture overview</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Developers</h2>
+        <ul class="nav-list">
+          <li><a href="local-development.html">Local development</a>
+          </li>
+          <li><a href="kubernetes-local.html" aria-current="page">Kubernetes (local)</a>
+          </li>
+          <li><a href="../architecture/data-model.html">Data model</a>
+          </li>
+          <li><a href="../architecture/decisions/index.html">Architecture decisions</a>
+            <ul class="nav-list nav-children">
+              <li><a href="../architecture/decisions/0001-postgresql-metadata-only.html">0001. PostgreSQL stores durable product metadata only</a></li>
+              <li><a href="../architecture/decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
+              <li><a href="../architecture/decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
+              <li><a href="../architecture/decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+            </ul>
+          </li>
+          <li><a href="../services/db-collector/index.html">DB collector</a>
+          </li>
+          <li><a href="../services/otel-gateway/index.html">OTel gateway</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Operators and SREs</h2>
+        <ul class="nav-list">
+          <li><a href="database-targets.html">Onboarding SQL Server targets</a>
+          </li>
+          <li><a href="../reference/configuration.html">Configuration reference</a>
+          </li>
+          <li><a href="../reference/metrics-and-endpoints.html">Metrics and endpoints reference</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>More pages</h2>
+        <ul class="nav-list">
+          <li><a href="../architecture/database-observability.html">Database Observability Architecture</a>
+          </li>
+          <li><a href="../architecture/workflows.html">Operator Workflows</a>
+          </li>
+        </ul>
+      </section>
+      <ul class="nav-list nav-archive">
+        <li><a href="../archive/index.html">Archive</a></li>
+      </ul>
+    </div>
+  </nav>
+  <div class="scrim" hidden></div>
+  <main id="content" tabindex="-1">
+    <details class="toc-inline">
+      <summary>On this page</summary>
+      <ul>
+        <li class="toc-h2"><a href="#what-it-deploys">What it deploys</a></li>
+        <li class="toc-h2"><a href="#run-it">Run it</a></li>
+        <li class="toc-h2"><a href="#add-a-sql-server-target">Add a SQL Server target</a></li>
+      </ul>
+    </details>
+    <article class="markdown">
+<h1 id="kubernetes-local">Kubernetes (local)<a href="#kubernetes-local" class="anchor" title="Link to this section">#</a></h1>
+<p>A minimal Kustomize bundle in <a href="https://github.com/gdpais/Heartbeat/tree/master/infra/k8s/local"><code>infra/k8s/local</code></a> runs
+the Heartbeat services on a local cluster (for example kind). It is a stopgap:
+<a href="../architecture/decisions/0003-helm-on-kind-and-production.html">ADR 0003</a>
+replaces it with a Helm chart shared by kind, CI and production.</p>
+<h2 id="what-it-deploys">What it deploys<a href="#what-it-deploys" class="anchor" title="Link to this section">#</a></h2>
+<p>Namespace <code>heartbeat</code>:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Creates</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>namespace.yaml</code></td>
+<td>The <code>heartbeat</code> namespace</td>
+</tr>
+<tr>
+<td><code>secret-postgres.yaml</code></td>
+<td>PostgreSQL user, password, database, DSN, and the collector admin token (local values only)</td>
+</tr>
+<tr>
+<td><code>configmap-config.yaml</code></td>
+<td><code>integrations.yaml</code>, mounted into the services. Ships with <code>targets: []</code></td>
+</tr>
+<tr>
+<td><code>postgres.yaml</code></td>
+<td>PostgreSQL StatefulSet and Service</td>
+</tr>
+<tr>
+<td><code>db-collector.yaml</code></td>
+<td>DB collector Deployment (liveness/readiness probes, 45s shutdown grace) and Service on port 8082</td>
+</tr>
+<tr>
+<td><code>otel-gateway.yaml</code></td>
+<td>OTel gateway Deployment and Service on port 8083</td>
+</tr>
+<tr>
+<td><code>kustomization.yaml</code></td>
+<td>Lists the files applied together</td>
+</tr>
+</tbody>
+</table></div>
+<p>Prometheus, Grafana, Loki, Alertmanager and the OTel Collector are <strong>not</strong>
+included. Use Docker Compose for the full stack.</p>
+<h2 id="run-it">Run it<a href="#run-it" class="anchor" title="Link to this section">#</a></h2>
+<pre><code class="language-bash">make k8s-up                        # build heartbeat/db-collector:local and kubectl apply -k infra/k8s/local
+make kind-load-db-collector-image  # kind only: load the image into the cluster
+</code></pre>
+<p><code>make k8s-up</code> builds only the collector image. For the gateway, build and load
+<code>heartbeat/otel-gateway:local</code> yourself:</p>
+<pre><code class="language-bash">docker build -t heartbeat/otel-gateway:local -f services/otel-gateway/Dockerfile .
+kind load docker-image heartbeat/otel-gateway:local
+</code></pre>
+<p>Expose PostgreSQL and the collector on your laptop:</p>
+<pre><code class="language-bash">make k8s-port-forward
+curl http://localhost:8082/healthz
+curl http://localhost:8082/readyz
+</code></pre>
+<p>Remove everything with <code>make k8s-down</code>.</p>
+<h2 id="add-a-sql-server-target">Add a SQL Server target<a href="#add-a-sql-server-target" class="anchor" title="Link to this section">#</a></h2>
+<ol>
+<li>Add the target to the <code>integrations.yaml</code> embedded in
+<code>infra/k8s/local/configmap-config.yaml</code>
+(see <a href="database-targets.html">database targets</a>).</li>
+<li>Make the credential available to the collector pod as
+<code>HEARTBEAT_CREDENTIAL_&lt;REF&gt;</code>
+(<a href="../reference/configuration.html#credential-resolution">credential resolution</a>).</li>
+<li>Re-apply with <code>make k8s-up</code>. ConfigMap updates reach the pod after kubelet
+propagation (up to about a minute); then reload the collector or wait for its
+file polling.</li>
+</ol>
+
+    </article>
+    <footer class="page-footer">
+      Generated from <a href="https://github.com/gdpais/Heartbeat/blob/master/docs/guides/kubernetes-local.md"><code>docs/guides/kubernetes-local.md</code></a> by <code>make docs-site</code>. Edit the Markdown, not this page.
+    </footer>
+  </main>
+  <aside class="toc" aria-label="On this page">
+    <h2>On this page</h2>
+    <ul>
+      <li class="toc-h2"><a href="#what-it-deploys">What it deploys</a></li>
+      <li class="toc-h2"><a href="#run-it">Run it</a></li>
+      <li class="toc-h2"><a href="#add-a-sql-server-target">Add a SQL Server target</a></li>
+    </ul>
+  </aside>
+</div>
+</body>
+</html>

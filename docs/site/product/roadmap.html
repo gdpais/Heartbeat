@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Heartbeat docsite (make docs-site)">
+<meta name="color-scheme" content="light dark">
+<title>Heartbeat Roadmap · Heartbeat docs</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%230369a1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' d='M2 12h4l3-7 4 14 3-7h6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../assets/style.css?v=8486b06a573b">
+<script defer src="../assets/site.js?v=5b67932127bb"></script>
+</head>
+<body data-root="../" data-search-index="assets/search-index.js?v=aa145c824108">
+<a class="skip-link" href="#content">Skip to content</a>
+<header class="topbar">
+  <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    <span class="visually-hidden">Menu</span>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Heartbeat <span class="brand-sub">docs</span>
+  </a>
+</header>
+<div class="layout">
+  <nav class="sidebar" id="sidebar" aria-label="Documentation">
+    <a class="brand" href="../index.html">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Heartbeat <span class="brand-sub">docs</span>
+    </a>
+    <div class="search" role="search">
+      <label class="visually-hidden" for="search-input">Search the docs</label>
+      <input id="search-input" type="search" placeholder="Search the docs" autocomplete="off" spellcheck="false">
+      <div class="search-results" id="search-results" hidden></div>
+    </div>
+    <div class="nav-groups">
+      <ul class="nav-list">
+        <li><a href="../index.html">Home</a></li>
+      </ul>
+      <section class="nav-group">
+        <h2>New to Heartbeat</h2><p class="nav-note">clients, stakeholders, new team members</p>
+        <ul class="nav-list">
+          <li><a href="overview.html">Product overview</a>
+          </li>
+          <li><a href="roadmap.html" aria-current="page">Roadmap</a>
+          </li>
+          <li><a href="../architecture/overview.html">Architecture overview</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Developers</h2>
+        <ul class="nav-list">
+          <li><a href="../guides/local-development.html">Local development</a>
+          </li>
+          <li><a href="../guides/kubernetes-local.html">Kubernetes (local)</a>
+          </li>
+          <li><a href="../architecture/data-model.html">Data model</a>
+          </li>
+          <li><a href="../architecture/decisions/index.html">Architecture decisions</a>
+            <ul class="nav-list nav-children">
+              <li><a href="../architecture/decisions/0001-postgresql-metadata-only.html">0001. PostgreSQL stores durable product metadata only</a></li>
+              <li><a href="../architecture/decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
+              <li><a href="../architecture/decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
+              <li><a href="../architecture/decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+            </ul>
+          </li>
+          <li><a href="../services/db-collector/index.html">DB collector</a>
+          </li>
+          <li><a href="../services/otel-gateway/index.html">OTel gateway</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Operators and SREs</h2>
+        <ul class="nav-list">
+          <li><a href="../guides/database-targets.html">Onboarding SQL Server targets</a>
+          </li>
+          <li><a href="../reference/configuration.html">Configuration reference</a>
+          </li>
+          <li><a href="../reference/metrics-and-endpoints.html">Metrics and endpoints reference</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>More pages</h2>
+        <ul class="nav-list">
+          <li><a href="../architecture/database-observability.html">Database Observability Architecture</a>
+          </li>
+          <li><a href="../architecture/workflows.html">Operator Workflows</a>
+          </li>
+        </ul>
+      </section>
+      <ul class="nav-list nav-archive">
+        <li><a href="../archive/index.html">Archive</a></li>
+      </ul>
+    </div>
+  </nav>
+  <div class="scrim" hidden></div>
+  <main id="content" tabindex="-1">
+    <details class="toc-inline">
+      <summary>On this page</summary>
+      <ul>
+        <li class="toc-h2"><a href="#phase-0--foundations-done">Phase 0 — Foundations (done)</a></li>
+        <li class="toc-h2"><a href="#phase-1--sql-server-collection-path-in-progress">Phase 1 — SQL Server collection path (in progress)</a></li>
+        <li class="toc-h2"><a href="#phase-2--kubernetes-delivery-planned-next">Phase 2 — Kubernetes delivery (planned, next)</a></li>
+        <li class="toc-h2"><a href="#phase-3--control-plane-and-operator-ui">Phase 3 — Control plane and operator UI</a></li>
+        <li class="toc-h2"><a href="#phase-4--application-observability-outsystems-first">Phase 4 — Application observability (OutSystems first)</a></li>
+        <li class="toc-h2"><a href="#phase-5--investigations-alerting-and-reporting">Phase 5 — Investigations, alerting and reporting</a></li>
+        <li class="toc-h2"><a href="#phase-6--reliability-ha-and-security-hardening">Phase 6 — Reliability, HA and security hardening</a></li>
+        <li class="toc-h2"><a href="#phase-7--fallback-file-ingestion-deferred">Phase 7 — Fallback file ingestion (deferred)</a></li>
+        <li class="toc-h2"><a href="#phase-8--custom-collector-vs-grafana-alloy-comparison-late-roadmap">Phase 8 — Custom collector vs Grafana Alloy comparison (late roadmap)</a></li>
+        <li class="toc-h2"><a href="#only-if-scope-expands">Only if scope expands</a></li>
+      </ul>
+    </details>
+    <article class="markdown">
+<h1 id="heartbeat-roadmap">Heartbeat Roadmap<a href="#heartbeat-roadmap" class="anchor" title="Link to this section">#</a></h1>
+<p>The single phase plan for Heartbeat. Phases 0–1 reflect the order in which the
+work actually happened: the SQL Server path was built before the OutSystems
+path, although the original plan put OutSystems first. The order of later phases
+follows the product priorities and can be revisited. Task-level detail lives in
+<a href="https://github.com/gdpais/Heartbeat/blob/master/TODO.md">TODO.md</a> (section numbers in brackets).</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Theme</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>Foundations</td>
+<td>Done</td>
+</tr>
+<tr>
+<td>1</td>
+<td>SQL Server collection path</td>
+<td>In progress</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Kubernetes delivery (kind + Helm)</td>
+<td>Planned, next</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Control plane and operator UI</td>
+<td>Not started</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Application observability (OutSystems first)</td>
+<td>Not started (gateway partial)</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Investigations, alerting and reporting</td>
+<td>Not started</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Reliability, HA and security hardening</td>
+<td>Not started</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Fallback file ingestion</td>
+<td>Deferred</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Custom collector vs Grafana Alloy comparison</td>
+<td>Deferred, late roadmap</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="phase-0--foundations-done">Phase 0 — Foundations (done)<a href="#phase-0--foundations-done" class="anchor" title="Link to this section">#</a></h2>
+<ul>
+<li>Monorepo scaffolding, local Docker Compose stack, CI [0.2]</li>
+<li>Shared JSON-schema contracts for config, telemetry, investigations, alerts and
+reports [0.3]</li>
+<li>PostgreSQL schema migrations and tests (<a href="../architecture/data-model.html">data model</a>) [1]</li>
+<li>Prometheus, Loki, Grafana, Alertmanager and OTel Collector provisioning [9]</li>
+<li>Shared config manager with validation, versioning and hot reload [8]</li>
+</ul>
+<h2 id="phase-1--sql-server-collection-path-in-progress">Phase 1 — SQL Server collection path (in progress)<a href="#phase-1--sql-server-collection-path-in-progress" class="anchor" title="Link to this section">#</a></h2>
+<p>Done:</p>
+<ul>
+<li>DB collector with the built-in probe catalog (waits, blocking, sessions,
+memory, storage, throughput), per-target connection pooling and timeouts [5]</li>
+<li>Failure isolation, bounded backoff, freshness metrics, stale-series cleanup,
+readiness that reflects collector state, reload rollback [15.0]</li>
+<li>SQL Server overview dashboard; local SQL Server sandbox</li>
+</ul>
+<p>Remaining:</p>
+<ul>
+<li>Fix Prometheus recording-rule names and counter/gauge semantics [15.0]</li>
+<li>Per-probe error counters; least-privilege review of all production queries;
+probe review/versioning process [5.2, 15.0]</li>
+<li>Collector endpoint security: authenticated diagnostics, full redaction,
+constant-time token check, NetworkPolicy, per-target TLS settings [15.2]</li>
+<li>Remaining SQL Server signals and dashboards
+(<a href="../architecture/database-observability.html#sql-server-signal-coverage">signal coverage</a>) [11]</li>
+</ul>
+<h2 id="phase-2--kubernetes-delivery-planned-next">Phase 2 — Kubernetes delivery (planned, next)<a href="#phase-2--kubernetes-delivery-planned-next" class="anchor" title="Link to this section">#</a></h2>
+<ul>
+<li>One Helm chart for kind, CI and production; SQL Server stays a Docker test
+target; Make and CI adapted; platform Compose retired
+(<a href="../architecture/decisions/0003-helm-on-kind-and-production.html">ADR 0003</a>)</li>
+<li>Connect Prometheus to Alertmanager and add a Watchdog dead-man's switch</li>
+<li>Answer the open production decisions (cloud, registry, deploy mechanism,
+secrets, Grafana SSO)</li>
+</ul>
+<h2 id="phase-3--control-plane-and-operator-ui">Phase 3 — Control plane and operator UI<a href="#phase-3--control-plane-and-operator-ui" class="anchor" title="Link to this section">#</a></h2>
+<ul>
+<li>API bootstrap: config, logging, health, PostgreSQL and Redis [2.1]</li>
+<li>Local auth with minimal roles [2.2]</li>
+<li>Environments, applications, components, telemetry sources and database
+targets CRUD [2.3–2.5]</li>
+<li>Web UI bootstrap and inventory/onboarding screens [3]</li>
+<li>JSONL audit output [2.10]</li>
+</ul>
+<h2 id="phase-4--application-observability-outsystems-first">Phase 4 — Application observability (OutSystems first)<a href="#phase-4--application-observability-outsystems-first" class="anchor" title="Link to this section">#</a></h2>
+<ul>
+<li>OutSystems parsers and normalization; gateway forwards to the OTel Collector [4.3]</li>
+<li>OutSystems source onboarding and dashboards (overview, errors, latency) with
+drill-down into Loki [10]</li>
+<li>Later: MuleSoft and generic JSON/plaintext sources [4.4]</li>
+</ul>
+<h2 id="phase-5--investigations-alerting-and-reporting">Phase 5 — Investigations, alerting and reporting<a href="#phase-5--investigations-alerting-and-reporting" class="anchor" title="Link to this section">#</a></h2>
+<ul>
+<li>Investigation API, session analyzer and investigation UI [2.6, 6, 12]</li>
+<li>Alert policy rendering to Prometheus and Alertmanager; adaptive baselines [2.7, 13]</li>
+<li>Report templates, schedules, generation and email delivery [2.8, 7, 14]</li>
+<li>See <a href="../architecture/workflows.html">operator workflows</a></li>
+</ul>
+<h2 id="phase-6--reliability-ha-and-security-hardening">Phase 6 — Reliability, HA and security hardening<a href="#phase-6--reliability-ha-and-security-hardening" class="anchor" title="Link to this section">#</a></h2>
+<ul>
+<li>Collector replica ownership and takeover with fencing; recovery-time and
+data-gap objectives; outage testing
+(<a href="../architecture/database-observability.html#collector-recovery-and-high-availability-planned">collector HA design</a>) [15.0]</li>
+<li>Authn/authz hardening, query budgets, rate limits, worker idempotency and
+backoff [15.2]</li>
+<li>Audit rotation and shipping; operational runbooks [15.3]</li>
+<li>Integration and end-to-end test suites [16]</li>
+</ul>
+<h2 id="phase-7--fallback-file-ingestion-deferred">Phase 7 — Fallback file ingestion (deferred)<a href="#phase-7--fallback-file-ingestion-deferred" class="anchor" title="Link to this section">#</a></h2>
+<ul>
+<li>Ingest uploaded/exported files only when direct database connectivity is
+impossible, with validation, lineage and freshness warnings [5.4]</li>
+<li>Always lower priority than live collection</li>
+</ul>
+<h2 id="phase-8--custom-collector-vs-grafana-alloy-comparison-late-roadmap">Phase 8 — Custom collector vs Grafana Alloy comparison (late roadmap)<a href="#phase-8--custom-collector-vs-grafana-alloy-comparison-late-roadmap" class="anchor" title="Link to this section">#</a></h2>
+<ul>
+<li>A parallel, evidence-based comparison on a dedicated branch, after the core
+workflow and reliability baseline are validated; the outcome is open [18]</li>
+<li>See the
+<a href="../architecture/database-observability.html#custom-collector-and-alloy-comparison-late-roadmap">comparison design</a></li>
+</ul>
+<h2 id="only-if-scope-expands">Only if scope expands<a href="#only-if-scope-expands" class="anchor" title="Link to this section">#</a></h2>
+<p>Asset and topology inventory, collector fleet history in PostgreSQL, OIDC/SSO,
+Mimir scale-out, other database engines, DB-backed integration CRUD and audit
+search, autonomous RCA [17].</p>
+
+    </article>
+    <footer class="page-footer">
+      Generated from <a href="https://github.com/gdpais/Heartbeat/blob/master/docs/product/roadmap.md"><code>docs/product/roadmap.md</code></a> by <code>make docs-site</code>. Edit the Markdown, not this page.
+    </footer>
+  </main>
+  <aside class="toc" aria-label="On this page">
+    <h2>On this page</h2>
+    <ul>
+      <li class="toc-h2"><a href="#phase-0--foundations-done">Phase 0 — Foundations (done)</a></li>
+      <li class="toc-h2"><a href="#phase-1--sql-server-collection-path-in-progress">Phase 1 — SQL Server collection path (in progress)</a></li>
+      <li class="toc-h2"><a href="#phase-2--kubernetes-delivery-planned-next">Phase 2 — Kubernetes delivery (planned, next)</a></li>
+      <li class="toc-h2"><a href="#phase-3--control-plane-and-operator-ui">Phase 3 — Control plane and operator UI</a></li>
+      <li class="toc-h2"><a href="#phase-4--application-observability-outsystems-first">Phase 4 — Application observability (OutSystems first)</a></li>
+      <li class="toc-h2"><a href="#phase-5--investigations-alerting-and-reporting">Phase 5 — Investigations, alerting and reporting</a></li>
+      <li class="toc-h2"><a href="#phase-6--reliability-ha-and-security-hardening">Phase 6 — Reliability, HA and security hardening</a></li>
+      <li class="toc-h2"><a href="#phase-7--fallback-file-ingestion-deferred">Phase 7 — Fallback file ingestion (deferred)</a></li>
+      <li class="toc-h2"><a href="#phase-8--custom-collector-vs-grafana-alloy-comparison-late-roadmap">Phase 8 — Custom collector vs Grafana Alloy comparison (late roadmap)</a></li>
+      <li class="toc-h2"><a href="#only-if-scope-expands">Only if scope expands</a></li>
+    </ul>
+  </aside>
+</div>
+</body>
+</html>

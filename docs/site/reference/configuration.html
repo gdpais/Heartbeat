@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Heartbeat docsite (make docs-site)">
+<meta name="color-scheme" content="light dark">
+<title>Configuration Reference · Heartbeat docs</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%230369a1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' d='M2 12h4l3-7 4 14 3-7h6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../assets/style.css?v=8486b06a573b">
+<script defer src="../assets/site.js?v=5b67932127bb"></script>
+</head>
+<body data-root="../" data-search-index="assets/search-index.js?v=aa145c824108">
+<a class="skip-link" href="#content">Skip to content</a>
+<header class="topbar">
+  <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    <span class="visually-hidden">Menu</span>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Heartbeat <span class="brand-sub">docs</span>
+  </a>
+</header>
+<div class="layout">
+  <nav class="sidebar" id="sidebar" aria-label="Documentation">
+    <a class="brand" href="../index.html">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Heartbeat <span class="brand-sub">docs</span>
+    </a>
+    <div class="search" role="search">
+      <label class="visually-hidden" for="search-input">Search the docs</label>
+      <input id="search-input" type="search" placeholder="Search the docs" autocomplete="off" spellcheck="false">
+      <div class="search-results" id="search-results" hidden></div>
+    </div>
+    <div class="nav-groups">
+      <ul class="nav-list">
+        <li><a href="../index.html">Home</a></li>
+      </ul>
+      <section class="nav-group">
+        <h2>New to Heartbeat</h2><p class="nav-note">clients, stakeholders, new team members</p>
+        <ul class="nav-list">
+          <li><a href="../product/overview.html">Product overview</a>
+          </li>
+          <li><a href="../product/roadmap.html">Roadmap</a>
+          </li>
+          <li><a href="../architecture/overview.html">Architecture overview</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Developers</h2>
+        <ul class="nav-list">
+          <li><a href="../guides/local-development.html">Local development</a>
+          </li>
+          <li><a href="../guides/kubernetes-local.html">Kubernetes (local)</a>
+          </li>
+          <li><a href="../architecture/data-model.html">Data model</a>
+          </li>
+          <li><a href="../architecture/decisions/index.html">Architecture decisions</a>
+            <ul class="nav-list nav-children">
+              <li><a href="../architecture/decisions/0001-postgresql-metadata-only.html">0001. PostgreSQL stores durable product metadata only</a></li>
+              <li><a href="../architecture/decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
+              <li><a href="../architecture/decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
+              <li><a href="../architecture/decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+            </ul>
+          </li>
+          <li><a href="../services/db-collector/index.html">DB collector</a>
+          </li>
+          <li><a href="../services/otel-gateway/index.html">OTel gateway</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Operators and SREs</h2>
+        <ul class="nav-list">
+          <li><a href="../guides/database-targets.html">Onboarding SQL Server targets</a>
+          </li>
+          <li><a href="configuration.html" aria-current="page">Configuration reference</a>
+          </li>
+          <li><a href="metrics-and-endpoints.html">Metrics and endpoints reference</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>More pages</h2>
+        <ul class="nav-list">
+          <li><a href="../architecture/database-observability.html">Database Observability Architecture</a>
+          </li>
+          <li><a href="../architecture/workflows.html">Operator Workflows</a>
+          </li>
+        </ul>
+      </section>
+      <ul class="nav-list nav-archive">
+        <li><a href="../archive/index.html">Archive</a></li>
+      </ul>
+    </div>
+  </nav>
+  <div class="scrim" hidden></div>
+  <main id="content" tabindex="-1">
+    <details class="toc-inline">
+      <summary>On this page</summary>
+      <ul>
+        <li class="toc-h2"><a href="#config-files-by-environment">Config files by environment</a></li>
+        <li class="toc-h2"><a href="#integrationsyaml">integrations.yaml</a></li>
+        <li class="toc-h3"><a href="#endpoints">Endpoints</a></li>
+        <li class="toc-h3"><a href="#notification-channels">Notification channels</a></li>
+        <li class="toc-h3"><a href="#credential-references">Credential references</a></li>
+        <li class="toc-h3"><a href="#collectors">Collectors</a></li>
+        <li class="toc-h3"><a href="#validation-and-reload-behavior">Validation and reload behavior</a></li>
+        <li class="toc-h2"><a href="#credential-resolution">Credential resolution</a></li>
+        <li class="toc-h2"><a href="#environment-variables">Environment variables</a></li>
+        <li class="toc-h3"><a href="#db-collector">DB collector</a></li>
+        <li class="toc-h3"><a href="#otel-gateway">OTel gateway</a></li>
+        <li class="toc-h3"><a href="#local-development-files">Local development files</a></li>
+      </ul>
+    </details>
+    <article class="markdown">
+<h1 id="configuration-reference">Configuration Reference<a href="#configuration-reference" class="anchor" title="Link to this section">#</a></h1>
+<p>Heartbeat services are configured by one integrations file plus environment
+variables. Why config lives in YAML rather than PostgreSQL is explained in
+<a href="../architecture/decisions/0002-runtime-config-in-yaml.html">ADR 0002</a>.</p>
+<p>Sources of truth:</p>
+<ul>
+<li>Loader and validation: <a href="https://github.com/gdpais/Heartbeat/blob/master/internal/config/config.go"><code>internal/config/config.go</code></a></li>
+<li>JSON schema: <a href="https://github.com/gdpais/Heartbeat/blob/master/packages/config-schema/src/integrations.schema.json"><code>packages/config-schema/src/integrations.schema.json</code></a></li>
+<li>Default file: <a href="https://github.com/gdpais/Heartbeat/blob/master/config/integrations.yaml"><code>config/integrations.yaml</code></a> (no SQL Server targets)</li>
+<li>Local SQL Server example: <a href="https://github.com/gdpais/Heartbeat/blob/master/config/integrations.local-dev.example.yaml"><code>config/integrations.local-dev.example.yaml</code></a></li>
+</ul>
+<h2 id="config-files-by-environment">Config files by environment<a href="#config-files-by-environment" class="anchor" title="Link to this section">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Environment</th>
+<th>File the collector reads</th>
+<th>How it gets there</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Host-run or Docker Compose</td>
+<td><code>config/integrations.yaml</code></td>
+<td>Mounted at <code>/app/config/integrations.yaml</code></td>
+</tr>
+<tr>
+<td>SQL Server dev overlay</td>
+<td><code>config/integrations.local-dev.yaml</code> (git-ignored)</td>
+<td>Created by <code>make sqlserver-dev-init</code></td>
+</tr>
+<tr>
+<td>Local Kubernetes bundle</td>
+<td><code>integrations.yaml</code> key in <code>infra/k8s/local/configmap-config.yaml</code></td>
+<td>ConfigMap volume</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="integrationsyaml"><code>integrations.yaml</code><a href="#integrationsyaml" class="anchor" title="Link to this section">#</a></h2>
+<h3 id="endpoints">Endpoints<a href="#endpoints" class="anchor" title="Link to this section">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Required</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>grafana.base_url</code></td>
+<td>yes</td>
+<td>Absolute URL, as seen from the operator's browser</td>
+</tr>
+<tr>
+<td><code>grafana.dashboard_templates</code></td>
+<td>no</td>
+<td>Map of name → dashboard path, e.g. <code>sqlserver-overview: /d/sqlserver-overview</code></td>
+</tr>
+<tr>
+<td><code>grafana.deep_link_templates</code></td>
+<td>no</td>
+<td>Map of name → path with <code>${variables}</code>, e.g. <code>/d/sqlserver-overview?var-target=${target}</code></td>
+</tr>
+<tr>
+<td><code>loki.base_url</code></td>
+<td>yes</td>
+<td>Absolute URL</td>
+</tr>
+<tr>
+<td><code>loki.endpoint</code></td>
+<td>no</td>
+<td>Absolute URL (push API)</td>
+</tr>
+<tr>
+<td><code>alertmanager.base_url</code></td>
+<td>yes</td>
+<td>Absolute URL</td>
+</tr>
+<tr>
+<td><code>alertmanager.endpoint</code></td>
+<td>no</td>
+<td>Absolute URL (alerts API)</td>
+</tr>
+<tr>
+<td><code>opentelemetry.endpoint</code></td>
+<td>no</td>
+<td>Absolute URL of the OTel Collector (OTLP HTTP)</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="notification-channels">Notification channels<a href="#notification-channels" class="anchor" title="Link to this section">#</a></h3>
+<pre><code class="language-yaml">notification_channels:
+  - id: default-webhook          # required, unique
+    channel_type: webhook        # required
+    target_ref: http://…         # required
+    credential_ref: env/HEARTBEAT_WEBHOOK_TOKEN   # optional secret reference
+    config:                      # optional string map
+      timeout: 10s
+</code></pre>
+<h3 id="credential-references">Credential references<a href="#credential-references" class="anchor" title="Link to this section">#</a></h3>
+<p><code>credential_refs</code> is an optional map of name → secret reference. Every
+credential reference in the file (<code>credential_refs.*</code>, collector, target and
+channel <code>credential_ref</code>) must start with <code>env/</code>, <code>kv/</code> or <code>secret/</code>. Values
+are never stored in the file.</p>
+<h3 id="collectors">Collectors<a href="#collectors" class="anchor" title="Link to this section">#</a></h3>
+<pre><code class="language-yaml">collectors:
+  - id: sqlserver-default        # required, unique; stable ID used for reload diffs
+    kind: sqlserver              # required; sqlserver is the only implemented kind
+    enabled: true
+    credential_ref: kv/sqlserver-default   # default for targets without their own
+    config:
+      environment: local         # default environment label for targets
+      scrape_interval: 30s       # Go duration, &gt; 0; default 30s
+      target_names: []           # optional subset of targets to run; empty = all
+      probes:                    # default probe set for targets without their own
+        - name: waits
+        - name: blocking
+          timeout_ms: 5000       # optional per-probe timeout override
+        - name: storage
+          query_template: &quot;…&quot;    # optional SQL override of the catalog query
+      targets:
+        - name: finance-prod     # required, unique within the collector; becomes the `target` label
+          environment: prod      # optional; defaults to config.environment
+          host: finance-sql.internal   # required
+          port: 1433             # required, 1–65535
+          database_name: FinanceDB     # initial database
+          credential_ref: env/finance-prod   # optional; defaults to the collector's
+          probes: []             # optional; defaults to config.probes
+</code></pre>
+<p>Built-in probe names: <code>waits</code>, <code>blocking</code>, <code>sessions</code>, <code>memory_pressure</code>,
+<code>storage</code>, <code>throughput</code>. See the
+<a href="metrics-and-endpoints.html#sql-server-probe-metrics">metrics reference</a>.</p>
+<p>Probe timeout defaults to <code>min(scrape_interval / 2, 10s)</code>; <code>timeout_ms</code> overrides
+it and is capped at the interval. A <code>query_template</code> override runs with the
+same login, so review it with the DBAs; see the
+<a href="../guides/database-targets.html#collector-login-permissions">login permissions</a>.</p>
+<h3 id="validation-and-reload-behavior">Validation and reload behavior<a href="#validation-and-reload-behavior" class="anchor" title="Link to this section">#</a></h3>
+<ul>
+<li>The file is validated on startup and on every reload. <code>make config</code> validates
+Compose syntax only, not this file.</li>
+<li>An invalid candidate is rejected and the previous config keeps running.
+<code>POST /admin/config/reload</code> returns 400 for invalid config and 500 for a
+failed apply.</li>
+<li>Collectors are diffed by <code>id</code>; only changed, added or removed collectors are
+restarted. A failed apply is rolled back. If the rollback also fails,
+<code>runtime_diverged</code> is reported and <code>/readyz</code> returns 503.</li>
+<li>Reload triggers: <code>SIGHUP</code>, authenticated <code>POST /admin/config/reload</code>, and file
+polling when <code>HEARTBEAT_CONFIG_WATCH_INTERVAL</code> is set.</li>
+</ul>
+<h2 id="credential-resolution">Credential resolution<a href="#credential-resolution" class="anchor" title="Link to this section">#</a></h2>
+<p>The DB collector resolves a <code>credential_ref</code> from an environment variable:</p>
+<pre><code class="language-text">HEARTBEAT_CREDENTIAL_&lt;REF&gt;
+</code></pre>
+<p><code>&lt;REF&gt;</code> is the full reference upper-cased, with <code>/</code>, <code>-</code> and <code>.</code> replaced by
+<code>_</code>. The value must be <code>username:password</code>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th><code>credential_ref</code></th>
+<th>Environment variable</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>env/sqlserver-b</code></td>
+<td><code>HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_B</code></td>
+</tr>
+<tr>
+<td><code>kv/sqlserver-default</code></td>
+<td><code>HEARTBEAT_CREDENTIAL_KV_SQLSERVER_DEFAULT</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>The variable must be present in the <strong>container's</strong> environment; exporting it
+in your host shell does not pass it into Compose or Kubernetes. Changing it
+requires restarting the collector.</p>
+<h2 id="environment-variables">Environment variables<a href="#environment-variables" class="anchor" title="Link to this section">#</a></h2>
+<h3 id="db-collector">DB collector<a href="#db-collector" class="anchor" title="Link to this section">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR</code></td>
+<td><code>:8082</code></td>
+<td>HTTP listen address</td>
+</tr>
+<tr>
+<td><code>HEARTBEAT_INTEGRATIONS_PATH</code></td>
+<td><code>config/integrations.yaml</code></td>
+<td>Integrations file path</td>
+</tr>
+<tr>
+<td><code>HEARTBEAT_ADMIN_TOKEN</code></td>
+<td>unset</td>
+<td>Bearer token for <code>POST /admin/config/reload</code>; reload is refused without it</td>
+</tr>
+<tr>
+<td><code>HEARTBEAT_CONFIG_WATCH_INTERVAL</code></td>
+<td>unset (off)</td>
+<td>Go duration; poll the config file for changes (Compose uses <code>2s</code>)</td>
+</tr>
+<tr>
+<td><code>HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE</code></td>
+<td><code>false</code></td>
+<td>Skip TLS certificate verification. <strong>Local dev container only</strong>; applies to every target</td>
+</tr>
+<tr>
+<td><code>HEARTBEAT_CREDENTIAL_&lt;REF&gt;</code></td>
+<td>—</td>
+<td>Target credentials, see above</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="otel-gateway">OTel gateway<a href="#otel-gateway" class="anchor" title="Link to this section">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>HEARTBEAT_OTEL_GATEWAY_LISTEN_ADDR</code></td>
+<td><code>:8083</code></td>
+<td>HTTP listen address</td>
+</tr>
+<tr>
+<td><code>HEARTBEAT_INTEGRATIONS_PATH</code></td>
+<td><code>config/integrations.yaml</code></td>
+<td>Integrations file path; the gateway loads it once, with no reload</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="local-development-files">Local development files<a href="#local-development-files" class="anchor" title="Link to this section">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Tracked</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.env.sqlserver-dev.example</code></td>
+<td>yes</td>
+<td>Template for the SQL Server dev overlay</td>
+</tr>
+<tr>
+<td><code>.env.sqlserver-dev</code></td>
+<td>no (mode 600)</td>
+<td>Random per-machine SA password and collector credential, generated by <code>make sqlserver-dev-init</code></td>
+</tr>
+<tr>
+<td><code>config/integrations.local-dev.example.yaml</code></td>
+<td>yes</td>
+<td>Template collector config with the dev SQL Server target</td>
+</tr>
+<tr>
+<td><code>config/integrations.local-dev.yaml</code></td>
+<td>no</td>
+<td>Local copy used by the overlay</td>
+</tr>
+</tbody>
+</table></div>
+
+    </article>
+    <footer class="page-footer">
+      Generated from <a href="https://github.com/gdpais/Heartbeat/blob/master/docs/reference/configuration.md"><code>docs/reference/configuration.md</code></a> by <code>make docs-site</code>. Edit the Markdown, not this page.
+    </footer>
+  </main>
+  <aside class="toc" aria-label="On this page">
+    <h2>On this page</h2>
+    <ul>
+      <li class="toc-h2"><a href="#config-files-by-environment">Config files by environment</a></li>
+      <li class="toc-h2"><a href="#integrationsyaml">integrations.yaml</a></li>
+      <li class="toc-h3"><a href="#endpoints">Endpoints</a></li>
+      <li class="toc-h3"><a href="#notification-channels">Notification channels</a></li>
+      <li class="toc-h3"><a href="#credential-references">Credential references</a></li>
+      <li class="toc-h3"><a href="#collectors">Collectors</a></li>
+      <li class="toc-h3"><a href="#validation-and-reload-behavior">Validation and reload behavior</a></li>
+      <li class="toc-h2"><a href="#credential-resolution">Credential resolution</a></li>
+      <li class="toc-h2"><a href="#environment-variables">Environment variables</a></li>
+      <li class="toc-h3"><a href="#db-collector">DB collector</a></li>
+      <li class="toc-h3"><a href="#otel-gateway">OTel gateway</a></li>
+      <li class="toc-h3"><a href="#local-development-files">Local development files</a></li>
+    </ul>
+  </aside>
+</div>
+</body>
+</html>

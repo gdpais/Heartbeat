@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Heartbeat docsite (make docs-site)">
+<meta name="color-scheme" content="light dark">
+<title>Local Development · Heartbeat docs</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%230369a1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' d='M2 12h4l3-7 4 14 3-7h6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../assets/style.css?v=8486b06a573b">
+<script defer src="../assets/site.js?v=5b67932127bb"></script>
+</head>
+<body data-root="../" data-search-index="assets/search-index.js?v=aa145c824108">
+<a class="skip-link" href="#content">Skip to content</a>
+<header class="topbar">
+  <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    <span class="visually-hidden">Menu</span>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Heartbeat <span class="brand-sub">docs</span>
+  </a>
+</header>
+<div class="layout">
+  <nav class="sidebar" id="sidebar" aria-label="Documentation">
+    <a class="brand" href="../index.html">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Heartbeat <span class="brand-sub">docs</span>
+    </a>
+    <div class="search" role="search">
+      <label class="visually-hidden" for="search-input">Search the docs</label>
+      <input id="search-input" type="search" placeholder="Search the docs" autocomplete="off" spellcheck="false">
+      <div class="search-results" id="search-results" hidden></div>
+    </div>
+    <div class="nav-groups">
+      <ul class="nav-list">
+        <li><a href="../index.html">Home</a></li>
+      </ul>
+      <section class="nav-group">
+        <h2>New to Heartbeat</h2><p class="nav-note">clients, stakeholders, new team members</p>
+        <ul class="nav-list">
+          <li><a href="../product/overview.html">Product overview</a>
+          </li>
+          <li><a href="../product/roadmap.html">Roadmap</a>
+          </li>
+          <li><a href="../architecture/overview.html">Architecture overview</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Developers</h2>
+        <ul class="nav-list">
+          <li><a href="local-development.html" aria-current="page">Local development</a>
+          </li>
+          <li><a href="kubernetes-local.html">Kubernetes (local)</a>
+          </li>
+          <li><a href="../architecture/data-model.html">Data model</a>
+          </li>
+          <li><a href="../architecture/decisions/index.html">Architecture decisions</a>
+            <ul class="nav-list nav-children">
+              <li><a href="../architecture/decisions/0001-postgresql-metadata-only.html">0001. PostgreSQL stores durable product metadata only</a></li>
+              <li><a href="../architecture/decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
+              <li><a href="../architecture/decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
+              <li><a href="../architecture/decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+            </ul>
+          </li>
+          <li><a href="../services/db-collector/index.html">DB collector</a>
+          </li>
+          <li><a href="../services/otel-gateway/index.html">OTel gateway</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Operators and SREs</h2>
+        <ul class="nav-list">
+          <li><a href="database-targets.html">Onboarding SQL Server targets</a>
+          </li>
+          <li><a href="../reference/configuration.html">Configuration reference</a>
+          </li>
+          <li><a href="../reference/metrics-and-endpoints.html">Metrics and endpoints reference</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>More pages</h2>
+        <ul class="nav-list">
+          <li><a href="../architecture/database-observability.html">Database Observability Architecture</a>
+          </li>
+          <li><a href="../architecture/workflows.html">Operator Workflows</a>
+          </li>
+        </ul>
+      </section>
+      <ul class="nav-list nav-archive">
+        <li><a href="../archive/index.html">Archive</a></li>
+      </ul>
+    </div>
+  </nav>
+  <div class="scrim" hidden></div>
+  <main id="content" tabindex="-1">
+    <details class="toc-inline">
+      <summary>On this page</summary>
+      <ul>
+        <li class="toc-h2"><a href="#start-the-platform-stack">Start the platform stack</a></li>
+        <li class="toc-h2"><a href="#sql-server-sandbox">SQL Server sandbox</a></li>
+        <li class="toc-h2"><a href="#run-tests">Run tests</a></li>
+        <li class="toc-h3"><a href="#how-integration-tests-stay-isolated">How integration tests stay isolated</a></li>
+        <li class="toc-h2"><a href="#build-images">Build images</a></li>
+        <li class="toc-h2"><a href="#change-collector-config-without-restarting">Change collector config without restarting</a></li>
+        <li class="toc-h2"><a href="#local-kubernetes">Local Kubernetes</a></li>
+      </ul>
+    </details>
+    <article class="markdown">
+<h1 id="local-development">Local Development<a href="#local-development" class="anchor" title="Link to this section">#</a></h1>
+<p>Run the Heartbeat stack on your machine, test it, and point the DB collector at
+a throwaway SQL Server.</p>
+<p>Prerequisites: Docker with Compose (v2, <code>up --wait</code> support) and Go 1.26+.
+Run <code>make help</code> for the full target list.</p>
+<h2 id="start-the-platform-stack">Start the platform stack<a href="#start-the-platform-stack" class="anchor" title="Link to this section">#</a></h2>
+<pre><code class="language-bash">make up        # docker compose -f infra/docker-compose.yml up -d
+make config    # validate Compose syntax (does not validate integrations.yaml)
+make migrate   # apply the PostgreSQL foundation migration
+make health    # check PostgreSQL and the DB collector
+make down      # stop the stack
+</code></pre>
+<p>The stack runs nine services: PostgreSQL, Redis, Prometheus, Loki,
+Alertmanager, Grafana, OpenTelemetry Collector, the OTel gateway and the DB
+collector. Ports are listed in the
+<a href="../reference/metrics-and-endpoints.html#local-ports-docker-compose">metrics and endpoints reference</a>.</p>
+<p>The default <code>config/integrations.yaml</code> has <strong>no SQL Server targets</strong>, so the
+collector runs but collects nothing. Use the sandbox below, or
+<a href="database-targets.html">configure a real target</a>.</p>
+<h2 id="sql-server-sandbox">SQL Server sandbox<a href="#sql-server-sandbox" class="anchor" title="Link to this section">#</a></h2>
+<p>A dev-only overlay adds a local SQL Server and points the collector at it,
+without editing the tracked <code>infra/docker-compose.yml</code> or
+<code>config/integrations.yaml</code>. This keeps local credentials and targets out of the
+config that feeds shared and production delivery.</p>
+<pre><code class="language-bash">make sqlserver-dev-init     # create ignored .env.sqlserver-dev and config/integrations.local-dev.yaml
+make sqlserver-dev-config   # validate the overlay without printing secrets
+make sqlserver-dev-up       # start the stack plus SQL Server
+make sqlserver-dev-health   # check SQL Server, collector, Prometheus, Grafana
+curl http://localhost:8082/metrics
+make sqlserver-dev-down
+</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Piece</th>
+<th>File</th>
+<th>Tracked</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Compose overlay</td>
+<td><code>infra/docker-compose.sqlserver-dev.yml</code></td>
+<td>yes</td>
+</tr>
+<tr>
+<td>Env template</td>
+<td><code>.env.sqlserver-dev.example</code></td>
+<td>yes</td>
+</tr>
+<tr>
+<td>Env file (random SA password, mode 600)</td>
+<td><code>.env.sqlserver-dev</code></td>
+<td>no</td>
+</tr>
+<tr>
+<td>Collector config template</td>
+<td><code>config/integrations.local-dev.example.yaml</code></td>
+<td>yes</td>
+</tr>
+<tr>
+<td>Collector config</td>
+<td><code>config/integrations.local-dev.yaml</code></td>
+<td>no</td>
+</tr>
+</tbody>
+</table></div>
+<p>The overlay uses <code>MSSQL_PID=Developer</code>, binds SQL Server to
+<code>127.0.0.1:11433</code> only, runs the AMD64 image (emulated on ARM hosts), and gates
+startup on a SQL health check. It uses <code>sa</code> and trusts the container's
+self-signed certificate
+(<code>HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE=true</code>). Both are
+acceptable only because the container is throwaway; production targets need a
+dedicated login and a trusted certificate
+(<a href="database-targets.html#collector-login-permissions">login permissions</a>).</p>
+<h2 id="run-tests">Run tests<a href="#run-tests" class="anchor" title="Link to this section">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Command</th>
+<th>What it runs</th>
+<th>Needs Docker</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>make test</code></td>
+<td>All Go unit and repository contract tests</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>make test-race</code></td>
+<td>The same suite with the race detector</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>make vet</code></td>
+<td>Go static checks</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>make test-integration</code></td>
+<td>PostgreSQL migration and index tests (<code>-tags=integration</code>)</td>
+<td>yes (<code>postgres:17</code>)</td>
+</tr>
+</tbody>
+</table></div>
+<p>CI (<code>.github/workflows/db-collector-ci.yml</code>) runs Compose validation plus all
+four commands.</p>
+<h3 id="how-integration-tests-stay-isolated">How integration tests stay isolated<a href="#how-integration-tests-stay-isolated" class="anchor" title="Link to this section">#</a></h3>
+<p>Integration tests never touch your developer stack:</p>
+<ul>
+<li>Each test uses <code>infra/docker-compose.test.yml</code> under a random
+<code>heartbeat-test-&lt;id&gt;</code> project, with no published ports and tmpfs storage.</li>
+<li>Only <code>db/migrations</code> is bind-mounted, read-only.</li>
+<li><code>COMPOSE_*</code> overrides and dotenv files are ignored; your selected Docker
+daemon is kept.</li>
+<li>Cleanup is registered before startup and removes only that test's project.
+Tests run concurrently, and separate test processes are isolated too.</li>
+</ul>
+<p>If a test process is killed, find the leftover project with
+<code>docker compose ls</code> and remove only that <code>heartbeat-test-&lt;id&gt;</code> project using the
+test Compose file. Never use <code>make down</code> as test cleanup.</p>
+<h2 id="build-images">Build images<a href="#build-images" class="anchor" title="Link to this section">#</a></h2>
+<p>Both Dockerfiles compile for Docker's selected target platform. The build stage
+runs natively and cross-compiles Go, so no CPU emulation is needed.</p>
+<pre><code class="language-bash">docker build --platform linux/arm64 -t heartbeat/db-collector:local -f services/db-collector/Dockerfile .
+docker build --platform linux/amd64 -t heartbeat/db-collector:amd64 -f services/db-collector/Dockerfile .
+</code></pre>
+<p>Use <code>services/otel-gateway/Dockerfile</code> and <code>heartbeat/otel-gateway</code> for the
+gateway. BuildKit supplies <code>TARGETOS</code> and <code>TARGETARCH</code>; do not override them
+separately from <code>--platform</code>.</p>
+<h2 id="change-collector-config-without-restarting">Change collector config without restarting<a href="#change-collector-config-without-restarting" class="anchor" title="Link to this section">#</a></h2>
+<p>In Compose, the collector polls its config file every 2s
+(<code>HEARTBEAT_CONFIG_WATCH_INTERVAL</code>), so edits to <code>config/integrations.yaml</code> apply
+automatically. To force a reload:</p>
+<pre><code class="language-bash">curl -X POST -H &quot;Authorization: Bearer local-admin-token&quot; http://localhost:8082/admin/config/reload
+</code></pre>
+<p>Credential environment variables are read at startup; recreate the container
+when they change. See the <a href="../reference/configuration.html">configuration reference</a>.</p>
+<h2 id="local-kubernetes">Local Kubernetes<a href="#local-kubernetes" class="anchor" title="Link to this section">#</a></h2>
+<p>To run the collector on a local cluster instead, see
+<a href="kubernetes-local.html">Kubernetes (local)</a>.</p>
+
+    </article>
+    <footer class="page-footer">
+      Generated from <a href="https://github.com/gdpais/Heartbeat/blob/master/docs/guides/local-development.md"><code>docs/guides/local-development.md</code></a> by <code>make docs-site</code>. Edit the Markdown, not this page.
+    </footer>
+  </main>
+  <aside class="toc" aria-label="On this page">
+    <h2>On this page</h2>
+    <ul>
+      <li class="toc-h2"><a href="#start-the-platform-stack">Start the platform stack</a></li>
+      <li class="toc-h2"><a href="#sql-server-sandbox">SQL Server sandbox</a></li>
+      <li class="toc-h2"><a href="#run-tests">Run tests</a></li>
+      <li class="toc-h3"><a href="#how-integration-tests-stay-isolated">How integration tests stay isolated</a></li>
+      <li class="toc-h2"><a href="#build-images">Build images</a></li>
+      <li class="toc-h2"><a href="#change-collector-config-without-restarting">Change collector config without restarting</a></li>
+      <li class="toc-h2"><a href="#local-kubernetes">Local Kubernetes</a></li>
+    </ul>
+  </aside>
+</div>
+</body>
+</html>

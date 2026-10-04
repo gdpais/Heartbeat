@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Heartbeat docsite (make docs-site)">
+<meta name="color-scheme" content="light dark">
+<title>Architecture Decisions · Heartbeat docs</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%230369a1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' d='M2 12h4l3-7 4 14 3-7h6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../../assets/style.css?v=8486b06a573b">
+<script defer src="../../assets/site.js?v=5b67932127bb"></script>
+</head>
+<body data-root="../../" data-search-index="assets/search-index.js?v=aa145c824108">
+<a class="skip-link" href="#content">Skip to content</a>
+<header class="topbar">
+  <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    <span class="visually-hidden">Menu</span>
+  </button>
+  <a class="brand" href="../../index.html">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Heartbeat <span class="brand-sub">docs</span>
+  </a>
+</header>
+<div class="layout">
+  <nav class="sidebar" id="sidebar" aria-label="Documentation">
+    <a class="brand" href="../../index.html">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Heartbeat <span class="brand-sub">docs</span>
+    </a>
+    <div class="search" role="search">
+      <label class="visually-hidden" for="search-input">Search the docs</label>
+      <input id="search-input" type="search" placeholder="Search the docs" autocomplete="off" spellcheck="false">
+      <div class="search-results" id="search-results" hidden></div>
+    </div>
+    <div class="nav-groups">
+      <ul class="nav-list">
+        <li><a href="../../index.html">Home</a></li>
+      </ul>
+      <section class="nav-group">
+        <h2>New to Heartbeat</h2><p class="nav-note">clients, stakeholders, new team members</p>
+        <ul class="nav-list">
+          <li><a href="../../product/overview.html">Product overview</a>
+          </li>
+          <li><a href="../../product/roadmap.html">Roadmap</a>
+          </li>
+          <li><a href="../overview.html">Architecture overview</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Developers</h2>
+        <ul class="nav-list">
+          <li><a href="../../guides/local-development.html">Local development</a>
+          </li>
+          <li><a href="../../guides/kubernetes-local.html">Kubernetes (local)</a>
+          </li>
+          <li><a href="../data-model.html">Data model</a>
+          </li>
+          <li><a href="index.html" aria-current="page">Architecture decisions</a>
+            <ul class="nav-list nav-children">
+              <li><a href="0001-postgresql-metadata-only.html">0001. PostgreSQL stores durable product metadata only</a></li>
+              <li><a href="0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
+              <li><a href="0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
+              <li><a href="0004-core-technology-choices.html">0004. Core technology choices</a></li>
+            </ul>
+          </li>
+          <li><a href="../../services/db-collector/index.html">DB collector</a>
+          </li>
+          <li><a href="../../services/otel-gateway/index.html">OTel gateway</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Operators and SREs</h2>
+        <ul class="nav-list">
+          <li><a href="../../guides/database-targets.html">Onboarding SQL Server targets</a>
+          </li>
+          <li><a href="../../reference/configuration.html">Configuration reference</a>
+          </li>
+          <li><a href="../../reference/metrics-and-endpoints.html">Metrics and endpoints reference</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>More pages</h2>
+        <ul class="nav-list">
+          <li><a href="../database-observability.html">Database Observability Architecture</a>
+          </li>
+          <li><a href="../workflows.html">Operator Workflows</a>
+          </li>
+        </ul>
+      </section>
+      <ul class="nav-list nav-archive">
+        <li><a href="../../archive/index.html">Archive</a></li>
+      </ul>
+    </div>
+  </nav>
+  <div class="scrim" hidden></div>
+  <main id="content" tabindex="-1">
+    <article class="markdown">
+<h1 id="architecture-decisions">Architecture Decisions<a href="#architecture-decisions" class="anchor" title="Link to this section">#</a></h1>
+<p>Short records of decisions that shape Heartbeat: the context, what was
+decided, and the consequences. Add a new record instead of rewriting an old
+one; mark the old record <em>Superseded by ADR NNNN</em>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>ADR</th>
+<th>Decision</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="0001-postgresql-metadata-only.html">0001</a></td>
+<td>PostgreSQL stores durable product metadata only, never telemetry</td>
+<td>Accepted</td>
+</tr>
+<tr>
+<td><a href="0002-runtime-config-in-yaml.html">0002</a></td>
+<td>Integrations and collector desired state come from YAML/Kubernetes, with hot reload</td>
+<td>Accepted</td>
+</tr>
+<tr>
+<td><a href="0003-helm-on-kind-and-production.html">0003</a></td>
+<td>Deliver the platform with Helm on kind (local, CI) and production Kubernetes</td>
+<td>Accepted; not implemented</td>
+</tr>
+<tr>
+<td><a href="0004-core-technology-choices.html">0004</a></td>
+<td>Core stack: Go, React, Prometheus, Loki, Grafana, Alertmanager, OTel Collector, PostgreSQL, Redis</td>
+<td>Accepted</td>
+</tr>
+</tbody>
+</table></div>
+<p>Template:</p>
+<pre><code class="language-markdown"># NNNN. Title
+
+- Status: Proposed | Accepted | Superseded by NNNN
+- Date: YYYY-MM-DD
+
+## Context
+## Decision
+## Consequences
+</code></pre>
+<p>Working documents such as dated plans (<code>docs/plans/</code>) and reviews
+(<code>docs/reviews/</code>) stay out of git. When one of them leads to a decision, record
+the outcome here.</p>
+
+    </article>
+    <footer class="page-footer">
+      Generated from <a href="https://github.com/gdpais/Heartbeat/blob/master/docs/architecture/decisions/README.md"><code>docs/architecture/decisions/README.md</code></a> by <code>make docs-site</code>. Edit the Markdown, not this page.
+    </footer>
+  </main>
+</div>
+</body>
+</html>
