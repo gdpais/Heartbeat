@@ -52,7 +52,10 @@ userinfo in every `base_url`, `endpoint`, dashboard and deep-link template, and
 channel `target_ref`, for all four integrations. Put secrets in a
 `credential_ref` instead; URLs end up in logs, diagnostics and browser links.
 The check also catches templates with `${variables}` in the host and the
-forms browsers accept (`http:\\user@host`, `http:user@host`).
+forms browsers accept (`http:\\user@host`, `http:user@host`, tabs or newlines
+inside the URL). A `target_ref` is also rejected when it is a scheme-less
+`user:password@host`, which tools like curl read as credentials; plain
+addresses (`ops@example.com`) and `mailto:` are fine.
 
 ### Notification channels
 
@@ -94,12 +97,18 @@ collectors:
       targets:
         - name: finance-prod     # required, unique within the collector; becomes the `target` label
           environment: prod      # optional; defaults to config.environment
-          host: finance-sql.internal   # required
+          host: finance-sql.internal   # required; name, IPv4 or bare IPv6, no port
           port: 1433             # required, 1–65535
           database_name: FinanceDB     # initial database
           credential_ref: env/finance-prod   # optional; defaults to the collector's
           probes: []             # optional; defaults to config.probes
 ```
+
+`host` is a DNS name or IPv4 address (letters, digits, `.`, `-`, `_`) or a bare
+IPv6 address such as `2001:db8::5`, without brackets. A port (`db:1433`),
+credentials, a path, an instance name (`db\INST`) or whitespace is rejected:
+the collector builds the connection URL from it, and an unparsable URL would
+put the password into the driver's error.
 
 Built-in probe names: `waits`, `blocking`, `sessions`, `memory_pressure`,
 `storage`, `throughput`. See the
