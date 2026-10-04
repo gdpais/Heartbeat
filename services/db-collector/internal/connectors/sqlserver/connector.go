@@ -220,7 +220,7 @@ func (m Manager) Open(ctx context.Context, target collectormetadata.DatabaseTarg
 	}
 	dsn := m.dsn(target, creds)
 	if m.pool == nil {
-		db, _, err := m.connect(ctx, target, dsn, false)
+		db, _, err := m.connect(ctx, target, dsn, creds, false)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -228,7 +228,7 @@ func (m Manager) Open(ctx context.Context, target collectormetadata.DatabaseTarg
 	}
 	key := m.pool.key(m, target, creds)
 	return m.pool.acquire(ctx, key, func(ctx context.Context) (*sql.DB, bool, error) {
-		return m.connect(ctx, target, dsn, true)
+		return m.connect(ctx, target, dsn, creds, true)
 	})
 }
 
@@ -284,11 +284,12 @@ func (m Manager) dsn(target collectormetadata.DatabaseTarget, creds Credential) 
 // connect opens a handle for dsn and verifies it with the sysadmin check
 // query bounded by DialTimeout, logging a warning when the login is a member
 // of sysadmin.  pooled applies the pool limits.  On failure the handle is
-// closed.
-func (m Manager) connect(ctx context.Context, target collectormetadata.DatabaseTarget, dsn string, pooled bool) (*sql.DB, bool, error) {
+// closed and the error is scrubbed of creds (see [redactError]): go-mssqldb
+// parses dsn when it connects, and its parse errors quote the whole DSN.
+func (m Manager) connect(ctx context.Context, target collectormetadata.DatabaseTarget, dsn string, creds Credential, pooled bool) (*sql.DB, bool, error) {
 	db, err := sql.Open(m.driver(), dsn)
 	if err != nil {
-		return nil, false, fmt.Errorf("open sqlserver connection for target %s: %w", target.Name, err)
+		return nil, false, fmt.Errorf("open sqlserver connection for target %s: %w", target.Name, redactError(err, creds))
 	}
 	if pooled {
 		db.SetMaxOpenConns(defaultMaxOpenConns)
@@ -307,7 +308,7 @@ func (m Manager) connect(ctx context.Context, target collectormetadata.DatabaseT
 	var member sql.NullInt64
 	if err := db.QueryRowContext(pingCtx, sysadminCheckQuery).Scan(&member); err != nil {
 		_ = db.Close()
-		return nil, false, fmt.Errorf("check sqlserver target %s: %w", target.Name, err)
+		return nil, false, fmt.Errorf("check sqlserver target %s: %w", target.Name, redactError(err, creds))
 	}
 	sysadmin := member.Valid && member.Int64 == 1
 	if sysadmin {
@@ -317,6 +318,94 @@ func (m Manager) connect(ctx context.Context, target collectormetadata.DatabaseT
 	}
 	return db, sysadmin, nil
 }
+
+// redactedSecret replaces credential material in error text.
+const redactedSecret = "xxxxx"
+
+// redactError removes credential material from err: the userinfo of the URL
+// of every [*url.Error] in its chain (edited in place, so errors.As callers
+// see the redacted URL too, and replaced in err's text, which wrappers such
+// as fmt.Errorf compute when they are created), and any remaining occurrence
+// of the password, raw or URL-escaped.  The chain is preserved for errors.Is
+// and errors.As.  It returns nil for a nil err.
+func redactError(err error, creds Credential) error {
+	if err == nil {
+		return nil
+	}
+	text := err.Error()
+	redacted := text
+	for original, safe := range redactURLErrors(err, map[string]string{}) {
+		redacted = strings.ReplaceAll(redacted, original, safe)
+	}
+	if creds.Password != "" {
+		userinfo := strings.TrimPrefix(url.UserPassword("", creds.Password).String(), ":")
+		for _, secret := range []string{creds.Password, userinfo, url.QueryEscape(creds.Password), url.PathEscape(creds.Password)} {
+			redacted = strings.ReplaceAll(redacted, secret, redactedSecret)
+		}
+	}
+	if redacted == text {
+		return err
+	}
+	return &redactedErr{text: redacted, err: err}
+}
+
+// redactURLErrors strips the userinfo from the URL of every [*url.Error] in
+// err's chain, including joined errors, and records each original URL and
+// its redacted form in replaced, which it returns.
+func redactURLErrors(err error, replaced map[string]string) map[string]string {
+	switch e := err.(type) {
+	case nil:
+		return replaced
+	case *url.Error:
+		if safe := redactURL(e.URL); safe != e.URL {
+			replaced[e.URL] = safe
+			e.URL = safe
+		}
+	}
+	switch e := err.(type) {
+	case interface{ Unwrap() error }:
+		redactURLErrors(e.Unwrap(), replaced)
+	case interface{ Unwrap() []error }:
+		for _, inner := range e.Unwrap() {
+			redactURLErrors(inner, replaced)
+		}
+	}
+	return replaced
+}
+
+// redactURL drops the userinfo ("user:password@") from raw, which need not
+// be a valid URL: parse errors quote the very strings that failed to parse.
+// The userinfo is everything before the last "@" of the authority, which
+// ends at the first "/", "?" or "#"; userinfo escapes all four characters.
+func redactURL(raw string) string {
+	scheme := strings.Index(raw, "://")
+	if scheme < 0 {
+		return raw
+	}
+	rest := raw[scheme+len("://"):]
+	end := strings.IndexAny(rest, "/?#")
+	if end < 0 {
+		end = len(rest)
+	}
+	at := strings.LastIndex(rest[:end], "@")
+	if at < 0 {
+		return raw
+	}
+	return raw[:scheme+len("://")] + rest[at+1:]
+}
+
+// redactedErr is an error whose text had credential material removed.  It
+// unwraps to the original error.
+type redactedErr struct {
+	text string
+	err  error
+}
+
+// Error implements error with the redacted text.
+func (e *redactedErr) Error() string { return e.text }
+
+// Unwrap returns the original error.
+func (e *redactedErr) Unwrap() error { return e.err }
 
 // logger returns the configured logger or [slog.Default].
 func (m Manager) logger() *slog.Logger {

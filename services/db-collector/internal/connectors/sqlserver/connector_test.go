@@ -734,3 +734,107 @@ func TestSysadminFollowsTheMostRecentPool(t *testing.T) {
 		t.Fatal("Sysadmin known for a Manager without a pool")
 	}
 }
+
+// secretForms returns the forms in which password can appear in error text.
+func secretForms(password string) []string {
+	return []string{
+		password,
+		strings.TrimPrefix(url.UserPassword("", password).String(), ":"),
+		url.QueryEscape(password),
+		url.PathEscape(password),
+	}
+}
+
+// go-mssqldb parses the DSN when it connects, and its parse errors quote the
+// whole DSN.  A host that already carries a port makes the parse fail before
+// any dial, so the real driver reproduces the leak without a server.
+func TestOpenErrorsNeverContainCredentials(t *testing.T) {
+	const password = "S3cret!@/?#:%+ x'"
+	resolver := &mapResolver{creds: map[string]Credential{"ref-a": {Username: "collector", Password: password}}}
+	tg := target("bad-host", "db.example:1433", "ref-a")
+	for _, tc := range []struct {
+		name    string
+		manager Manager
+	}{
+		{"pooled", NewManager(resolver)},
+		{"unpooled", Manager{Resolver: resolver, DialTimeout: time.Second}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(func() { _ = tc.manager.Close() })
+			_, _, err := tc.manager.Open(context.Background(), tg)
+			if err == nil {
+				t.Fatal("Open succeeded for a malformed host")
+			}
+			if !strings.Contains(err.Error(), "invalid host") {
+				t.Fatalf("err = %v, want the DSN parse failure", err)
+			}
+			for _, secret := range append(secretForms(password), "collector:") {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("error contains credential material %q: %v", secret, err)
+				}
+			}
+			var urlErr *url.Error
+			if !errors.As(err, &urlErr) {
+				t.Fatalf("error chain lost the *url.Error: %v", err)
+			}
+			if strings.Contains(urlErr.URL, "@") {
+				t.Fatalf("url.Error.URL keeps userinfo: %q", urlErr.URL)
+			}
+		})
+	}
+}
+
+func TestRedactError(t *testing.T) {
+	creds := Credential{Username: "collector", Password: "p@ss/w0rd!"}
+	sentinel := errors.New("sentinel")
+	dsn := "sqlserver://collector:" + strings.TrimPrefix(url.UserPassword("", creds.Password).String(), ":") + "@[db:1]:1433?database=master"
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, ""},
+		{"no secret", fmt.Errorf("dial tcp: %w", sentinel), "dial tcp: sentinel"},
+		{"wrapped url error", fmt.Errorf("check: %w", &url.Error{Op: "parse", URL: dsn, Err: sentinel}),
+			`check: parse "sqlserver://[db:1]:1433?database=master": sentinel`},
+		{"joined url error", errors.Join(sentinel, &url.Error{Op: "parse", URL: dsn, Err: sentinel}),
+			"sentinel\n" + `parse "sqlserver://[db:1]:1433?database=master": sentinel`},
+		{"raw password in text", fmt.Errorf("login %s: %w", creds.Password, sentinel), "login xxxxx: sentinel"},
+		{"query-escaped password in text", fmt.Errorf("dsn password=%s: %w", url.QueryEscape(creds.Password), sentinel), "dsn password=xxxxx: sentinel"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactError(tc.err, creds)
+			if tc.err == nil {
+				if got != nil {
+					t.Fatalf("redactError(nil) = %v", got)
+				}
+				return
+			}
+			if got.Error() != tc.want {
+				t.Fatalf("redactError() = %q, want %q", got.Error(), tc.want)
+			}
+			if !errors.Is(got, sentinel) {
+				t.Fatal("redactError broke the error chain")
+			}
+			for _, secret := range secretForms(creds.Password) {
+				if strings.Contains(got.Error(), secret) {
+					t.Fatalf("redacted error contains %q", secret)
+				}
+			}
+		})
+	}
+}
+
+func TestRedactURL(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{"sqlserver://u:p%40ss@db:1433?database=master", "sqlserver://db:1433?database=master"},
+		{"sqlserver://u:p@[db.example:1433]:1433?x=y", "sqlserver://[db.example:1433]:1433?x=y"},
+		{"sqlserver://u:p@db/instance", "sqlserver://db/instance"},
+		{"sqlserver://db:1433?email=a@b", "sqlserver://db:1433?email=a@b"},
+		{"not a url", "not a url"},
+	} {
+		if got := redactURL(tc.raw); got != tc.want {
+			t.Errorf("redactURL(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
