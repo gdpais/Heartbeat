@@ -71,7 +71,7 @@ type series struct {
 	// labelPairs are built once when the series is created and never
 	// modified, so every scrape shares them instead of rebuilding them.
 	labelPairs []*dto.LabelPair
-	value       float64
+	value      float64
 	// owners counts the scopes that currently report the series.
 	owners int
 	// written and owned hold the generation of the last RecordScope call that
