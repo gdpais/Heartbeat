@@ -202,10 +202,10 @@ func NewManager(resolver CredentialResolver) Manager {
 // pool) and every other connection setting.  The pool is created and verified
 // with the sysadmin check query, bounded by DialTimeout, on first use only; a
 // failed first check is not cached, so the next Open retries.  A login that
-// is a member of sysadmin is logged as a warning once per pool.  cleanup releases the caller's
-// reference; it does not close the pool.  Pools unused for 15 minutes are
-// closed lazily by subsequent Opens.  After [Manager.Close], Open returns
-// [ErrManagerClosed].
+// is a member of sysadmin is logged as a warning once per pool.  cleanup
+// releases the caller's reference; it does not close the pool.  Pools unused
+// for 15 minutes are closed lazily by subsequent Opens.  After
+// [Manager.Close], Open returns [ErrManagerClosed].
 //
 // For a Manager without a pool (a struct literal), Open opens and checks a new
 // handle on every call (warning on every call for a sysadmin login) and
