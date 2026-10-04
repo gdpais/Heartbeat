@@ -83,6 +83,11 @@ const (
 	// MetricCycleDuration is the wall time of the collector's last cycle.
 	// Labels: collector.
 	MetricCycleDuration = "heartbeat_collector_cycle_duration_seconds"
+	// MetricTargetLoginSysadmin is 1 when the collector's login for the target
+	// is a member of the sysadmin server role and 0 when it is not.  Absent
+	// while unknown, or when the executor is not a [SysadminReporter].
+	// Labels: collector, environment, target.
+	MetricTargetLoginSysadmin = "heartbeat_collector_target_login_sysadmin"
 )
 
 // fallbackSinkMu serialises evidence publishing for Runners that were not
@@ -93,6 +98,16 @@ var fallbackSinkMu sync.Mutex
 // returns the decoded metric samples along with any structured evidence.
 type ProbeExecutor interface {
 	RunProbe(context.Context, collectormetadata.ScheduledProbe) ([]collectorexport.Sample, []collectormetadata.Evidence, error)
+}
+
+// SysadminReporter is an optional extension of [ProbeExecutor].  When the
+// Runner's executor implements it, the Runner exports
+// [MetricTargetLoginSysadmin] with each target's health series.
+type SysadminReporter interface {
+	// TargetSysadmin reports whether the login used for target is a member of
+	// the sysadmin server role.  ok is false while that is unknown, for
+	// example before the first connection to the target.  It must not block.
+	TargetSysadmin(target collectormetadata.DatabaseTarget) (sysadmin, ok bool)
 }
 
 // EvidenceSink receives structured evidence produced by probes in categories
@@ -470,7 +485,32 @@ func (r Runner) recordHealth(collectorID string, group targetGroup, result Targe
 			Labels: labels(),
 		})
 	}
+	if sysadmin, ok := r.targetSysadmin(group); ok {
+		samples = append(samples, collectorexport.Sample{
+			Metric: MetricTargetLoginSysadmin,
+			Help:   "Whether the collector's login for the target is a member of the sysadmin server role (1) or not (0).",
+			Value:  sysadmin,
+			Labels: labels(),
+		})
+	}
 	r.recordScope(collectorexport.Scope{Collector: collectorID, Target: group.name, Probe: healthScopeProbe}, samples)
+}
+
+// targetSysadmin returns 1 or 0 for whether the login of group's target is a
+// member of sysadmin, and false when the executor cannot tell.
+func (r Runner) targetSysadmin(group targetGroup) (float64, bool) {
+	reporter, ok := r.executor.(SysadminReporter)
+	if !ok || len(group.items) == 0 {
+		return 0, false
+	}
+	sysadmin, ok := reporter.TargetSysadmin(group.items[0].Target)
+	if !ok {
+		return 0, false
+	}
+	if sysadmin {
+		return 1, true
+	}
+	return 0, true
 }
 
 // recordCycle exports the duration of one collector cycle.
@@ -625,6 +665,12 @@ func (e SQLExecutor) RunProbe(ctx context.Context, item collectormetadata.Schedu
 		return nil, nil, err
 	}
 	return decodeRows(item, probe, maps), buildEvidence(item, probe, maps), nil
+}
+
+// TargetSysadmin implements [SysadminReporter] from the sysadmin check the
+// Manager ran when it established target's connection pool.
+func (e SQLExecutor) TargetSysadmin(target collectormetadata.DatabaseTarget) (sysadmin, ok bool) {
+	return e.Manager.Sysadmin(target)
 }
 
 // probeQuery returns the batch to run for item: its query_template override,

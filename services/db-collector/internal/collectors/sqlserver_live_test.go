@@ -20,10 +20,15 @@ import (
 	catalogsqlserver "heartbeat/services/db-collector/internal/probes/sqlserver"
 )
 
-// liveCredentialRef resolves through EnvCredentialResolver to
-// HEARTBEAT_CREDENTIAL_SQLSERVER_TEST ("username:password"), the
-// least-privilege collector login.
-const liveCredentialRef = "sqlserver-test"
+// Credential references resolved through EnvCredentialResolver.
+const (
+	// liveCredentialRef is HEARTBEAT_CREDENTIAL_SQLSERVER_TEST, the
+	// least-privilege collector login ("username:password").
+	liveCredentialRef = "sqlserver-test"
+	// liveSACredentialRef is HEARTBEAT_CREDENTIAL_SQLSERVER_TEST_SA, the sa
+	// login.  Only the sysadmin check uses it; probes never run as sa.
+	liveSACredentialRef = "sqlserver-test-sa"
+)
 
 // liveExecutor returns an executor for the disposable test server and its
 // target logged in with credentialRef.  It skips the test outside make
@@ -134,6 +139,34 @@ SELECT 'deadlock_priority', deadlock_priority FROM sys.dm_exec_sessions WHERE se
 		if !maps.Equal(got, want) {
 			t.Fatalf("run %d: session settings = %v, want %v", run+1, got, want)
 		}
+	}
+}
+
+// Checks the sysadmin flag the Manager records when it creates a pool: 0 for
+// the collector login, 1 for sa.
+func TestSysadminCheckAgainstSQLServer(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		credentialRef string
+		want          bool
+	}{
+		{"least-privilege login", liveCredentialRef, false},
+		{"sa", liveSACredentialRef, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.credentialRef == liveSACredentialRef && os.Getenv("HEARTBEAT_CREDENTIAL_SQLSERVER_TEST_SA") == "" {
+				t.Skip("HEARTBEAT_CREDENTIAL_SQLSERVER_TEST_SA is not set")
+			}
+			executor, target := liveExecutor(t, tc.credentialRef)
+			if _, ok := executor.TargetSysadmin(target); ok {
+				t.Fatal("sysadmin flag known before the first connection")
+			}
+			runLiveProbe(t, executor, target, "sessions", "")
+			got, ok := executor.TargetSysadmin(target)
+			if !ok || got != tc.want {
+				t.Fatalf("TargetSysadmin = %v, %v; want %v, true", got, ok, tc.want)
+			}
+		})
 	}
 }
 

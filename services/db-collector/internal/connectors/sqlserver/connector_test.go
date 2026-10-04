@@ -1,11 +1,14 @@
 package sqlserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/url"
 	"strings"
 	"sync"
@@ -20,24 +23,29 @@ const testPassword = "s3cr3t-P@ssw0rd"
 
 // fakeDriver is a database/sql driver whose connect/ping behaviour is
 // controlled per test.  Each test registers its own instance under a unique
-// name.
+// name.  Queries answer the pool's sysadmin check with one row holding member.
 type fakeDriver struct {
-	// ping, when set, is called on every ping with the DSN host.
+	// ping, when set, is called on every ping and every query with the DSN
+	// host.
 	ping func(ctx context.Context, host string) error
+	// member is the IS_SRVROLEMEMBER result of the check query: int64(1),
+	// int64(0) or nil for NULL.  Guarded by mu; see setMember.
+	member driver.Value
 
 	connectors atomic.Int64 // sql.Open calls (one per *sql.DB)
 	closed     atomic.Int64 // *sql.DB closes
-	pings      atomic.Int64
+	pings      atomic.Int64 // pings and queries
 
-	mu   sync.Mutex
-	dsns []string
+	mu      sync.Mutex
+	dsns    []string
+	queries []string
 }
 
 var fakeDriverSeq atomic.Int64
 
 func newFakeDriver(t *testing.T) (*fakeDriver, string) {
 	t.Helper()
-	d := &fakeDriver{}
+	d := &fakeDriver{member: int64(0)}
 	name := fmt.Sprintf("sqlserver-fake-%d", fakeDriverSeq.Add(1))
 	sql.Register(name, d)
 	return d, name
@@ -68,6 +76,18 @@ func (d *fakeDriver) lastDSN() string {
 	return d.dsns[len(d.dsns)-1]
 }
 
+func (d *fakeDriver) setMember(member driver.Value) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.member = member
+}
+
+func (d *fakeDriver) allQueries() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.queries...)
+}
+
 type fakeConnector struct {
 	d    *fakeDriver
 	host string
@@ -95,6 +115,33 @@ func (f *fakeConn) Ping(ctx context.Context) error {
 	if f.c.d.ping != nil {
 		return f.c.d.ping(ctx, f.c.host)
 	}
+	return nil
+}
+
+// QueryContext records query and answers it like the sysadmin check.
+func (f *fakeConn) QueryContext(ctx context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	d := f.c.d
+	d.mu.Lock()
+	d.queries = append(d.queries, query)
+	member := d.member
+	d.mu.Unlock()
+	if err := f.Ping(ctx); err != nil {
+		return nil, err
+	}
+	return &fakeRows{values: []driver.Value{member}}, nil
+}
+
+// fakeRows is a single-column result set.
+type fakeRows struct{ values []driver.Value }
+
+func (*fakeRows) Columns() []string { return []string{""} }
+func (*fakeRows) Close() error      { return nil }
+
+func (r *fakeRows) Next(dest []driver.Value) error {
+	if len(r.values) == 0 {
+		return io.EOF
+	}
+	dest[0], r.values = r.values[0], r.values[1:]
 	return nil
 }
 
@@ -603,5 +650,87 @@ func TestWithSessionSettings(t *testing.T) {
 				t.Fatalf("WithSessionSettings(%q) = %q", tc.query, got)
 			}
 		})
+	}
+}
+
+func TestOpenChecksSysadminOncePerPool(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		member   driver.Value
+		sysadmin bool
+	}{
+		{"sysadmin", int64(1), true},
+		{"least privilege", int64(0), false},
+		{"unknown membership", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, d, _ := newTestManager(t)
+			d.setMember(tc.member)
+			var logs bytes.Buffer
+			m.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+			tg := target("a", "db-a.example", "ref-a")
+
+			if _, ok := m.Sysadmin(tg); ok {
+				t.Fatal("Sysadmin known before the first Open")
+			}
+			for range 2 {
+				_, cleanup := mustOpen(t, m, tg)
+				cleanup()
+			}
+			sysadmin, ok := m.Sysadmin(tg)
+			if !ok || sysadmin != tc.sysadmin {
+				t.Fatalf("Sysadmin = %v, %v; want %v, true", sysadmin, ok, tc.sysadmin)
+			}
+			queries := d.allQueries()
+			if len(queries) != 1 {
+				t.Fatalf("queries = %d, want 1 check per pool", len(queries))
+			}
+			if !strings.HasPrefix(queries[0], SessionSettings) || !strings.Contains(queries[0], "IS_SRVROLEMEMBER('sysadmin')") {
+				t.Fatalf("check query = %q, want session settings and IS_SRVROLEMEMBER", queries[0])
+			}
+			warnings := strings.Count(logs.String(), "level=WARN")
+			if want := map[bool]int{true: 1, false: 0}[tc.sysadmin]; warnings != want {
+				t.Fatalf("warnings = %d, want %d; logs:\n%s", warnings, want, logs.String())
+			}
+			for _, secret := range []string{testPassword, "collector"} {
+				if strings.Contains(logs.String(), secret) {
+					t.Fatalf("log contains credential material %q:\n%s", secret, logs.String())
+				}
+			}
+		})
+	}
+}
+
+func TestSysadminFollowsTheMostRecentPool(t *testing.T) {
+	m, d, r := newTestManager(t)
+	m.Logger = slog.New(slog.DiscardHandler)
+	var mu sync.Mutex
+	now := time.Unix(1_700_000_000, 0)
+	m.pool.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		now = now.Add(time.Second)
+		return now
+	}
+	tg := target("a", "db-a.example", "ref-a")
+
+	d.setMember(int64(1))
+	_, c1 := mustOpen(t, m, tg)
+	c1()
+	r.set("ref-a", Credential{Username: "collector", Password: "rotated"})
+	d.setMember(int64(0))
+	_, c2 := mustOpen(t, m, tg)
+	c2()
+	if sysadmin, ok := m.Sysadmin(tg); !ok || sysadmin {
+		t.Fatalf("Sysadmin = %v, %v; want the rotated pool's false, true", sysadmin, ok)
+	}
+
+	other := tg
+	other.Host = "db-b.example"
+	if _, ok := m.Sysadmin(other); ok {
+		t.Fatal("Sysadmin known for a target without a pool")
+	}
+	if _, ok := (Manager{Resolver: r}).Sysadmin(tg); ok {
+		t.Fatal("Sysadmin known for a Manager without a pool")
 	}
 }

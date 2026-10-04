@@ -153,6 +153,9 @@ wait_for 60 "fresh last success" target_fresh sqlserver-dev
 sessions=$(prom_value "sum(heartbeat_sqlserver_sessions{target=\"sqlserver-dev\"})")
 [ -n "$sessions" ] || fail "no heartbeat_sqlserver_sessions for sqlserver-dev"
 pass "probe metrics present (sessions=$sessions)"
+sysadmin=$(prom_value "heartbeat_collector_target_login_sysadmin{target=\"sqlserver-dev\"}")
+[ "$sysadmin" = 0 ] || fail "heartbeat_collector_target_login_sysadmin for sqlserver-dev is '$sysadmin', expected 0"
+pass "the collector logs in without sysadmin (least-privilege login)"
 # Exact, unpadded label values; one server-wide series each (issue #4).
 counters=$(prom "heartbeat_sqlserver_throughput{target=\"sqlserver-dev\"}" |
 	jq -r '[.data.result[].metric.counter_name] | sort | join(",")')

@@ -6,10 +6,11 @@
 // [NewManager] keeps one bounded connection pool per distinct target, login
 // and connection setting, so repeated probes against the same target reuse
 // authenticated connections instead of performing a TCP, TLS and SQL login
-// handshake on every call.  A pool is verified with a ping only when it is
-// first created; idle pools are evicted lazily and [Manager.Close] releases
-// all of them.  The caller must invoke the cleanup function returned by Open
-// when it has finished with the handle.
+// handshake on every call.  A pool is verified only when it is first created,
+// with a single query that also records whether the login is a member of the
+// sysadmin server role ([Manager.Sysadmin]); idle pools are evicted lazily and
+// [Manager.Close] releases all of them.  The caller must invoke the cleanup
+// function returned by Open when it has finished with the handle.
 //
 // Every batch the collector sends must start with [SessionSettings] (see
 // [WithSessionSettings]), so a collector query never waits long on a lock and
@@ -35,6 +36,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -130,6 +132,11 @@ func WithSessionSettings(query string) string {
 	return SessionSettings + query
 }
 
+// sysadminCheckQuery verifies a new pool and reports whether its login is a
+// member of the sysadmin server role.  A login can always see its own role
+// membership, so it needs no extra permission.
+const sysadminCheckQuery = SessionSettings + "SELECT IS_SRVROLEMEMBER('sysadmin')"
+
 // ErrManagerClosed is returned by [Manager.Open] after [Manager.Close] has
 // been called on a pooled Manager (or any copy of it).
 var ErrManagerClosed = errors.New("sqlserver connection manager is closed")
@@ -147,7 +154,7 @@ type Manager struct {
 	// observability purposes.
 	Application string
 	// DialTimeout limits how long the TCP connection and initial handshake may
-	// take.  It also bounds the ping performed when a pool is first created.
+	// take.  It also bounds the check query run when a pool is first created.
 	DialTimeout time.Duration
 	// QueryTimeout is reserved for future use; individual query deadlines are
 	// currently managed at the probe level.
@@ -157,6 +164,9 @@ type Manager struct {
 	// TrustServerCertificate skips hostname and chain verification while keeping
 	// TLS transport enabled. This is intended for dev-only self-signed targets.
 	TrustServerCertificate bool
+	// Logger receives the warning logged when a target's login is a member of
+	// sysadmin.  Nil means [slog.Default].
+	Logger *slog.Logger
 
 	// pool holds the shared per-target connection pools; nil disables pooling.
 	pool *pool
@@ -190,14 +200,16 @@ func NewManager(resolver CredentialResolver) Manager {
 // keyed by the target address, database, credential reference, a keyed hash
 // of the resolved username and password (so a rotated credential gets a fresh
 // pool) and every other connection setting.  The pool is created and verified
-// with a ping bounded by DialTimeout on first use only; a failed first ping is
-// not cached, so the next Open retries.  cleanup releases the caller's
+// with the sysadmin check query, bounded by DialTimeout, on first use only; a
+// failed first check is not cached, so the next Open retries.  A login that
+// is a member of sysadmin is logged as a warning once per pool.  cleanup releases the caller's
 // reference; it does not close the pool.  Pools unused for 15 minutes are
 // closed lazily by subsequent Opens.  After [Manager.Close], Open returns
 // [ErrManagerClosed].
 //
-// For a Manager without a pool (a struct literal), Open opens and pings a new
-// handle on every call and cleanup closes it.
+// For a Manager without a pool (a struct literal), Open opens and checks a new
+// handle on every call (warning on every call for a sysadmin login) and
+// cleanup closes it.
 func (m Manager) Open(ctx context.Context, target collectormetadata.DatabaseTarget) (*sql.DB, func(), error) {
 	if m.Resolver == nil {
 		return nil, nil, errors.New("sqlserver manager has no credential resolver")
@@ -208,16 +220,29 @@ func (m Manager) Open(ctx context.Context, target collectormetadata.DatabaseTarg
 	}
 	dsn := m.dsn(target, creds)
 	if m.pool == nil {
-		db, err := m.connect(ctx, target, dsn, false)
+		db, _, err := m.connect(ctx, target, dsn, false)
 		if err != nil {
 			return nil, nil, err
 		}
 		return db, func() { _ = db.Close() }, nil
 	}
 	key := m.pool.key(m, target, creds)
-	return m.pool.acquire(ctx, key, func(ctx context.Context) (*sql.DB, error) {
+	return m.pool.acquire(ctx, key, func(ctx context.Context) (*sql.DB, bool, error) {
 		return m.connect(ctx, target, dsn, true)
 	})
+}
+
+// Sysadmin reports whether the login of target's pool is a member of the
+// sysadmin server role, as checked when the pool was created.  ok is false
+// when the Manager has no pool or target has no established pool, for example
+// before its first successful Open or after the pool was evicted.  When a
+// rotated credential left several pools for target, the most recently used
+// one answers.  Sysadmin never connects to the target.
+func (m Manager) Sysadmin(target collectormetadata.DatabaseTarget) (sysadmin, ok bool) {
+	if m.pool == nil {
+		return false, false
+	}
+	return m.pool.sysadmin(m.targetKey(target))
 }
 
 // Close closes every pooled connection handle and makes subsequent calls to
@@ -256,13 +281,14 @@ func (m Manager) dsn(target collectormetadata.DatabaseTarget, creds Credential) 
 	}).String()
 }
 
-// connect opens a handle for dsn and verifies it with a ping bounded by
-// DialTimeout.  pooled applies the pool limits.  On failure the handle is
+// connect opens a handle for dsn and verifies it with the sysadmin check
+// query bounded by DialTimeout, logging a warning when the login is a member
+// of sysadmin.  pooled applies the pool limits.  On failure the handle is
 // closed.
-func (m Manager) connect(ctx context.Context, target collectormetadata.DatabaseTarget, dsn string, pooled bool) (*sql.DB, error) {
+func (m Manager) connect(ctx context.Context, target collectormetadata.DatabaseTarget, dsn string, pooled bool) (*sql.DB, bool, error) {
 	db, err := sql.Open(m.driver(), dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlserver connection for target %s: %w", target.Name, err)
+		return nil, false, fmt.Errorf("open sqlserver connection for target %s: %w", target.Name, err)
 	}
 	if pooled {
 		db.SetMaxOpenConns(defaultMaxOpenConns)
@@ -276,11 +302,28 @@ func (m Manager) connect(ctx context.Context, target collectormetadata.DatabaseT
 		pingCtx, cancel = context.WithTimeout(ctx, m.DialTimeout)
 		defer cancel()
 	}
-	if err := db.PingContext(pingCtx); err != nil {
+	// IS_SRVROLEMEMBER returns NULL when membership cannot be determined;
+	// that is reported as not sysadmin rather than failing the target.
+	var member sql.NullInt64
+	if err := db.QueryRowContext(pingCtx, sysadminCheckQuery).Scan(&member); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("ping sqlserver target %s: %w", target.Name, err)
+		return nil, false, fmt.Errorf("check sqlserver target %s: %w", target.Name, err)
 	}
-	return db, nil
+	sysadmin := member.Valid && member.Int64 == 1
+	if sysadmin {
+		m.logger().Warn("sqlserver login is a member of sysadmin; use a login with only the documented grants",
+			"target", target.Name,
+			"credential_ref", target.CredentialRef)
+	}
+	return db, sysadmin, nil
+}
+
+// logger returns the configured logger or [slog.Default].
+func (m Manager) logger() *slog.Logger {
+	if m.Logger == nil {
+		return slog.Default()
+	}
+	return m.Logger
 }
 
 // poolKey identifies one pooled handle.  It holds every setting that affects
@@ -319,6 +362,8 @@ type poolEntry struct {
 	ready chan struct{}
 	db    *sql.DB
 	err   error
+	// sysadmin records whether the pool's login is a member of sysadmin.
+	sysadmin bool
 
 	// refs and lastUsed are guarded by pool.mu.
 	refs     int
@@ -338,6 +383,7 @@ func newPool() *pool {
 	return p
 }
 
+// key returns the pool key of target for the resolved creds.
 func (p *pool) key(m Manager, target collectormetadata.DatabaseTarget, creds Credential) poolKey {
 	mac := hmac.New(sha256.New, p.secret[:])
 	var n [8]byte
@@ -345,13 +391,19 @@ func (p *pool) key(m Manager, target collectormetadata.DatabaseTarget, creds Cre
 	mac.Write(n[:])
 	mac.Write([]byte(creds.Username))
 	mac.Write([]byte(creds.Password))
+	key := m.targetKey(target)
+	key.credentialHash = hex.EncodeToString(mac.Sum(nil))
+	return key
+}
+
+// targetKey returns the pool key of target without the credential hash.
+func (m Manager) targetKey(target collectormetadata.DatabaseTarget) poolKey {
 	return poolKey{
 		driver:                 m.driver(),
 		host:                   target.Host,
 		port:                   target.Port,
 		database:               target.DatabaseName,
 		credentialRef:          target.CredentialRef,
-		credentialHash:         hex.EncodeToString(mac.Sum(nil)),
 		application:            m.Application,
 		encrypt:                m.Encrypt,
 		trustServerCertificate: m.TrustServerCertificate,
@@ -359,11 +411,29 @@ func (p *pool) key(m Manager, target collectormetadata.DatabaseTarget, creds Cre
 	}
 }
 
+// sysadmin returns the sysadmin flag of the most recently used initialised
+// entry whose key matches want in everything but the credential hash.
+func (p *pool) sysadmin(want poolKey) (sysadmin, ok bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var latest time.Time
+	for key, entry := range p.entries {
+		key.credentialHash = want.credentialHash
+		if key != want || entry.db == nil {
+			continue
+		}
+		if !ok || entry.lastUsed.After(latest) {
+			sysadmin, ok, latest = entry.sysadmin, true, entry.lastUsed
+		}
+	}
+	return sysadmin, ok
+}
+
 // acquire returns the handle for key, creating it with create if needed.
 // create runs without holding p.mu so a slow target does not block Opens for
 // other keys; concurrent callers for the same key wait for the single
 // in-flight creation instead of starting their own.
-func (p *pool) acquire(ctx context.Context, key poolKey, create func(context.Context) (*sql.DB, error)) (*sql.DB, func(), error) {
+func (p *pool) acquire(ctx context.Context, key poolKey, create func(context.Context) (*sql.DB, bool, error)) (*sql.DB, func(), error) {
 	for {
 		p.mu.Lock()
 		if p.closed {
@@ -403,8 +473,8 @@ func (p *pool) acquire(ctx context.Context, key poolKey, create func(context.Con
 	}
 }
 
-func (p *pool) initialize(ctx context.Context, key poolKey, entry *poolEntry, create func(context.Context) (*sql.DB, error)) (*sql.DB, func(), error) {
-	db, err := create(ctx)
+func (p *pool) initialize(ctx context.Context, key poolKey, entry *poolEntry, create func(context.Context) (*sql.DB, bool, error)) (*sql.DB, func(), error) {
+	db, sysadmin, err := create(ctx)
 	p.mu.Lock()
 	if err == nil && p.closed {
 		_ = db.Close()
@@ -420,6 +490,7 @@ func (p *pool) initialize(ctx context.Context, key poolKey, entry *poolEntry, cr
 		return nil, nil, err
 	}
 	entry.db = db
+	entry.sysadmin = sysadmin
 	entry.refs = 1
 	entry.lastUsed = p.now()
 	close(entry.ready)
