@@ -62,8 +62,8 @@ A throwaway SQL Server runs as a Docker container on the kind network,
 outside the cluster, and the collector is pointed at it.
 
 ```bash
-make sqlserver-dev-init     # create the ignored .env.sqlserver-dev (random SA password)
-make sqlserver-dev-up       # start SQL Server, create the credential Secret, deploy
+make sqlserver-dev-init     # create the ignored .env.sqlserver-dev (random SA and collector passwords)
+make sqlserver-dev-up       # start SQL Server, create the collector login and its Secret, deploy
 make health
 curl http://localhost:8082/metrics
 make sqlserver-dev-down     # remove the container and its data; redeploy without it
@@ -72,18 +72,25 @@ make sqlserver-dev-down     # remove the container and its data; redeploy withou
 | Piece | File | Tracked |
 | --- | --- | --- |
 | Env template | `.env.sqlserver-dev.example` | yes |
-| Env file (random SA password, mode 600) | `.env.sqlserver-dev` | no |
+| Env file (random SA and collector passwords, mode 600) | `.env.sqlserver-dev` | no |
+| Script that creates the collector login | `scripts/sqlserver-login.sh` | yes |
 | Values pointing the collector at the container | `infra/helm/values/sqlserver-dev.yaml` | yes |
 
 The container is named `heartbeat-sqlserver-dev`, uses `MSSQL_PID=Developer`,
 publishes 1433 only on `127.0.0.1:11433`, runs the AMD64 image (emulated on
 ARM hosts) and must pass a SQL health check before deploying. Once started,
 later `make kind-deploy` runs keep the target until `make sqlserver-dev-down`.
-It uses `sa` and trusts the container's self-signed certificate
-(`dbCollector.sqlserver.trustServerCertificate`). Both are acceptable only
-because the container is throwaway; production targets need a dedicated login
-and a trusted certificate
-([login permissions](database-targets.md#collector-login-permissions)).
+The collector logs in as `heartbeat_collector`, which `make sqlserver-dev-up`
+creates with only the
+[documented grants](database-targets.md#collector-login-permissions); `sa` is
+used only to set the container up. An `.env.sqlserver-dev` from before this
+login existed has an `sa` collector credential, which `make sqlserver-dev-up`
+refuses: run `make sqlserver-dev-init` (it adds the login and keeps the SA
+password) and then `make sqlserver-dev-up` again. The collector trusts the
+container's self-signed certificate
+(`dbCollector.sqlserver.trustServerCertificate`), which is acceptable only
+because the container is throwaway; production targets need a trusted
+certificate.
 
 ## Run tests
 
@@ -94,7 +101,7 @@ and a trusted certificate
 | `make vet` | Go static checks | Go |
 | `make rules-check` | promtool rule validation and unit tests | Docker |
 | `make test-integration` | PostgreSQL migration and index tests (`-tags=integration`) | Docker (`postgres:17`) |
-| `make test-sqlserver` | Every built-in probe against a disposable SQL Server; fails on duplicate series or padded label values (`-tags=sqlserver`) | Docker (SQL Server 2022) |
+| `make test-sqlserver` | Every built-in probe against a disposable SQL Server, as a login with only the documented grants; fails on duplicate series or padded label values; checks the session settings and the sysadmin flag (`-tags=sqlserver`) | Docker (SQL Server 2022) |
 | `make chart-check` | `helm lint`, then renders every values profile and checks it (below) | Helm, `make chart-deps` |
 | `make kind-e2e` | Acceptance checks on a temporary kind cluster (below) | Docker, kind, kubectl, Helm, jq |
 
@@ -113,10 +120,11 @@ kubeconfig, no host ports) and SQL Server container, so it runs next to your
 dev cluster without touching it, and removes only what it created. It checks
 the ADR 0003 acceptance criteria: every workload ready; the running collector
 is the image just built; the SQL target's metrics are fresh in Prometheus and
-visible through Grafana; a failed target is isolated; the Watchdog alert reaches
-Alertmanager; a valid ConfigMap change hot-reloads without a restart; an invalid
-one is rejected while collection continues; a SQL Server outage shows as a failed
-target without restarting the collector; a collector update never runs two
+visible through Grafana, collected by a login that is not `sysadmin`; a failed
+target is isolated; the Watchdog alert reaches Alertmanager; a valid ConfigMap
+change hot-reloads without a restart; an invalid one is rejected while
+collection continues; a SQL Server outage shows as a failed target without
+restarting the collector; a collector update never runs two
 collectors (it prints the rollout time, collection gap and SQL Server session
 count); and Prometheus data and Alertmanager silences survive pod replacement.
 It takes about 10 minutes.
