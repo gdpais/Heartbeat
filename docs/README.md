@@ -3,9 +3,10 @@
 Start with the page for your role. Every topic has one home; other pages link
 to it instead of repeating it.
 
-These pages are also a static HTML site in `docs/site/` (open
-`docs/site/index.html`). The Markdown is the source: after editing it, run
-`make docs-site` and commit both; CI's `make docs-check` fails if they differ.
+These pages are also published as an HTML site at
+<https://gdpais.github.io/Heartbeat/>, rebuilt from `master` on every push. The Markdown
+is the source; `make docs-site` builds the site locally into `docs/site/`,
+which is not committed.
 
 ## By audience
 

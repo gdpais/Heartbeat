@@ -21,8 +21,8 @@ jobs:
         run: make vet
       - name: Validate Prometheus rules
         run: make rules-check
-      - name: Check the HTML docs site is up to date
-        run: make docs-check
+      - name: Build the HTML docs site (fails on broken links)
+        run: make docs-site
       - name: Run isolated PostgreSQL integration tests
         run: make test-integration
       - name: Run every SQL Server probe against a disposable SQL Server

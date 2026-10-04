@@ -1,4 +1,4 @@
-.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet docs-site docs-check
+.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet docs-site
 
 SQLSERVER_DEV_ENV_FILE := .env.sqlserver-dev
 # Health checks fail fast on HTTP errors (keeping the body) and never hang.
@@ -51,8 +51,7 @@ help:
 		'  make test-sqlserver      Run every SQL Server probe against a disposable SQL Server container (requires Docker)' \
 		'  make test-race           Run all Docker-free tests with the race detector' \
 		'  make vet                 Run Go static checks' \
-		'  make docs-site           Regenerate the HTML docs site in docs/site from the Markdown' \
-		'  make docs-check          Fail if docs/site is out of date with the Markdown'
+		'  make docs-site           Build the HTML docs site into docs/site (not committed; CI publishes it)'
 
 tools-check:
 	@KIND_VERSION=$(KIND_VERSION) KIND_NODE_IMAGE=$(KIND_NODE_IMAGE) HELM_MIN_VERSION=$(HELM_MIN_VERSION) scripts/tools-check.sh
@@ -135,6 +134,3 @@ vet:
 
 docs-site:
 	$(DOCSITE)
-
-docs-check:
-	$(DOCSITE) -check

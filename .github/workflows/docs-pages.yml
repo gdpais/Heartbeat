@@ -1,0 +1,51 @@
+name: docs-pages
+
+# Builds the HTML docs from master's Markdown and publishes them to GitHub
+# Pages. The site is never committed, so it cannot go stale.
+# Requires Settings → Pages → Source: GitHub Actions.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "docs/**"
+      - "services/*/README.md"
+      - "tools/docsite/**"
+      - "Makefile"
+      - ".github/workflows/docs-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a newer push waits for the running one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: tools/docsite/go.mod
+          cache-dependency-path: tools/docsite/go.sum
+      - name: Build the HTML docs site
+        run: make docs-site
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

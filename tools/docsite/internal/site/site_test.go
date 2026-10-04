@@ -258,27 +258,20 @@ func TestOutPath(t *testing.T) {
 	}
 }
 
-func TestCheckReportsDrift(t *testing.T) {
+func TestWriteRemovesStaleFiles(t *testing.T) {
 	root := t.TempDir()
 	cfg := Config{Root: root, OutDir: "site"}
-	files := map[string][]byte{"index.html": []byte("new"), "a/b.html": []byte("b")}
-	if err := Write(cfg, files); err != nil {
+	if err := Write(cfg, map[string][]byte{"index.html": []byte("old"), "a/b.html": []byte("b")}); err != nil {
 		t.Fatal(err)
 	}
-	if diffs, err := Check(cfg, files); err != nil || len(diffs) != 0 {
-		t.Fatalf("fresh output: diffs %v, err %v", diffs, err)
-	}
-	changed := map[string][]byte{"index.html": []byte("newer"), "c.html": []byte("c")}
-	diffs, err := Check(cfg, changed)
-	if err != nil {
+	if err := Write(cfg, map[string][]byte{"index.html": []byte("new"), "c.html": []byte("c")}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"missing: c.html", "outdated: index.html", "stale: a/b.html"}
-	if strings.Join(diffs, ",") != strings.Join(want, ",") {
-		t.Fatalf("diffs = %v, want %v", diffs, want)
-	}
-	if err := Write(cfg, changed); err != nil {
-		t.Fatal(err)
+	for name, want := range map[string]string{"index.html": "new", "c.html": "c"} {
+		got, err := os.ReadFile(filepath.Join(root, "site", name))
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q (%v), want %q", name, got, err, want)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(root, "site", "a")); !os.IsNotExist(err) {
 		t.Error("Write must remove files and directories the build no longer produces")

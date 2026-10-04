@@ -14,5 +14,8 @@ infra/data/
 docs/plans/
 docs/reviews/
 
+# HTML docs site: built by `make docs-site`, published to GitHub Pages by CI
+docs/site/
+
 # Chart dependencies: fetched by `make chart-deps` from the versions in Chart.lock
 infra/helm/heartbeat/charts/

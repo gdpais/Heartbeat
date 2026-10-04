@@ -1,6 +1,6 @@
 // Package site renders the repository's Markdown documentation into a static
-// HTML site. The Markdown stays the source of truth; the generated files are
-// committed so the site can be browsed without building it.
+// HTML site. The Markdown stays the source of truth; the generated site is
+// built in CI and published to GitHub Pages, never committed.
 package site
 
 import (
@@ -449,38 +449,6 @@ func Write(cfg Config, files map[string][]byte) error {
 		}
 	}
 	return removeEmptyDirs(outDir)
-}
-
-// Check reports every difference between files and the output directory.
-func Check(cfg Config, files map[string][]byte) ([]string, error) {
-	outDir := filepath.Join(cfg.Root, filepath.FromSlash(cfg.OutDir))
-	existing, err := listFiles(outDir)
-	if err != nil {
-		return nil, err
-	}
-	var diffs []string
-	onDisk := map[string]bool{}
-	for _, rel := range existing {
-		onDisk[rel] = true
-		if _, ok := files[rel]; !ok {
-			diffs = append(diffs, "stale: "+rel)
-		}
-	}
-	for _, rel := range sortedKeys(files) {
-		if !onDisk[rel] {
-			diffs = append(diffs, "missing: "+rel)
-			continue
-		}
-		current, err := os.ReadFile(filepath.Join(outDir, filepath.FromSlash(rel)))
-		if err != nil {
-			return nil, err
-		}
-		if !bytes.Equal(current, files[rel]) {
-			diffs = append(diffs, "outdated: "+rel)
-		}
-	}
-	sort.Strings(diffs)
-	return diffs, nil
 }
 
 func listFiles(dir string) ([]string, error) {
