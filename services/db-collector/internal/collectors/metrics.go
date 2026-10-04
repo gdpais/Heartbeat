@@ -31,7 +31,8 @@ const (
 	// deadline while running.
 	ReasonTimeout = "timeout"
 	// ReasonError is any other probe failure: connection, login, query, or
-	// result decoding errors.
+	// result decoding errors.  Probes interrupted because the poller is
+	// stopping (shutdown or reload) are not counted.
 	ReasonError = "error"
 	// ReasonNotStarted is a probe that could not start before the cycle
 	// deadline because earlier probes of its target used the time.
@@ -44,10 +45,11 @@ const (
 var ProbeErrorReasons = []string{ReasonTimeout, ReasonError, ReasonNotStarted, ReasonPanic}
 
 // probeDurationBuckets cover 5ms to 10s, the default probe timeout cap, at
-// roughly two buckets per decade.  Catalog DMV queries usually finish in the
-// first buckets; the upper ones show probes approaching their timeout.  Few
-// buckets keep each probe of each target at 11 histogram series.
-var probeDurationBuckets = []float64{0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10}
+// roughly two buckets per decade, plus 30s and 60s because a probe's
+// timeout_ms may extend to the scrape interval.  Catalog DMV queries usually
+// finish in the first buckets; the upper ones show probes approaching their
+// timeout.  Few buckets keep each probe of each target at 13 histogram series.
+var probeDurationBuckets = []float64{0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60}
 
 // probeLabels are the label names shared by both per-probe metrics.
 var probeLabels = []string{"collector", "environment", "target", "probe"}
@@ -121,6 +123,17 @@ func (m *ProbeMetrics) failed(item collectormetadata.ScheduledProbe, reason stri
 	if err == nil {
 		counter.Inc()
 	}
+}
+
+// failedUnlessCanceled counts a failed probe unless cycleCtx was canceled.
+// Cancellation means the poller is stopping for shutdown or a reload; the
+// probe did not fail on its own, and the collector's series are about to be
+// deleted.  Cycle deadlines still count.
+func (m *ProbeMetrics) failedUnlessCanceled(cycleCtx context.Context, item collectormetadata.ScheduledProbe, reason string) {
+	if errors.Is(cycleCtx.Err(), context.Canceled) {
+		return
+	}
+	m.failed(item, reason)
 }
 
 // forgetCollector deletes every series of collectorID.

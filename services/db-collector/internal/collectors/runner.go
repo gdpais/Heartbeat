@@ -397,7 +397,7 @@ func (r Runner) runScopedProbe(ctx context.Context, collector collectorconfig.Co
 func (r Runner) executeProbe(ctx context.Context, item collectormetadata.ScheduledProbe, interval time.Duration) ([]collectorexport.Sample, []collectormetadata.Evidence, error) {
 	name := item.Definition.Name
 	if err := ctx.Err(); err != nil {
-		r.metrics.failed(item, ReasonNotStarted)
+		r.metrics.failedUnlessCanceled(ctx, item, ReasonNotStarted)
 		return nil, nil, notStartedError(name, err)
 	}
 	timeout := probeTimeout(item.Definition.TimeoutMS, interval)
@@ -419,7 +419,7 @@ func (r Runner) executeProbe(ctx context.Context, item collectormetadata.Schedul
 	if err == nil {
 		return samples, evidence, nil
 	}
-	r.metrics.failed(item, failureReason(probeCtx))
+	r.metrics.failedUnlessCanceled(ctx, item, failureReason(probeCtx))
 	if ctx.Err() == nil && errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
 		return nil, nil, fmt.Errorf("probe %s timed out after %s: %w", name, timeout, err)
 	}

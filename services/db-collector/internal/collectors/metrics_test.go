@@ -229,3 +229,29 @@ func TestProbeMetricsRegistrationAndNilSafety(t *testing.T) {
 		t.Fatalf("expected no series, got %d (%v)", count, err)
 	}
 }
+
+// A poller stopping for shutdown or a reload cancels its cycle; the probe in
+// flight and the probes that never start did not fail on their own.
+func TestCanceledCycleCountsNoProbeErrors(t *testing.T) {
+	metrics, reg := newTestProbeMetrics(t)
+	started := make(chan struct{})
+	executor := funcExecutor(func(ctx context.Context, item collectormetadata.ScheduledProbe) ([]collectorexport.Sample, []collectormetadata.Evidence, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	})
+	runner := NewRunner(executor, collectorexport.NewInMemoryExporter(), nil).
+		WithLogger(slog.New(slog.DiscardHandler)).
+		WithProbeMetrics(metrics)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-started
+		cancel()
+	}()
+	if _, err := runner.RunOnce(ctx, testCollector(time.Minute, testTarget("core-db", "p1", "p2"))); err == nil {
+		t.Fatal("expected the canceled cycle to fail its target")
+	}
+	if got := nonZero(probeSeries(t, reg, MetricProbeErrors)); len(got) != 0 {
+		t.Fatalf("expected no probe errors for a canceled cycle, got %v", got)
+	}
+}
