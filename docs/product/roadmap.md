@@ -52,18 +52,24 @@ Done:
   ([#4](https://github.com/gdpais/Heartbeat/issues/4)); every probe runs
   against a real SQL Server in CI [2.3]
 
-Remaining:
+Remaining, in order:
 
-- Export cumulative values as counters and show rates in the dashboard [2.4]
-- Per-probe error counters; least-privilege review of all production queries;
-  probe review/versioning process [2.2, 2.6]
-- Collector endpoint security: authenticated diagnostics, full redaction,
-  constant-time token check, NetworkPolicy, per-target TLS settings [2.7]
-- Publish retrievable evidence snapshots (the default sink discards them) [2.4]
+1. Collector endpoint security: authenticated diagnostics, full redaction,
+   constant-time token check, NetworkPolicy, `TrustServerCertificate`
+   warning [2.7]
+2. Least privilege and query safety: tests run as a login with only the
+   documented grants, a warning when the login is `sysadmin`, `LOCK_TIMEOUT`
+   and low deadlock priority on every session, a probe review checklist [2.2]
+3. Metric types and self-metrics: waits and throughput as counters renamed to
+   Prometheus conventions, per-probe error counters and durations, Go runtime
+   and process metrics [2.4, 2.6]
+4. Core signals for the first production deploy: CPU, page life expectancy and
+   buffer cache hit ratio, file I/O [2.3]
 
 Exit: live SQL Server → collector → Prometheus → Grafana on kind, including
-reloads and target outages, against a safe non-production target. API-driven
-probe assignments [2.5] join in phase 3 and do not block this phase.
+reloads and target outages, with a least-privilege login. API-driven probe
+assignments [2.5] join in phase 3, probe versioning with them [4.5], and
+evidence publication in phase 7 [12.4]; none of them block this phase.
 
 ## Phase 2 — OTel gateway (OutSystems ingest)
 
@@ -119,8 +125,8 @@ validated in the target environment.
 
 ## Phase 6 — Complete application and database product workflows
 
-- OutSystems and SQL Server onboarding, signal coverage, dashboards and
-  drill-down [10, 11]
+- OutSystems and SQL Server onboarding, the remaining signal coverage,
+  dashboards and drill-down [10, 11]; CPU, cache and I/O arrive in phase 1
   ([SQL Server signal coverage](../architecture/database-observability.md#sql-server-signal-coverage))
 
 Exit: onboarding in the UI → ingest/collection → Loki/Prometheus → Grafana, with
@@ -128,8 +134,9 @@ field/metric semantics, cardinality and database load checked.
 
 ## Phase 7 — Investigations, alerting and reporting
 
-- Session analyzer and investigation UI [6, 12]; collector evidence must be
-  retrievable first [2.4]
+- Collector evidence: content, destination and publication, retrievable
+  before the analyzer uses it [12.4]
+- Session analyzer and investigation UI [6, 12]
 - Alert policy rendering to Prometheus and Alertmanager; adaptive baselines [13]
 - Report templates, schedules, generation and email delivery [7, 14]
 - See [operator workflows](../architecture/workflows.md)
