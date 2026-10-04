@@ -112,7 +112,7 @@ func TestAdminReloadTimesOutAndReportsFailedRollback(t *testing.T) {
 	eventually(t, time.Second, func() bool {
 		state, _ := stateOf(svc.lifecycle, "sql-a")
 		return state.Phase == phaseFailed
-	}, "orphaned poller not marked failed: %+v", svc.lifecycle.states())
+	}, "orphaned poller not marked failed: %+v", lazy(func() any { return svc.lifecycle.states() }))
 	code, body = adminReload(t, handler)
 	if code != http.StatusOK {
 		t.Fatalf("recovery reload failed: %d %+v", code, body)

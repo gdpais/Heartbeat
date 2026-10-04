@@ -66,7 +66,7 @@ func TestPollerCrashIsRestartedWithBackoff(t *testing.T) {
 	eventually(t, 2*time.Second, func() bool {
 		state, _ := stateOf(lifecycle, "a")
 		return state.Phase == phaseRunning && state.Restarts == 3 && state.HasCycle
-	}, "collector did not recover after crashes: %+v", lifecycle.states())
+	}, "collector did not recover after crashes: %+v", lazy(func() any { return lifecycle.states() }))
 
 	pollers.mu.Lock()
 	starts := append([]time.Time(nil), pollers.starts["a"]...)
@@ -94,7 +94,7 @@ func TestCrashedPollerDoesNotAffectOthers(t *testing.T) {
 		bad, _ := stateOf(lifecycle, "bad")
 		good, _ := stateOf(lifecycle, "good")
 		return bad.Phase == phaseBackingOff && !bad.NextRestart.IsZero() && good.Phase == phaseRunning && good.HasCycle
-	}, "unexpected states: %+v", lifecycle.states())
+	}, "unexpected states: %+v", lazy(func() any { return lifecycle.states() }))
 	if !lifecycle.needsRestart("bad") || lifecycle.needsRestart("good") {
 		t.Fatal("needsRestart must flag only the crashed collector")
 	}
@@ -103,14 +103,18 @@ func TestCrashedPollerDoesNotAffectOthers(t *testing.T) {
 func TestRepeatedCrashesAreReportedFailed(t *testing.T) {
 	pollers := newFakePollers()
 	pollers.set("a", func(context.Context, func(collectors.CycleResult)) error { panic("boom") })
-	lifecycle := testLifecycle(t, pollers, restartBackoff{initial: time.Millisecond, max: time.Millisecond})
+	// A growing backoff keeps the collector failed between restarts: with a
+	// flat 1ms backoff the phase flipped back to running every millisecond and
+	// polling could miss the failed window on a loaded runner. Reaching
+	// failedAfterCrashes takes 1+2+4+8ms; the fifth wait is 16ms and doubles.
+	lifecycle := testLifecycle(t, pollers, restartBackoff{initial: time.Millisecond, max: time.Hour})
 	if err := lifecycle.Start(context.Background(), collectorConfig("a", "prod")); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, 2*time.Second, func() bool {
 		state, _ := stateOf(lifecycle, "a")
 		return state.Phase == phaseFailed && state.Crashes >= failedAfterCrashes
-	}, "collector not marked failed: %+v", lifecycle.states())
+	}, "collector not marked failed: %+v", lazy(func() any { return lifecycle.states() }))
 }
 
 func TestPollerConfigErrorMarksFailedWithoutRestartLoop(t *testing.T) {
@@ -125,7 +129,7 @@ func TestPollerConfigErrorMarksFailedWithoutRestartLoop(t *testing.T) {
 	eventually(t, time.Second, func() bool {
 		state, _ := stateOf(lifecycle, "a")
 		return state.Phase == phaseFailed
-	}, "collector not marked failed: %+v", lifecycle.states())
+	}, "collector not marked failed: %+v", lazy(func() any { return lifecycle.states() }))
 	time.Sleep(50 * time.Millisecond)
 	if n := pollers.startCount("a"); n != 1 {
 		t.Fatalf("config error was restart-looped %d times", n)
