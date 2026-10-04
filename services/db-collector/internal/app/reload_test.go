@@ -26,6 +26,15 @@ func newReloadFixture(t *testing.T, pollers *fakePollers, collectors ...testColl
 	return svc, routes(prometheus.NewRegistry(), svc), path
 }
 
+// adminConfig fetches GET /admin/config with the test token.
+func adminConfig(t *testing.T, handler http.Handler) (int, adminConfigResponse) {
+	t.Helper()
+	rec := serve(handler, http.MethodGet, "/admin/config", "Bearer test-token")
+	var body adminConfigResponse
+	decode(t, rec, &body)
+	return rec.Code, body
+}
+
 func adminReload(t *testing.T, handler http.Handler) (int, reloadResponse) {
 	t.Helper()
 	rec := serve(handler, http.MethodPost, "/admin/config/reload", "Bearer test-token")
@@ -99,11 +108,11 @@ func TestAdminReloadTimesOutAndReportsFailedRollback(t *testing.T) {
 	if code != http.StatusInternalServerError || body.Result != "apply_failed" || body.RolledBack == nil || *body.RolledBack {
 		t.Fatalf("expected apply failure with failed rollback: code=%d body=%+v", code, body)
 	}
-	rec := serve(handler, http.MethodGet, "/readyz", "")
-	var report readinessReport
-	decode(t, rec, &report)
-	if rec.Code != http.StatusServiceUnavailable || !report.RuntimeDiverged {
-		t.Fatalf("divergence not surfaced: %d %s", rec.Code, rec.Body.String())
+	if rec := serve(handler, http.MethodGet, "/readyz", ""); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("divergence left the pod ready: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, diag := adminConfig(t, handler); !diag.RuntimeDiverged || !diag.Readiness.RuntimeDiverged || diag.RollbackErr == "" {
+		t.Fatalf("divergence not surfaced in diagnostics: %+v", diag)
 	}
 
 	// Once the hung poller exits, the next reload converges and clears it.

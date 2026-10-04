@@ -43,14 +43,16 @@ type Config struct {
 	// IntegrationsPath is the path to the YAML file that declares collectors,
 	// targets, and probes (e.g. "config/integrations.yaml").
 	IntegrationsPath string
-	// AdminToken enables POST /admin/config/reload when set. Requests must send
-	// Authorization: Bearer <token>.
+	// AdminToken enables the admin endpoints (GET /admin/config and POST
+	// /admin/config/reload) when set. Requests must send
+	// Authorization: Bearer <token>; without a token both answer 401.
 	AdminToken string
 	// WatchInterval enables dev/local config polling when positive. The watcher
 	// checks both the config file and its parent directory.
 	WatchInterval time.Duration
 	// SQLServerTrustServerCertificate is a dev/test escape hatch for self-signed
-	// SQL Server containers. Production should keep this disabled.
+	// SQL Server containers. Production should keep this disabled; when set,
+	// startup logs a warning that GET /admin/config also lists.
 	SQLServerTrustServerCertificate bool
 	// Logger receives structured service logs. When nil, Run logs JSON to
 	// stderr.
@@ -165,6 +167,7 @@ func run(ctx context.Context, deps runDeps) error {
 	// can drain HTTP first and then stop pollers in a bounded, logged step.
 	lifecycle := deps.newLifecycle(context.WithoutCancel(ctx))
 	svc := newService(deps.configManager, lifecycle, logger, deps.cfg.AdminToken, deps.timeouts)
+	svc.warnings = startupWarnings(deps.cfg, logger)
 	server := &http.Server{Addr: deps.cfg.ListenAddr, Handler: routes(deps.registry, svc), ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
@@ -197,9 +200,12 @@ type service struct {
 	configManager *heartbeatconfig.Manager
 	lifecycle     *pollerLifecycle
 	logger        *slog.Logger
-	adminToken    string
+	auth          adminAuth
 	timeouts      timeouts
 	now           func() time.Time
+	// warnings are the insecure settings found at startup, listed in GET
+	// /admin/config.
+	warnings []startupWarning
 
 	// initialized is set once the initial reconcile has launched every
 	// collector.
@@ -221,9 +227,10 @@ func newService(configManager *heartbeatconfig.Manager, lifecycle *pollerLifecyc
 		configManager: configManager,
 		lifecycle:     lifecycle,
 		logger:        logger,
-		adminToken:    adminToken,
+		auth:          newAdminAuth(adminToken),
 		timeouts:      t,
 		now:           time.Now,
+		warnings:      []startupWarning{},
 	}
 }
 
@@ -295,9 +302,14 @@ func waitGroupTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
 // Endpoints:
 //   - GET /metrics  – Prometheus metrics scrape endpoint.
 //   - GET /healthz, /healthcheck – Liveness; always 200 while serving.
-//   - GET /readyz   – Readiness; 200 or 503 with reasons (see evaluateReadiness).
-//   - GET /admin/config – Redacted active config diagnostics.
+//   - GET /readyz   – Readiness; 200 or 503 (see evaluateReadiness) with only
+//     the status in the body. Reasons and details are diagnostics.
+//   - GET /admin/config – Authenticated diagnostics: redacted active config,
+//     reload status, startup warnings and the full readiness report.
 //   - POST /admin/config/reload – Authenticated explicit reload trigger.
+//
+// The unauthenticated endpoints expose no config, error text or names; every
+// admin endpoint goes through requireAdmin.
 func routes(registry *prometheus.Registry, svc *service) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
@@ -309,24 +321,10 @@ func routes(registry *prometheus.Registry, svc *service) http.Handler {
 	mux.HandleFunc("/healthcheck", health)
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		report := svc.readiness()
-		writeJSON(w, report.httpStatus(), report)
+		writeJSON(w, report.httpStatus(), readinessStatus{Status: report.Status})
 	})
-	mux.HandleFunc("/admin/config", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		snapshot := svc.configManager.Snapshot()
-		writeJSON(w, http.StatusOK, map[string]any{
-			"version":          snapshot.Config.Version,
-			"loaded_at":        snapshot.LoadedAt,
-			"last_reload_at":   snapshot.LastReloadAt,
-			"last_reload_err":  snapshot.LastReloadErr,
-			"runtime_diverged": snapshot.RuntimeDiverged,
-			"config":           snapshot.Config.Redacted(),
-		})
-	})
-	mux.HandleFunc("/admin/config/reload", svc.handleReload)
+	mux.HandleFunc("/admin/config", svc.requireAdmin(http.MethodGet, svc.handleConfig))
+	mux.HandleFunc("/admin/config/reload", svc.requireAdmin(http.MethodPost, svc.handleReload))
 	return mux
 }
 
@@ -342,19 +340,11 @@ type reloadResponse struct {
 	Readiness  readinessReport `json:"readiness"`
 }
 
-// handleReload serves POST /admin/config/reload: 401 without the token, 503
+// handleReload serves POST /admin/config/reload behind requireAdmin: 503
 // before the initial reconcile or when another reload holds the lock past the
 // deadline, 400 for an invalid candidate, 500 when applying failed, 200 on
 // success.
 func (s *service) handleReload(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	if s.adminToken == "" || r.Header.Get("Authorization") != "Bearer "+s.adminToken {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
 	if !s.initialized.Load() {
 		writeJSON(w, http.StatusServiceUnavailable, reloadResponse{Result: "not_ready", Error: "initial reconcile not complete", Readiness: s.readiness()})
 		return
@@ -542,8 +532,16 @@ const (
 	statusNotReady = "not_ready"
 )
 
-// readinessReport is the body of GET /readyz. It is served unauthenticated,
-// so it never contains raw collector or driver error text.
+// readinessStatus is the body of GET /readyz. The endpoint is
+// unauthenticated and kubelet probes only need the status code, so it carries
+// nothing else: no reasons, names, versions or error text.
+type readinessStatus struct {
+	Status string `json:"status"`
+}
+
+// readinessReport is the full readiness evaluation. It is served only on the
+// authenticated admin endpoints (GET /admin/config and the reload response),
+// so it includes raw target error text.
 type readinessReport struct {
 	Status        string    `json:"status"`
 	Reasons       []string  `json:"reasons"`
@@ -565,7 +563,7 @@ func (r readinessReport) httpStatus() int {
 	return http.StatusServiceUnavailable
 }
 
-// collectorReport is the per-collector section of /readyz.
+// collectorReport is the per-collector section of readinessReport.
 type collectorReport struct {
 	ID                 string         `json:"id"`
 	Phase              string         `json:"phase"`
@@ -584,13 +582,16 @@ type collectorReport struct {
 	Targets            []targetReport `json:"targets"`
 }
 
-// targetReport is the per-target section of /readyz, without error text.
+// targetReport is the per-target section of readinessReport.
 type targetReport struct {
 	Name                string     `json:"name"`
 	State               string     `json:"state"`
 	ConsecutiveFailures int        `json:"consecutive_failures"`
 	LastSuccess         *time.Time `json:"last_success"`
 	NextAttempt         *time.Time `json:"next_attempt,omitempty"`
+	// Error is the last cycle's raw probe or driver error, which can name the
+	// host, port and login. Admin endpoints only.
+	Error string `json:"error,omitempty"`
 }
 
 // readiness evaluates readiness now, latches warm-up, and logs transitions.
@@ -750,12 +751,17 @@ func addTargets(report *collectorReport, targets []collectors.TargetResult) {
 		case collectors.TargetBackoff:
 			report.TargetsBackoff++
 		}
+		var errText string
+		if target.Err != nil {
+			errText = target.Err.Error()
+		}
 		report.Targets = append(report.Targets, targetReport{
 			Name:                target.Target,
 			State:               string(target.State),
 			ConsecutiveFailures: target.ConsecutiveFailures,
 			LastSuccess:         optionalTime(target.LastSuccess),
 			NextAttempt:         optionalTime(target.NextAttempt),
+			Error:               errText,
 		})
 	}
 }
