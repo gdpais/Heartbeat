@@ -74,27 +74,34 @@ pod_get() { k get --raw "/api/v1/namespaces/$NAMESPACE/pods/db-collector-0:8082/
 # Operator access to the admin endpoints, the documented way: kubectl
 # port-forward (not subject to the NetworkPolicy) plus the admin token. The API
 # server's proxy cannot be used: it drops the Authorization header.
+# kubectl runs directly, not through k, so $! is kubectl itself and kill
+# stops it (a backgrounded function would leave it orphaned). The token goes
+# to curl in a header file, never on a command line.
 admin_forward() {
-	k -n "$NAMESPACE" port-forward pod/db-collector-0 :8082 >"$WORK/port-forward.log" 2>&1 &
+	kubectl --context "$CONTEXT" -n "$NAMESPACE" port-forward pod/db-collector-0 :8082 >"$WORK/port-forward.log" 2>&1 &
 	port_forward_pid=$!
 	wait_for 30 "port-forward to the collector" grep -q '^Forwarding from 127.0.0.1:' "$WORK/port-forward.log"
 	admin_port=$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9]*\) .*/\1/p' "$WORK/port-forward.log" | head -n 1)
-	admin_token=$(k -n "$NAMESPACE" get secret heartbeat-runtime -o json | jq -r '.data["admin-token"] | @base64d')
+	(
+		umask 077
+		k -n "$NAMESPACE" get secret heartbeat-runtime -o json |
+			jq -r '"Authorization: Bearer " + (.data["admin-token"] | @base64d)' >"$WORK/admin-header"
+	)
 }
 admin_unforward() {
 	kill "$port_forward_pid" 2>/dev/null || true
 	port_forward_pid=
 }
-# admin_status <path> [token]: HTTP status of GET <path> through the port-forward.
+# admin_status <path> [header]: HTTP status of GET <path> through the port-forward.
 admin_status() {
 	if [ -n "${2:-}" ]; then
-		curl -sS -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer $2" "http://127.0.0.1:$admin_port$1"
+		curl -sS -o /dev/null -w '%{http_code}' --max-time 5 -H "$2" "http://127.0.0.1:$admin_port$1"
 	else
 		curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$admin_port$1"
 	fi
 }
 admin_config() {
-	curl -sS --fail --max-time 5 -H "Authorization: Bearer $admin_token" "http://127.0.0.1:$admin_port/admin/config"
+	curl -sS --fail --max-time 5 -H "@$WORK/admin-header" "http://127.0.0.1:$admin_port/admin/config"
 }
 
 # wait_for <seconds> <description> <command...>: retries until the command succeeds.
@@ -127,6 +134,7 @@ replacement_ready() {
 }
 prometheus_answers() { [ -n "$(prom_value prometheus_tsdb_lowest_timestamp_seconds)" ]; }
 probe_pod_phase() { k -n "$NAMESPACE" get pod np-probe -o jsonpath='{.status.phase}'; }
+probe_pod_exit() { k -n "$NAMESPACE" get pod np-probe -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}'; }
 probe_pod_done() { case "$(probe_pod_phase)" in Succeeded | Failed) true ;; *) false ;; esac; }
 target_fresh() {
 	age=$(prom_value "time() - heartbeat_collector_target_last_success_timestamp_seconds{target=\"$1\"}")
@@ -208,9 +216,9 @@ step "unauthenticated endpoints expose no diagnostics"
 readyz=$(pod_get /readyz)
 [ "$(printf '%s' "$readyz" | jq -c keys)" = '["status"]' ] || fail "/readyz serves more than its status: $readyz"
 admin_forward
-for token in "" wrong-token; do
-	code=$(admin_status /admin/config "$token")
-	[ "$code" = 401 ] || fail "GET /admin/config with token '$token' returned $code, want 401"
+for header in "" "Authorization: Bearer wrong-token"; do
+	code=$(admin_status /admin/config "$header")
+	[ "$code" = 401 ] || fail "GET /admin/config with header '$header' returned $code, want 401"
 done
 admin_config | jq -e '.readiness.status == "ready" and .version != ""' >/dev/null ||
 	fail "GET /admin/config with the admin token did not return diagnostics"
@@ -221,17 +229,23 @@ collector_url=http://db-collector-headless:8082/healthz
 k -n "$NAMESPACE" exec deployment/prometheus -c prometheus-server -- wget -q -T 5 -O /dev/null "$collector_url" ||
 	fail "Prometheus cannot reach the collector's port 8082"
 # Same image, tool and Service name as from Prometheus, from a pod the policy
-# does not list. kindnet drops the connection, so it times out.
+# does not list. kindnet drops the connection, so only timeout's kill ends it:
+# exit 124 or 143. Any other failure (DNS, refused) is not the policy.
 prom_image=$(k -n "$NAMESPACE" get deployment prometheus -o jsonpath='{.spec.template.spec.containers[?(@.name=="prometheus-server")].image}')
+k -n "$NAMESPACE" delete pod np-probe --ignore-not-found --wait=true >/dev/null
 k -n "$NAMESPACE" run np-probe --image="$prom_image" --restart=Never --labels=app.kubernetes.io/name=np-probe \
 	--command -- timeout 15 wget -q -T 10 -O /dev/null "$collector_url" >/dev/null
 wait_for 120 "probe pod finished" probe_pod_done
 probe_log=$(k -n "$NAMESPACE" logs np-probe 2>&1 || true)
 phase=$(probe_pod_phase)
+exit_code=$(probe_pod_exit)
 k -n "$NAMESPACE" delete pod np-probe --wait=false >/dev/null
 [ "$phase" = Failed ] || fail "a pod other than Prometheus reached the collector's port 8082"
-case "$probe_log" in *"bad address"*) fail "probe pod could not resolve the collector: $probe_log" ;; esac
-pass "Prometheus reaches port 8082; another pod in the namespace does not"
+case "$exit_code" in
+124 | 143) ;;
+*) fail "probe pod failed with exit code $exit_code, not a connection timeout: $probe_log" ;;
+esac
+pass "Prometheus reaches port 8082; another pod in the namespace times out (exit $exit_code)"
 
 # ----------------------------------------------------------------------------
 step "a valid ConfigMap update is hot-reloaded without a restart"
