@@ -93,28 +93,80 @@ func TestRulesAndDashboardsReferenceCatalogMetrics(t *testing.T) {
 	}
 }
 
-// A raw counter only grows until SQL Server restarts, so rules and dashboards
-// must read counters through rate() or increase(), which also handle the
-// reset on restart.
+// queryMetricRef matches every Heartbeat metric a query reads; recording
+// rule names (heartbeat:...) do not match.
+var queryMetricRef = regexp.MustCompile(`\bheartbeat_[a-z0-9_]+`)
+
+// rateCall matches the end of the text before a metric read through rate(),
+// irate() or increase().
+var rateCall = regexp.MustCompile(`\b(rate|irate|increase)\(\s*$`)
+
+// rateWindow bounds how far back rateCall looks, so checking a file is linear
+// in its size.
+const rateWindow = 32
+
+// isCumulative reports whether name is a counter or a histogram's cumulative
+// series.  Catalog metrics use their declared type; other Heartbeat metrics
+// (collector self-metrics, gateway counters) follow the naming convention.
+func isCumulative(name string, catalog map[string]Metric) bool {
+	if metric, ok := catalog[name]; ok {
+		return metric.Type == collectorexport.Counter
+	}
+	for _, suffix := range []string{"_total", "_bucket", "_sum", "_count"} {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// A raw counter only grows until its source restarts, so rules and
+// dashboards must read counters and histogram series through rate() or
+// increase(), which also handle the reset.  rate() over a gauge is
+// meaningless and flagged too.
 func TestQueriesReadCountersThroughRate(t *testing.T) {
-	emitted := catalogMetrics()
-	rateCall := regexp.MustCompile(`\b(rate|irate|increase)\(\s*$`)
+	catalog := catalogMetrics()
 	for _, file := range globFiles(t, queryFilePatterns) {
 		content, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
 		}
 		text := string(content)
-		for _, loc := range metricRef.FindAllStringIndex(text, -1) {
+		rel, _ := filepath.Rel(repoRoot, file)
+		for _, loc := range queryMetricRef.FindAllStringIndex(text, -1) {
 			name := text[loc[0]:loc[1]]
-			if emitted[name].Type != collectorexport.Counter {
+			throughRate := rateCall.MatchString(text[max(0, loc[0]-rateWindow):loc[0]])
+			cumulative := isCumulative(name, catalog)
+			if cumulative == throughRate {
 				continue
 			}
-			if !rateCall.MatchString(text[:loc[0]]) {
-				rel, _ := filepath.Rel(repoRoot, file)
-				line := strings.Count(text[:loc[0]], "\n") + 1
+			line := strings.Count(text[:loc[0]], "\n") + 1
+			if cumulative {
 				t.Errorf("%s:%d: counter %s is not read through rate() or increase()", rel, line, name)
+			} else {
+				t.Errorf("%s:%d: gauge %s is read through rate() or increase()", rel, line, name)
 			}
+		}
+	}
+}
+
+func TestIsCumulative(t *testing.T) {
+	catalog := catalogMetrics()
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"heartbeat_sqlserver_wait_seconds_total", true},
+		{"heartbeat_sqlserver_sessions", false},
+		{"heartbeat_collector_probe_errors_total", true},
+		{"heartbeat_collector_probe_duration_seconds_bucket", true},
+		{"heartbeat_collector_probe_duration_seconds_count", true},
+		{"heartbeat_collector_target_up", false},
+		{"heartbeat_collector_cycle_duration_seconds", false},
+	}
+	for _, tt := range tests {
+		if got := isCumulative(tt.name, catalog); got != tt.want {
+			t.Errorf("isCumulative(%s) = %v, want %v", tt.name, got, tt.want)
 		}
 	}
 }
