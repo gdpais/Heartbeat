@@ -229,12 +229,13 @@ collector_url=http://db-collector-headless:8082/healthz
 k -n "$NAMESPACE" exec deployment/prometheus -c prometheus-server -- wget -q -T 5 -O /dev/null "$collector_url" ||
 	fail "Prometheus cannot reach the collector's port 8082"
 # Same image, tool and Service name as from Prometheus, from a pod the policy
-# does not list. kindnet drops the connection, so only timeout's kill ends it:
-# exit 124 or 143. Any other failure (DNS, refused) is not the policy.
+# does not list. kindnet drops the connection, so only timeout's kill ends it
+# (wget's own -T is longer): exit 124 or 143. Any other failure (DNS,
+# refused) is not the policy.
 prom_image=$(k -n "$NAMESPACE" get deployment prometheus -o jsonpath='{.spec.template.spec.containers[?(@.name=="prometheus-server")].image}')
 k -n "$NAMESPACE" delete pod np-probe --ignore-not-found --wait=true >/dev/null
 k -n "$NAMESPACE" run np-probe --image="$prom_image" --restart=Never --labels=app.kubernetes.io/name=np-probe \
-	--command -- timeout 15 wget -q -T 10 -O /dev/null "$collector_url" >/dev/null
+	--command -- timeout 10 wget -q -T 30 -O /dev/null "$collector_url" >/dev/null
 wait_for 120 "probe pod finished" probe_pod_done
 probe_log=$(k -n "$NAMESPACE" logs np-probe 2>&1 || true)
 phase=$(probe_pod_phase)
