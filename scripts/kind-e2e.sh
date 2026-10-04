@@ -112,7 +112,10 @@ scripts/kind.sh images
 
 password="E2e-$(openssl rand -hex 16)"
 umask 077
-printf 'MSSQL_SA_PASSWORD=%s\nHEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV=sa:%s\n' "$password" "$password" >"$SQLSERVER_ENV_FILE"
+# sa is for setup and the session sampler below; the collector logs in as a
+# least-privilege login that kind.sh sqlserver-up creates.
+printf 'MSSQL_SA_PASSWORD=%s\nHEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV=heartbeat_collector:%s\n' \
+	"$password" "E2e-$(openssl rand -hex 16)" >"$SQLSERVER_ENV_FILE"
 umask 022
 # Points the collector at this run's container, plus a second target that can
 # never connect, to show that one failed target does not stop the others.

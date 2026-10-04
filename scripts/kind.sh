@@ -23,7 +23,7 @@
 #   EXTRA_VALUES         more values files, space-separated []
 #   HEARTBEAT_NAMESPACE  namespace [heartbeat]
 #   SQLSERVER_CONTAINER  Docker SQL Server container [heartbeat-sqlserver-dev]
-#   SQLSERVER_ENV_FILE   SA password file [.env.sqlserver-dev]
+#   SQLSERVER_ENV_FILE   SA password and collector credential file [.env.sqlserver-dev]
 #   SQLSERVER_HOST_PORT  loopback host port for SQL Server; empty for none [11433]
 set -eu
 cd "$(dirname "$0")/.."
@@ -176,12 +176,19 @@ env_value() {
 # SQL Server stays a Docker container outside the cluster (ADR 0003). It joins
 # the kind network, so pods reach it by container name, and publishes 1433
 # only on the host's loopback (or not at all with SQLSERVER_HOST_PORT=).
+# The collector logs in as a least-privilege login that this creates with sa;
+# the sa password never leaves the env file and the container.
 cmd_sqlserver_up() {
 	[ -f "$SQLSERVER_ENV_FILE" ] || die "$SQLSERVER_ENV_FILE is missing; run make sqlserver-dev-init"
 	cmd_cluster
 	password=$(env_value MSSQL_SA_PASSWORD)
 	credential=$(env_value HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV)
 	[ -n "$password" ] && [ -n "$credential" ] || die "$SQLSERVER_ENV_FILE must set MSSQL_SA_PASSWORD and HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV"
+	collector_login=${credential%%:*}
+	if [ "$collector_login" = "$credential" ] || [ -z "$collector_login" ] ||
+		[ "$(printf '%s' "$collector_login" | tr 'A-Z' 'a-z')" = sa ]; then
+		die "HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV in $SQLSERVER_ENV_FILE must be <login>:<password> for a dedicated login, not sa; run make sqlserver-dev-init to add one"
+	fi
 	if [ -z "$(docker ps -aq --filter "name=^${SQLSERVER_CONTAINER}\$")" ]; then
 		log "starting $SQLSERVER_CONTAINER"
 		set --
@@ -206,6 +213,9 @@ cmd_sqlserver_up() {
 		[ "$i" -le 60 ] || die "$SQLSERVER_CONTAINER did not become healthy"
 		sleep 5
 	done
+	log "granting $collector_login only the documented collector permissions"
+	MSSQL_SA_PASSWORD=$password HEARTBEAT_COLLECTOR_LOGIN=$collector_login HEARTBEAT_COLLECTOR_PASSWORD=${credential#*:} \
+		scripts/sqlserver-login.sh "$SQLSERVER_CONTAINER"
 	cmd_secrets
 	apply_secret heartbeat-sqlserver-dev-credentials --from-literal=HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV="$credential"
 	mkdir -p "$STATE_DIR"

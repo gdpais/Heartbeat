@@ -21,7 +21,8 @@ import (
 )
 
 // liveCredentialRef resolves through EnvCredentialResolver to
-// HEARTBEAT_CREDENTIAL_SQLSERVER_TEST ("username:password").
+// HEARTBEAT_CREDENTIAL_SQLSERVER_TEST ("username:password"), the
+// least-privilege collector login.
 const liveCredentialRef = "sqlserver-test"
 
 // liveExecutor returns an executor for the disposable test server and its
@@ -77,10 +78,12 @@ func runLiveProbe(t *testing.T, executor SQLExecutor, target collectormetadata.D
 	return samples
 }
 
-// Runs every built-in probe against a real SQL Server (make test-sqlserver).
-// Fakes cannot catch what the catalog queries return on a live server, such as
-// several rows mapping to one label set or nchar padding in label values; the
-// exporter keeps only the last of duplicate series.
+// Runs every built-in probe against a real SQL Server (make test-sqlserver),
+// logged in as the least-privilege collector login, so a probe that needs
+// more than the documented grants fails here.  Fakes cannot catch what the
+// catalog queries return on a live server, such as several rows mapping to
+// one label set or nchar padding in label values; the exporter keeps only the
+// last of duplicate series.
 func TestCatalogProbesAgainstSQLServer(t *testing.T) {
 	executor, target := liveExecutor(t, liveCredentialRef)
 
