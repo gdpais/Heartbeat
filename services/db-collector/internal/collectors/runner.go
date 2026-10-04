@@ -17,6 +17,9 @@
 //     backoff state, reports every cycle through its Report callback, and
 //     keeps running until the context is cancelled, whatever the probes do.
 //
+// With [Runner.WithProbeMetrics], every probe execution is also timed and
+// every probe failure counted by reason (see [ProbeMetrics]).
+//
 // Every probe failure, recovered panic, backoff transition, recovery, and
 // exporter or sink error is logged synchronously through the Runner's
 // [slog.Logger] from the goroutine that observed it, so no error is lost to
@@ -112,6 +115,7 @@ type Runner struct {
 	exporter      collectorexport.Recorder
 	sink          EvidenceSink
 	logger        *slog.Logger
+	metrics       *ProbeMetrics
 	maxConcurrent int
 	// sinkMu serialises Publish calls because EvidenceSink implementations
 	// need not be safe for concurrent use.  It is shared by every copy of
@@ -123,6 +127,13 @@ type Runner struct {
 // falls back to [slog.Default].
 func (r Runner) WithLogger(logger *slog.Logger) Runner {
 	r.logger = logger
+	return r
+}
+
+// WithProbeMetrics returns a copy of r that records probe durations and
+// errors in metrics.  A nil metrics records nothing.
+func (r Runner) WithProbeMetrics(metrics *ProbeMetrics) Runner {
+	r.metrics = metrics
 	return r
 }
 
@@ -381,9 +392,12 @@ func (r Runner) runScopedProbe(ctx context.Context, collector collectorconfig.Co
 
 // executeProbe runs item under its probe timeout.  Probes that cannot start
 // before the cycle deadline and probes that panic are reported as errors.
+// Executions are timed and failures counted through the Runner's
+// [ProbeMetrics].
 func (r Runner) executeProbe(ctx context.Context, item collectormetadata.ScheduledProbe, interval time.Duration) ([]collectorexport.Sample, []collectormetadata.Evidence, error) {
 	name := item.Definition.Name
 	if err := ctx.Err(); err != nil {
+		r.metrics.failed(item, ReasonNotStarted)
 		return nil, nil, notStartedError(name, err)
 	}
 	timeout := probeTimeout(item.Definition.TimeoutMS, interval)
@@ -393,14 +407,19 @@ func (r Runner) executeProbe(ctx context.Context, item collectormetadata.Schedul
 	var evidence []collectormetadata.Evidence
 	var err error
 	attrs := []any{"collector", item.CollectorID, "target", item.Target.Name, "probe", name}
-	if panicErr := r.protect("probe "+name, attrs, func() {
+	started := time.Now()
+	panicErr := r.protect("probe "+name, attrs, func() {
 		samples, evidence, err = r.executor.RunProbe(probeCtx, item)
-	}); panicErr != nil {
+	})
+	r.metrics.observe(item, time.Since(started))
+	if panicErr != nil {
+		r.metrics.failed(item, ReasonPanic)
 		return nil, nil, panicErr
 	}
 	if err == nil {
 		return samples, evidence, nil
 	}
+	r.metrics.failed(item, failureReason(probeCtx))
 	if ctx.Err() == nil && errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
 		return nil, nil, fmt.Errorf("probe %s timed out after %s: %w", name, timeout, err)
 	}
@@ -512,14 +531,16 @@ func (r Runner) clearScope(scope collectorexport.Scope) {
 	_ = r.protect("clear samples", scopeAttrs(scope), func() { scoped.ClearScope(scope) })
 }
 
-// forgetCollector deletes every series of collectorID when the exporter
-// supports scopes.
+// forgetCollector deletes every probe metric series of collectorID, and
+// every exported series of it when the exporter supports scopes.
 func (r Runner) forgetCollector(collectorID string) {
+	attrs := []any{"collector", collectorID}
+	_ = r.protect("forget probe metrics", attrs, func() { r.metrics.forgetCollector(collectorID) })
 	scoped, ok := r.exporter.(collectorexport.ScopedRecorder)
 	if !ok {
 		return
 	}
-	_ = r.protect("forget collector", []any{"collector", collectorID}, func() { scoped.ForgetCollector(collectorID) })
+	_ = r.protect("forget collector", attrs, func() { scoped.ForgetCollector(collectorID) })
 }
 
 // publish forwards evidence of one target to the sink, serialising calls.
@@ -838,9 +859,9 @@ func contains(values []string, needle string) bool {
 // Start runs an initial scrape immediately and then ticks at
 // Collector.ScrapeInterval until ctx is cancelled.  Probe errors and panics
 // never stop the poller: they are logged, reported, and handled by per-target
-// backoff.  Start returns ctx.Err() once ctx is cancelled, after deleting
-// every series the collector exported, and an error only if the scrape
-// interval is not positive.
+// backoff.  Start creates the collector's probe error counters at 0, returns
+// ctx.Err() once ctx is cancelled, after deleting every series the collector
+// exported, and an error only if the scrape interval is not positive.
 func (p Poller) Start(ctx context.Context) error {
 	interval := p.Collector.ScrapeInterval
 	if interval <= 0 {
@@ -848,6 +869,7 @@ func (p Poller) Start(ctx context.Context) error {
 	}
 	tracker := newTargetTracker()
 	defer p.Runner.forgetCollector(p.Collector.ID)
+	_ = p.Runner.protect("init probe metrics", []any{"collector", p.Collector.ID}, func() { p.Runner.metrics.initCollector(p.Collector) })
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
