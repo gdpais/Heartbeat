@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Heartbeat docsite (make docs-site)">
+<meta name="color-scheme" content="light dark">
+<title>Heartbeat OTel Gateway · Heartbeat docs</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%230369a1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' d='M2 12h4l3-7 4 14 3-7h6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../../assets/style.css?v=8486b06a573b">
+<script defer src="../../assets/site.js?v=5b67932127bb"></script>
+</head>
+<body data-root="../../" data-search-index="assets/search-index.js?v=5087856b5ede">
+<a class="skip-link" href="#content">Skip to content</a>
+<header class="topbar">
+  <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    <span class="visually-hidden">Menu</span>
+  </button>
+  <a class="brand" href="../../index.html">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Heartbeat <span class="brand-sub">docs</span>
+  </a>
+</header>
+<div class="layout">
+  <nav class="sidebar" id="sidebar" aria-label="Documentation">
+    <a class="brand" href="../../index.html">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Heartbeat <span class="brand-sub">docs</span>
+    </a>
+    <div class="search" role="search">
+      <label class="visually-hidden" for="search-input">Search the docs</label>
+      <input id="search-input" type="search" placeholder="Search the docs" autocomplete="off" spellcheck="false">
+      <div class="search-results" id="search-results" hidden></div>
+    </div>
+    <div class="nav-groups">
+      <ul class="nav-list">
+        <li><a href="../../index.html">Home</a></li>
+      </ul>
+      <section class="nav-group">
+        <h2>New to Heartbeat</h2><p class="nav-note">clients, stakeholders, new team members</p>
+        <ul class="nav-list">
+          <li><a href="../../product/overview.html">Product overview</a>
+          </li>
+          <li><a href="../../product/roadmap.html">Roadmap</a>
+          </li>
+          <li><a href="../../architecture/overview.html">Architecture overview</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Developers</h2>
+        <ul class="nav-list">
+          <li><a href="../../guides/kind-walkthrough.html">Walkthrough</a>
+          </li>
+          <li><a href="../../guides/local-development.html">Local development</a>
+          </li>
+          <li><a href="../../guides/kubernetes-local.html">Kubernetes delivery</a>
+          </li>
+          <li><a href="../../architecture/data-model.html">Data model</a>
+          </li>
+          <li><a href="../../architecture/decisions/index.html">Architecture decisions</a>
+            <ul class="nav-list nav-children">
+              <li><a href="../../architecture/decisions/0001-postgresql-metadata-only.html">0001. PostgreSQL stores durable product metadata only</a></li>
+              <li><a href="../../architecture/decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
+              <li><a href="../../architecture/decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
+              <li><a href="../../architecture/decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+              <li><a href="../../architecture/decisions/0005-production-delivery-and-operations-defaults.html">0005. Production delivery and operations defaults</a></li>
+            </ul>
+          </li>
+          <li><a href="../db-collector/index.html">DB collector</a>
+          </li>
+          <li><a href="index.html" aria-current="page">OTel gateway</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Operators and SREs</h2>
+        <ul class="nav-list">
+          <li><a href="../../guides/database-targets.html">Onboarding SQL Server targets</a>
+          </li>
+          <li><a href="../../reference/configuration.html">Configuration reference</a>
+          </li>
+          <li><a href="../../reference/metrics-and-endpoints.html">Metrics and endpoints reference</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>More pages</h2>
+        <ul class="nav-list">
+          <li><a href="../../architecture/database-observability.html">Database Observability Architecture</a>
+          </li>
+          <li><a href="../../architecture/workflows.html">Operator Workflows</a>
+          </li>
+        </ul>
+      </section>
+      <ul class="nav-list nav-archive">
+        <li><a href="../../archive/index.html">Archive</a></li>
+      </ul>
+    </div>
+  </nav>
+  <div class="scrim" hidden></div>
+  <main id="content" tabindex="-1">
+    <details class="toc-inline">
+      <summary>On this page</summary>
+      <ul>
+        <li class="toc-h2"><a href="#what-it-does-today">What it does today</a></li>
+        <li class="toc-h2"><a href="#configuration">Configuration</a></li>
+        <li class="toc-h2"><a href="#code-layout">Code layout</a></li>
+        <li class="toc-h2"><a href="#next-steps">Next steps</a></li>
+      </ul>
+    </details>
+    <article class="markdown">
+<h1 id="heartbeat-otel-gateway">Heartbeat OTel Gateway<a href="#heartbeat-otel-gateway" class="anchor" title="Link to this section">#</a></h1>
+<p>A thin Go service for platform-specific telemetry normalization. The stock
+OpenTelemetry Collector (<code>otelCollector.config</code> in the <a href="https://github.com/gdpais/Heartbeat/blob/master/infra/helm/heartbeat/values.yaml">Helm chart values</a>) remains responsible
+for OTLP ingest, processing and routing. The gateway exists only for parsing
+that collector configuration cannot express cleanly, starting with OutSystems.
+See <a href="../../architecture/workflows.html#application-telemetry-ingestion-outsystems-first">operator workflows</a>.</p>
+<blockquote>
+<p><strong>Status: partial.</strong> The gateway normalizes a single JSON event and returns it
+to the caller; it does not forward anything to the OTel Collector yet.
+OutSystems-specific parsers are not implemented.</p>
+</blockquote>
+<h2 id="what-it-does-today">What it does today<a href="#what-it-does-today" class="anchor" title="Link to this section">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST /v1/heartbeat/events</code></td>
+<td>Decodes one JSON object and maps common aliases into the <a href="https://github.com/gdpais/Heartbeat/blob/master/packages/telemetry-contracts/src/application_event.schema.json">application event contract</a>. Returns the normalized event (202) or 400.</td>
+</tr>
+<tr>
+<td><code>POST /v1/heartbeat/alerts</code></td>
+<td>Alertmanager webhook receiver: accepts and counts the payload (202). Nothing is stored or delivered.</td>
+</tr>
+<tr>
+<td><code>GET /healthz</code>, <code>GET /readyz</code></td>
+<td>Liveness; readiness with <code>config_version</code> and the configured OTel endpoint</td>
+</tr>
+<tr>
+<td><code>GET /metrics</code></td>
+<td><code>heartbeat_otel_gateway_normalized_events_total</code>, <code>heartbeat_otel_gateway_alert_deliveries_total</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Field aliases recognized by <code>internal/normalization/event.go</code>:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Contract field</th>
+<th>Accepted input keys</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>environment</code></td>
+<td><code>environment</code>, <code>env</code></td>
+</tr>
+<tr>
+<td><code>application</code></td>
+<td><code>application</code>, <code>app</code>, <code>module</code></td>
+</tr>
+<tr>
+<td><code>component</code></td>
+<td><code>component</code>, <code>action</code>, <code>screen</code>, <code>operation</code></td>
+</tr>
+<tr>
+<td><code>severity</code></td>
+<td><code>severity</code>, <code>level</code> (lower-cased; default <code>info</code>)</td>
+</tr>
+<tr>
+<td><code>message</code></td>
+<td><code>message</code>, <code>msg</code>, <code>text</code></td>
+</tr>
+<tr>
+<td><code>user_id</code> / <code>session_id</code> / <code>request_id</code></td>
+<td><code>user_id</code>, <code>userId</code>, <code>user</code> / <code>session_id</code>, <code>sessionId</code>, <code>session</code> / <code>request_id</code>, <code>requestId</code>, <code>trace_id</code>, <code>traceId</code></td>
+</tr>
+<tr>
+<td><code>client_ip</code></td>
+<td><code>client_ip</code>, <code>clientIp</code>, <code>ip</code></td>
+</tr>
+<tr>
+<td><code>timestamp</code></td>
+<td><code>timestamp</code>, <code>time</code> (RFC 3339; default now)</td>
+</tr>
+</tbody>
+</table></div>
+<pre><code class="language-bash">curl -s -X POST http://localhost:8083/v1/heartbeat/events \
+  -d '{&quot;env&quot;:&quot;prod&quot;,&quot;app&quot;:&quot;Claims&quot;,&quot;level&quot;:&quot;ERROR&quot;,&quot;msg&quot;:&quot;timeout&quot;,&quot;userId&quot;:&quot;u1&quot;}'
+</code></pre>
+<h2 id="configuration">Configuration<a href="#configuration" class="anchor" title="Link to this section">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>HEARTBEAT_OTEL_GATEWAY_LISTEN_ADDR</code></td>
+<td><code>:8083</code></td>
+</tr>
+<tr>
+<td><code>HEARTBEAT_INTEGRATIONS_PATH</code></td>
+<td><code>config/integrations.yaml</code> (loaded once at startup; no reload)</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="code-layout">Code layout<a href="#code-layout" class="anchor" title="Link to this section">#</a></h2>
+<ul>
+<li><code>cmd/otel-gateway/main.go</code>: entry point and environment variables</li>
+<li><code>internal/app/app.go</code>: HTTP routes and metrics</li>
+<li><code>internal/normalization/event.go</code>: event parsing into the shared contract</li>
+</ul>
+<h2 id="next-steps">Next steps<a href="#next-steps" class="anchor" title="Link to this section">#</a></h2>
+<p>Tracked in <a href="https://github.com/gdpais/Heartbeat/blob/master/TODO.md">TODO.md</a> §3.3: OutSystems parsers, forwarding
+normalized events to the OTel Collector, and deciding what the alert endpoint
+becomes (<a href="../../architecture/overview.html#open-questions">open questions</a>).</p>
+
+    </article>
+    <footer class="page-footer">
+      Generated from <a href="https://github.com/gdpais/Heartbeat/blob/master/services/otel-gateway/README.md"><code>services/otel-gateway/README.md</code></a> by <code>make docs-site</code>. Edit the Markdown, not this page.
+    </footer>
+  </main>
+  <aside class="toc" aria-label="On this page">
+    <h2>On this page</h2>
+    <ul>
+      <li class="toc-h2"><a href="#what-it-does-today">What it does today</a></li>
+      <li class="toc-h2"><a href="#configuration">Configuration</a></li>
+      <li class="toc-h2"><a href="#code-layout">Code layout</a></li>
+      <li class="toc-h2"><a href="#next-steps">Next steps</a></li>
+    </ul>
+  </aside>
+</div>
+</body>
+</html>

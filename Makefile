@@ -1,4 +1,4 @@
-.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet
+.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet docs-site docs-check
 
 SQLSERVER_DEV_ENV_FILE := .env.sqlserver-dev
 # Health checks fail fast on HTTP errors (keeping the body) and never hang.
@@ -20,6 +20,13 @@ CHART_DIR := infra/helm/heartbeat
 PROFILE ?= full
 # promtool comes from the same image as the Prometheus server.
 PROMETHEUS_IMAGE := prom/prometheus:v3.15.0
+# The HTML docs link source files (Go, YAML, SQL, ...) to this repository URL.
+DOCS_REPO_URL := https://github.com/gdpais/Heartbeat
+DOCS_REPO_REF := master
+# The generator is its own Go module (tools/docsite/go.mod), so the services'
+# module does not depend on its Markdown parser.
+DOCSITE_MODULE := tools/docsite
+DOCSITE := GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) run ./cmd/docsite -root ../.. -repo-url $(DOCS_REPO_URL) -ref $(DOCS_REPO_REF)
 
 help:
 	@printf '%s\n' \
@@ -43,7 +50,9 @@ help:
 		'  make test-integration    Run isolated PostgreSQL integration tests (requires Docker)' \
 		'  make test-sqlserver      Run every SQL Server probe against a disposable SQL Server container (requires Docker)' \
 		'  make test-race           Run all Docker-free tests with the race detector' \
-		'  make vet                 Run Go static checks'
+		'  make vet                 Run Go static checks' \
+		'  make docs-site           Regenerate the HTML docs site in docs/site from the Markdown' \
+		'  make docs-check          Fail if docs/site is out of date with the Markdown'
 
 tools-check:
 	@KIND_VERSION=$(KIND_VERSION) KIND_NODE_IMAGE=$(KIND_NODE_IMAGE) HELM_MIN_VERSION=$(HELM_MIN_VERSION) scripts/tools-check.sh
@@ -108,6 +117,7 @@ rules-check:
 
 test:
 	GOCACHE=$$(pwd)/.tmp/gocache go test ./...
+	GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) test ./...
 
 test-integration:
 	GOCACHE=$$(pwd)/.tmp/gocache go test -tags=integration -count=1 -timeout=10m ./tests
@@ -117,6 +127,14 @@ test-sqlserver:
 
 test-race:
 	GOCACHE=$$(pwd)/.tmp/gocache go test -race ./...
+	GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) test -race ./...
 
 vet:
 	GOCACHE=$$(pwd)/.tmp/gocache go vet ./...
+	GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) vet ./...
+
+docs-site:
+	$(DOCSITE)
+
+docs-check:
+	$(DOCSITE) -check

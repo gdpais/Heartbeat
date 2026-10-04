@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Heartbeat docsite (make docs-site)">
+<meta name="color-scheme" content="light dark">
+<title>Operator Workflows · Heartbeat docs</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%230369a1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' d='M2 12h4l3-7 4 14 3-7h6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../assets/style.css?v=8486b06a573b">
+<script defer src="../assets/site.js?v=5b67932127bb"></script>
+</head>
+<body data-root="../" data-search-index="assets/search-index.js?v=5087856b5ede">
+<a class="skip-link" href="#content">Skip to content</a>
+<header class="topbar">
+  <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    <span class="visually-hidden">Menu</span>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Heartbeat <span class="brand-sub">docs</span>
+  </a>
+</header>
+<div class="layout">
+  <nav class="sidebar" id="sidebar" aria-label="Documentation">
+    <a class="brand" href="../index.html">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 12h4l3-7 4 14 3-7h6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Heartbeat <span class="brand-sub">docs</span>
+    </a>
+    <div class="search" role="search">
+      <label class="visually-hidden" for="search-input">Search the docs</label>
+      <input id="search-input" type="search" placeholder="Search the docs" autocomplete="off" spellcheck="false">
+      <div class="search-results" id="search-results" hidden></div>
+    </div>
+    <div class="nav-groups">
+      <ul class="nav-list">
+        <li><a href="../index.html">Home</a></li>
+      </ul>
+      <section class="nav-group">
+        <h2>New to Heartbeat</h2><p class="nav-note">clients, stakeholders, new team members</p>
+        <ul class="nav-list">
+          <li><a href="../product/overview.html">Product overview</a>
+          </li>
+          <li><a href="../product/roadmap.html">Roadmap</a>
+          </li>
+          <li><a href="overview.html">Architecture overview</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Developers</h2>
+        <ul class="nav-list">
+          <li><a href="../guides/kind-walkthrough.html">Walkthrough</a>
+          </li>
+          <li><a href="../guides/local-development.html">Local development</a>
+          </li>
+          <li><a href="../guides/kubernetes-local.html">Kubernetes delivery</a>
+          </li>
+          <li><a href="data-model.html">Data model</a>
+          </li>
+          <li><a href="decisions/index.html">Architecture decisions</a>
+            <ul class="nav-list nav-children">
+              <li><a href="decisions/0001-postgresql-metadata-only.html">0001. PostgreSQL stores durable product metadata only</a></li>
+              <li><a href="decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
+              <li><a href="decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
+              <li><a href="decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+              <li><a href="decisions/0005-production-delivery-and-operations-defaults.html">0005. Production delivery and operations defaults</a></li>
+            </ul>
+          </li>
+          <li><a href="../services/db-collector/index.html">DB collector</a>
+          </li>
+          <li><a href="../services/otel-gateway/index.html">OTel gateway</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>Operators and SREs</h2>
+        <ul class="nav-list">
+          <li><a href="../guides/database-targets.html">Onboarding SQL Server targets</a>
+          </li>
+          <li><a href="../reference/configuration.html">Configuration reference</a>
+          </li>
+          <li><a href="../reference/metrics-and-endpoints.html">Metrics and endpoints reference</a>
+          </li>
+        </ul>
+      </section>
+      <section class="nav-group">
+        <h2>More pages</h2>
+        <ul class="nav-list">
+          <li><a href="database-observability.html">Database Observability Architecture</a>
+          </li>
+          <li><a href="workflows.html" aria-current="page">Operator Workflows</a>
+          </li>
+        </ul>
+      </section>
+      <ul class="nav-list nav-archive">
+        <li><a href="../archive/index.html">Archive</a></li>
+      </ul>
+    </div>
+  </nav>
+  <div class="scrim" hidden></div>
+  <main id="content" tabindex="-1">
+    <details class="toc-inline">
+      <summary>On this page</summary>
+      <ul>
+        <li class="toc-h2"><a href="#services-and-responsibilities">Services and responsibilities</a></li>
+        <li class="toc-h2"><a href="#application-telemetry-ingestion-outsystems-first">Application telemetry ingestion (OutSystems first)</a></li>
+        <li class="toc-h2"><a href="#session-investigation">Session investigation</a></li>
+        <li class="toc-h2"><a href="#alerting">Alerting</a></li>
+        <li class="toc-h2"><a href="#reporting">Reporting</a></li>
+        <li class="toc-h2"><a href="#audit">Audit</a></li>
+      </ul>
+    </details>
+    <article class="markdown">
+<h1 id="operator-workflows">Operator Workflows<a href="#operator-workflows" class="anchor" title="Link to this section">#</a></h1>
+<p>How the planned services turn telemetry into operator workflows: application
+telemetry ingestion, session investigation, alerting and reporting, all driven
+through the control-plane API and web UI.</p>
+<blockquote>
+<p><strong>Status:</strong> mostly planned. Implemented today: the stock OpenTelemetry
+Collector pipeline, a thin gateway helper that normalizes single JSON events
+and accepts Alertmanager webhooks, Prometheus rules, Alertmanager routing, and
+the PostgreSQL schema. The API, web UI, session analyzer and reporting service
+are empty scaffolds. See the <a href="overview.html#current-runtime">current runtime</a>
+and the <a href="../product/roadmap.html">roadmap</a>.</p>
+</blockquote>
+<p>All four workflows follow the same pattern:</p>
+<ul>
+<li><strong>PostgreSQL</strong> stores intent and durable metadata (what was asked, which
+policy, which schedule, what the result was). See the <a href="data-model.html">data model</a>.</li>
+<li><strong>Prometheus, Loki and Alertmanager</strong> do the runtime work (store, query,
+evaluate, route).</li>
+<li><strong>Redis</strong> dispatches asynchronous jobs; durable job state stays in PostgreSQL.</li>
+<li>Everything is <strong>application-owned</strong>: the environment is derived through
+<code>applications.environment_id</code>.</li>
+</ul>
+<h2 id="services-and-responsibilities">Services and responsibilities<a href="#services-and-responsibilities" class="anchor" title="Link to this section">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Service</th>
+<th>Owns</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>API / control plane (<code>apps/api</code>)</td>
+<td>Inventory CRUD, telemetry source and database target onboarding, alert policy and report schedule CRUD, users/roles, investigation APIs, Grafana deep links from YAML templates, JSONL audit output. Uses PostgreSQL for durable data and Redis for queues, idempotency keys and cached summaries.</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td>Web UI (<code>apps/web</code>)</td>
+<td>Operator screens: environments/applications, telemetry sources, DB target onboarding, investigations, alert policies, reports, integrations. Investigation is app-first; drill-downs open Grafana/Loki.</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td>OTel gateway (<code>services/otel-gateway</code>)</td>
+<td>Platform-specific parsing and normalization into the shared telemetry contract; the stock OTel Collector handles OTLP ingest, batching and routing. See its <a href="../services/otel-gateway/index.html">README</a>.</td>
+<td>Partial</td>
+</tr>
+<tr>
+<td>Session analyzer (<code>services/session-analyzer</code>)</td>
+<td>Investigation jobs: correlation across Prometheus, Loki, collector evidence and metadata; anomaly windows; adaptive baseline computation.</td>
+<td>Planned</td>
+</tr>
+<tr>
+<td>Reporting (<code>services/reporting</code>)</td>
+<td>Scheduled and on-demand report jobs, rendering, delivery, run metadata.</td>
+<td>Planned</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="application-telemetry-ingestion-outsystems-first">Application telemetry ingestion (OutSystems first)<a href="#application-telemetry-ingestion-outsystems-first" class="anchor" title="Link to this section">#</a></h2>
+<ol>
+<li>OutSystems emits logs, events and metrics through a supported export path or
+an OTLP-compatible bridge.</li>
+<li>The OpenTelemetry Collector receives and routes what it can with stock
+processors.</li>
+<li>The gateway normalizes OutSystems-specific fields into the
+<a href="https://github.com/gdpais/Heartbeat/blob/master/packages/telemetry-contracts/src/application_event.schema.json">application event contract</a>.</li>
+<li>Logs land in Loki with controlled labels: environment, application,
+component, severity, event type. The Collector already deletes <code>user_id</code>,
+<code>session_id</code>, <code>request_id</code> and <code>client_ip</code> from log attributes so they cannot
+become labels.</li>
+<li>Derived metrics (latency, throughput, errors, availability, saturation) land
+in Prometheus.</li>
+<li>Grafana shows application health and links to Loki log views.</li>
+</ol>
+<p><strong>Normalization targets:</strong> environment; application/module;
+component/action/screen/API operation; tenant where available; user, session and
+request identifiers; client IP; severity; error category and stack fingerprint;
+latency; host/node/runtime metadata; deployment/version context.</p>
+<p><strong>Rules</strong></p>
+<ul>
+<li>Support Traditional and Reactive OutSystems from the start.</li>
+<li>Map default OutSystems log fields faithfully first, so existing SRE queries
+keep working. Confirm improvements with the SRE team before changing field
+semantics.</li>
+<li>Avoid storing PII unnecessarily; prefer hashed or normalized identifiers.</li>
+<li>MuleSoft and generic JSON/plaintext sources come after the OutSystems path is
+proven.</li>
+</ul>
+<h2 id="session-investigation">Session investigation<a href="#session-investigation" class="anchor" title="Link to this section">#</a></h2>
+<p><strong>Input:</strong> application, plus user, IP, session or request identifier, plus a
+time range. <strong>Output:</strong> timeline, anomaly windows, likely bottlenecks, affected
+components, and evidence links into Grafana/Loki.</p>
+<ol>
+<li>The operator submits the query in the UI.</li>
+<li>The API derives the environment from the application and writes an
+<code>investigations</code> row.</li>
+<li>The API enqueues a job in Redis and records it in <code>investigation_jobs</code>.</li>
+<li>The session analyzer picks up the job and queries Prometheus, Loki, DB
+collector evidence and the metadata database.</li>
+<li>The analyzer correlates by application, environment, user, IP,
+request/session IDs, component, host and time window, then stores a bounded
+summary in <code>investigation_results</code> plus <code>evidence_links</code>. Short-lived results
+are cached in Redis.</li>
+<li>The UI renders the timeline and links.</li>
+</ol>
+<p><strong>Non-goals in the MVP:</strong> no session table, no session identity mapping table,
+no raw evidence blobs in PostgreSQL. Session correlation is recomputed from
+Loki/Prometheus at investigation time.</p>
+<p><strong>Risk:</strong> correlation quality depends on stable identifiers in source logs.
+Validate which OutSystems fields are reliably present early.</p>
+<h2 id="alerting">Alerting<a href="#alerting" class="anchor" title="Link to this section">#</a></h2>
+<ul>
+<li><strong>Static rules</strong> cover hard limits and always remain in place as guardrails.</li>
+<li><strong>Adaptive baselines</strong> cover noisy signals: rolling median + MAD or EWMA
+bands, computed per metric, application and period class. Baseline parameters
+and versions are stored in <code>adaptive_baselines</code>, and thresholds are rendered
+into Prometheus-compatible rules. Baselines must be explainable, because
+opaque adaptive alerting erodes trust.</li>
+<li><strong>Evaluation</strong> happens in Prometheus. <strong>Routing, grouping, deduplication,
+silencing and delivery</strong> happen in Alertmanager (email, webhook, later
+PagerDuty/Slack).</li>
+<li><strong>PostgreSQL</strong> stores policy intent (<code>alert_policies</code>), route intent
+(<code>notification_routes</code>) and alert history (<code>alert_events</code>). It never evaluates
+alerts. Do not build a second alert engine.</li>
+<li><strong>Grafana links</strong> in alert evidence are generated from YAML URL templates,
+not database tables.</li>
+</ul>
+<p>Planned rendering path: API → <code>infra/helm/heartbeat/files/prometheus/rules/generated/</code> (loaded by
+Prometheus) and API → Alertmanager routes. Who renders <code>generated/</code> (the API or
+a build step) is an <a href="overview.html#open-questions">open question</a>.</p>
+<p><strong>Current state:</strong> <code>infra/helm/heartbeat/files/prometheus/rules/heartbeat.rules.yml</code> holds hand-written
+rules. Prometheus has no <code>alerting</code> block, so alerts do not reach Alertmanager
+yet. Alertmanager routes everything to the gateway's
+<code>POST /v1/heartbeat/alerts</code> endpoint, which only counts deliveries. The SQL
+Server recording rules reference metric names the collector no longer emits;
+see <a href="../reference/metrics-and-endpoints.html#known-gaps">metrics reference</a>.</p>
+<p><strong>Adaptive telemetry (later):</strong> escalation profiles that raise collection
+detail during anomalies or incidents, without ever amplifying database load
+unsafely.</p>
+<h2 id="reporting">Reporting<a href="#reporting" class="anchor" title="Link to this section">#</a></h2>
+<ol>
+<li>A schedule (<code>report_schedules</code>) or a user triggers a report.</li>
+<li>The API or reporting service enqueues a job in Redis and records a
+<code>report_runs</code> row.</li>
+<li>The reporting service gathers metrics, logs and investigation summaries.</li>
+<li>The output is rendered as HTML, CSV or PDF and delivered by email. The
+artifact is stored only if retention requires it, and PostgreSQL keeps
+<code>artifact_uri</code>.</li>
+<li>The UI/API exposes run status and downloads.</li>
+</ol>
+<p><strong>MVP report content:</strong> application/service health summary, top regressions,
+recurring wait/lock hotspots, alert noise summary, SLA/SLO deltas where
+available. The first target is a weekly summary delivered by email.</p>
+<h2 id="audit">Audit<a href="#audit" class="anchor" title="Link to this section">#</a></h2>
+<p>Every operator or admin mutation appends one JSONL line (timestamp, actor,
+action, entity type and ID, before/after metadata, request ID, config version)
+to a dated audit file, for example <code>audit/heartbeat-audit-YYYY-MM-DD.jsonl</code>.
+Config reload results and collector add/remove/change decisions are logged the
+same way. Secrets never enter audit logs. Files are rotated and shipped to
+Loki/SIEM.</p>
+
+    </article>
+    <footer class="page-footer">
+      Generated from <a href="https://github.com/gdpais/Heartbeat/blob/master/docs/architecture/workflows.md"><code>docs/architecture/workflows.md</code></a> by <code>make docs-site</code>. Edit the Markdown, not this page.
+    </footer>
+  </main>
+  <aside class="toc" aria-label="On this page">
+    <h2>On this page</h2>
+    <ul>
+      <li class="toc-h2"><a href="#services-and-responsibilities">Services and responsibilities</a></li>
+      <li class="toc-h2"><a href="#application-telemetry-ingestion-outsystems-first">Application telemetry ingestion (OutSystems first)</a></li>
+      <li class="toc-h2"><a href="#session-investigation">Session investigation</a></li>
+      <li class="toc-h2"><a href="#alerting">Alerting</a></li>
+      <li class="toc-h2"><a href="#reporting">Reporting</a></li>
+      <li class="toc-h2"><a href="#audit">Audit</a></li>
+    </ul>
+  </aside>
+</div>
+</body>
+</html>

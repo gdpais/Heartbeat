@@ -11,7 +11,9 @@ installed on monitored database hosts.**
 
 **Documentation: [docs/README.md](docs/README.md)**. Start with the
 [product overview](docs/product/overview.md) and the
-[architecture overview](docs/architecture/overview.md).
+[architecture overview](docs/architecture/overview.md). The same docs are
+committed as a static HTML site: open `docs/site/index.html` in a browser, and
+run `make docs-site` after editing the Markdown.
 
 ## Status
 
@@ -93,7 +95,8 @@ infra/helm/values/     values per environment (kind, minimal, SQL Server sandbox
 infra/kind/            local kind cluster config
 infra/docker-compose.test.yml  disposable PostgreSQL fixture for integration tests
 tests/                 repository, migration and integration tests
-docs/                  documentation (index: docs/README.md)
+tools/docsite/         Markdown-to-HTML docs site generator (separate Go module)
+docs/                  documentation (index: docs/README.md; HTML site: docs/site/)
 ```
 
 Go services follow `cmd/<service>/main.go` plus `internal/<domain>/`. Empty
@@ -102,7 +105,7 @@ scaffold directories hold `.gitkeep` files until their service is implemented.
 ## CI
 
 GitHub Actions (`.github/workflows/db-collector-ci.yml`) runs `make test`,
-`make test-race`, `make vet`, `make rules-check`, `make test-integration` and
-`make test-sqlserver`;
+`make test-race`, `make vet`, `make rules-check`, `make docs-check`,
+`make test-integration` and `make test-sqlserver`;
 `make chart-check` with Helm 4 and Helm 3; and `make kind-e2e`, the acceptance
 checks on a fresh kind cluster.
