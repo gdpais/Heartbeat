@@ -6,10 +6,11 @@
 // [NewManager] keeps one bounded connection pool per distinct target, login
 // and connection setting, so repeated probes against the same target reuse
 // authenticated connections instead of performing a TCP, TLS and SQL login
-// handshake on every call.  A pool is verified only when it is first created,
-// with a single query that also records whether the login is a member of the
-// sysadmin server role ([Manager.Sysadmin]); idle pools are evicted lazily and
-// [Manager.Close] releases all of them.  The caller must invoke the cleanup
+// handshake on every call.  A pool is verified when it is first created, with
+// a single query that also records whether the login is sysadmin-equivalent
+// ([Manager.Sysadmin]); that check is repeated about every 10 minutes while
+// the pool is in use.  Idle pools are evicted lazily and [Manager.Close]
+// releases all of them.  The caller must invoke the cleanup
 // function returned by Open when it has finished with the handle.
 //
 // Every batch the collector sends must start with [SessionSettings] (see
@@ -104,6 +105,10 @@ const (
 	defaultPoolIdleTTL = 15 * time.Minute
 	// defaultDriverName is the database/sql driver registered by go-mssqldb.
 	defaultDriverName = "sqlserver"
+	// defaultLoginCheckInterval is how often a pool in use repeats the login
+	// check, so a login granted or stripped of sysadmin is noticed within
+	// about one connection lifetime.
+	defaultLoginCheckInterval = defaultConnMaxLifetime
 )
 
 // LockTimeout is how long a collector statement waits for a lock before SQL
@@ -132,10 +137,34 @@ func WithSessionSettings(query string) string {
 	return SessionSettings + query
 }
 
-// sysadminCheckQuery verifies a new pool and reports whether its login is a
-// member of the sysadmin server role.  A login can always see its own role
-// membership, so it needs no extra permission.
-const sysadminCheckQuery = SessionSettings + "SELECT IS_SRVROLEMEMBER('sysadmin')"
+// loginCheckQuery verifies a pool and reports whether its login is
+// sysadmin-equivalent: a member of the sysadmin server role, or holding
+// CONTROL SERVER, which grants the same rights.  A login can always see its
+// own role membership and permissions, so it needs no extra permission.
+const loginCheckQuery = SessionSettings + "SELECT IS_SRVROLEMEMBER('sysadmin'), HAS_PERMS_BY_NAME(NULL, NULL, 'CONTROL SERVER')"
+
+// loginState is what the login check found out about a pool's login.
+type loginState struct {
+	// known is false when SQL Server could not tell (NULL results).
+	known bool
+	// elevated is true when the login is a member of sysadmin or holds
+	// CONTROL SERVER.
+	elevated bool
+}
+
+// classifyLogin interprets the two columns of [loginCheckQuery].  Either one
+// being 1 is enough to call the login elevated; otherwise both must be 0 to
+// call it least-privileged, and anything else is unknown.
+func classifyLogin(member, control sql.NullInt64) loginState {
+	switch {
+	case member.Valid && member.Int64 == 1, control.Valid && control.Int64 == 1:
+		return loginState{known: true, elevated: true}
+	case member.Valid && control.Valid:
+		return loginState{known: true}
+	default:
+		return loginState{}
+	}
+}
 
 // ErrManagerClosed is returned by [Manager.Open] after [Manager.Close] has
 // been called on a pooled Manager (or any copy of it).
@@ -200,16 +229,20 @@ func NewManager(resolver CredentialResolver) Manager {
 // keyed by the target address, database, credential reference, a keyed hash
 // of the resolved username and password (so a rotated credential gets a fresh
 // pool) and every other connection setting.  The pool is created and verified
-// with the sysadmin check query, bounded by DialTimeout, on first use only; a
-// failed first check is not cached, so the next Open retries.  A login that
-// is a member of sysadmin is logged as a warning once per pool.  cleanup
-// releases the caller's reference; it does not close the pool.  Pools unused
-// for 15 minutes are closed lazily by subsequent Opens.  After
-// [Manager.Close], Open returns [ErrManagerClosed].
+// with the login check query, bounded by DialTimeout, on first use; a failed
+// first check is not cached, so the next Open retries.  When the last check
+// is about 10 minutes old, the one Open that claims it re-runs the check
+// before returning (other Opens do not wait); a failed re-check keeps the
+// last known result and is retried 10 minutes later.  A sysadmin-equivalent
+// or undeterminable login is logged as a warning when the pool is created and
+// whenever a re-check changes the result.  cleanup releases the caller's
+// reference; it does not close the pool.  Pools unused for 15 minutes are
+// closed lazily by subsequent Opens.  After [Manager.Close], Open returns
+// [ErrManagerClosed].
 //
 // For a Manager without a pool (a struct literal), Open opens and checks a new
-// handle on every call (warning on every call for a sysadmin login) and
-// cleanup closes it.
+// handle on every call (warning on every call for a sysadmin-equivalent
+// login) and cleanup closes it.
 func (m Manager) Open(ctx context.Context, target collectormetadata.DatabaseTarget) (*sql.DB, func(), error) {
 	if m.Resolver == nil {
 		return nil, nil, errors.New("sqlserver manager has no credential resolver")
@@ -227,17 +260,22 @@ func (m Manager) Open(ctx context.Context, target collectormetadata.DatabaseTarg
 		return db, func() { _ = db.Close() }, nil
 	}
 	key := m.pool.key(m, target, creds)
-	return m.pool.acquire(ctx, key, func(ctx context.Context) (*sql.DB, bool, error) {
-		return m.connect(ctx, target, dsn, creds, true)
-	})
+	return m.pool.acquire(ctx, key,
+		func(ctx context.Context) (*sql.DB, loginState, error) {
+			return m.connect(ctx, target, dsn, creds, true)
+		},
+		func(ctx context.Context, db *sql.DB, previous loginState) (loginState, error) {
+			return m.recheckLogin(ctx, target, db, creds, previous)
+		})
 }
 
-// Sysadmin reports whether the login of target's pool is a member of the
-// sysadmin server role, as checked when the pool was created.  ok is false
-// when the Manager has no pool or target has no established pool, for example
-// before its first successful Open or after the pool was evicted.  When a
-// rotated credential left several pools for target, the most recently used
-// one answers.  Sysadmin never connects to the target.
+// Sysadmin reports whether the login of target's pool is sysadmin-equivalent
+// (a member of sysadmin or holding CONTROL SERVER), as of its last check,
+// which is at most about 10 minutes old while the pool is in use.  ok is
+// false when the Manager has no pool, target has no established pool (before
+// its first successful Open, or after the pool was evicted), or SQL Server
+// could not tell.  When a rotated credential left several pools for target,
+// the most recently used one answers.  Sysadmin never connects to the target.
 func (m Manager) Sysadmin(target collectormetadata.DatabaseTarget) (sysadmin, ok bool) {
 	if m.pool == nil {
 		return false, false
@@ -281,15 +319,16 @@ func (m Manager) dsn(target collectormetadata.DatabaseTarget, creds Credential) 
 	}).String()
 }
 
-// connect opens a handle for dsn and verifies it with the sysadmin check
-// query bounded by DialTimeout, logging a warning when the login is a member
-// of sysadmin.  pooled applies the pool limits.  On failure the handle is
-// closed and the error is scrubbed of creds (see [redactError]): go-mssqldb
-// parses dsn when it connects, and its parse errors quote the whole DSN.
-func (m Manager) connect(ctx context.Context, target collectormetadata.DatabaseTarget, dsn string, creds Credential, pooled bool) (*sql.DB, bool, error) {
+// connect opens a handle for dsn and verifies it with the login check,
+// logging a warning when the login is sysadmin-equivalent or undeterminable.
+// pooled applies the pool limits.  On failure the handle is closed and the
+// error is scrubbed of creds before it is wrapped (see [redactError]):
+// go-mssqldb parses dsn when it connects, and its parse errors quote the
+// whole DSN.
+func (m Manager) connect(ctx context.Context, target collectormetadata.DatabaseTarget, dsn string, creds Credential, pooled bool) (*sql.DB, loginState, error) {
 	db, err := sql.Open(m.driver(), dsn)
 	if err != nil {
-		return nil, false, fmt.Errorf("open sqlserver connection for target %s: %w", target.Name, redactError(err, creds))
+		return nil, loginState{}, fmt.Errorf("open sqlserver connection for target %s: %w", target.Name, redactError(err, creds))
 	}
 	if pooled {
 		db.SetMaxOpenConns(defaultMaxOpenConns)
@@ -297,26 +336,63 @@ func (m Manager) connect(ctx context.Context, target collectormetadata.DatabaseT
 		db.SetConnMaxLifetime(defaultConnMaxLifetime)
 		db.SetConnMaxIdleTime(defaultConnMaxIdleTime)
 	}
-	pingCtx := ctx
+	state, err := m.checkLogin(ctx, db, creds)
+	if err != nil {
+		_ = db.Close()
+		return nil, loginState{}, fmt.Errorf("check sqlserver target %s: %w", target.Name, err)
+	}
+	m.logLogin(target, state)
+	return db, state, nil
+}
+
+// checkLogin runs [loginCheckQuery] on db, bounded by DialTimeout.  Errors
+// are scrubbed of creds and not wrapped.
+func (m Manager) checkLogin(ctx context.Context, db *sql.DB, creds Credential) (loginState, error) {
+	checkCtx := ctx
 	if m.DialTimeout > 0 {
 		var cancel context.CancelFunc
-		pingCtx, cancel = context.WithTimeout(ctx, m.DialTimeout)
+		checkCtx, cancel = context.WithTimeout(ctx, m.DialTimeout)
 		defer cancel()
 	}
-	// IS_SRVROLEMEMBER returns NULL when membership cannot be determined;
-	// that is reported as not sysadmin rather than failing the target.
-	var member sql.NullInt64
-	if err := db.QueryRowContext(pingCtx, sysadminCheckQuery).Scan(&member); err != nil {
-		_ = db.Close()
-		return nil, false, fmt.Errorf("check sqlserver target %s: %w", target.Name, redactError(err, creds))
+	// Both functions return NULL when SQL Server cannot tell.
+	var member, control sql.NullInt64
+	if err := db.QueryRowContext(checkCtx, loginCheckQuery).Scan(&member, &control); err != nil {
+		return loginState{}, redactError(err, creds)
 	}
-	sysadmin := member.Valid && member.Int64 == 1
-	if sysadmin {
-		m.logger().Warn("sqlserver login is a member of sysadmin; use a login with only the documented grants",
+	return classifyLogin(member, control), nil
+}
+
+// recheckLogin repeats the login check of an established pool.  It logs a
+// changed result like a new one, and a failure at debug level only: the
+// target's probes report connection problems themselves.
+func (m Manager) recheckLogin(ctx context.Context, target collectormetadata.DatabaseTarget, db *sql.DB, creds Credential, previous loginState) (loginState, error) {
+	state, err := m.checkLogin(ctx, db, creds)
+	if err != nil {
+		m.logger().Debug("sqlserver login re-check failed; keeping the last result",
+			"target", target.Name,
+			"credential_ref", target.CredentialRef,
+			"error", err)
+		return previous, err
+	}
+	if state != previous {
+		m.logLogin(target, state)
+	}
+	return state, nil
+}
+
+// logLogin warns when state is sysadmin-equivalent or unknown.  It never logs
+// the login name.
+func (m Manager) logLogin(target collectormetadata.DatabaseTarget, state loginState) {
+	switch {
+	case !state.known:
+		m.logger().Warn("could not determine whether the sqlserver login is sysadmin-equivalent",
+			"target", target.Name,
+			"credential_ref", target.CredentialRef)
+	case state.elevated:
+		m.logger().Warn("sqlserver login is sysadmin-equivalent (sysadmin or CONTROL SERVER); use a login with only the documented grants",
 			"target", target.Name,
 			"credential_ref", target.CredentialRef)
 	}
-	return db, sysadmin, nil
 }
 
 // redactedSecret replaces credential material in error text.
@@ -438,9 +514,16 @@ type pool struct {
 	idleTTL time.Duration
 	now     func() time.Time
 
+	// checkInterval is how old a pool's login check may get before the next
+	// Open re-runs it; zero disables re-checks.
+	checkInterval time.Duration
+
 	mu      sync.Mutex
 	closed  bool
 	entries map[poolKey]*poolEntry
+	// latest maps a target key (a pool key without the credential hash) to
+	// the most recently used initialised entry for that target.
+	latest map[poolKey]*poolEntry
 }
 
 // poolEntry is one handle, possibly still being initialised.  ready is closed
@@ -451,19 +534,25 @@ type poolEntry struct {
 	ready chan struct{}
 	db    *sql.DB
 	err   error
-	// sysadmin records whether the pool's login is a member of sysadmin.
-	sysadmin bool
 
-	// refs and lastUsed are guarded by pool.mu.
+	// refs, lastUsed, login, checkedAt and rechecking are guarded by pool.mu.
 	refs     int
 	lastUsed time.Time
+	// login is the result of the last successful login check.
+	login loginState
+	// checkedAt is when the login was last checked, successfully or not.
+	checkedAt time.Time
+	// rechecking is set while one caller re-runs the login check.
+	rechecking bool
 }
 
 func newPool() *pool {
 	p := &pool{
-		idleTTL: defaultPoolIdleTTL,
-		now:     time.Now,
-		entries: make(map[poolKey]*poolEntry),
+		idleTTL:       defaultPoolIdleTTL,
+		now:           time.Now,
+		checkInterval: defaultLoginCheckInterval,
+		entries:       make(map[poolKey]*poolEntry),
+		latest:        make(map[poolKey]*poolEntry),
 	}
 	if _, err := rand.Read(p.secret[:]); err != nil {
 		// crypto/rand.Read does not fail on supported platforms.
@@ -500,29 +589,76 @@ func (m Manager) targetKey(target collectormetadata.DatabaseTarget) poolKey {
 	}
 }
 
-// sysadmin returns the sysadmin flag of the most recently used initialised
-// entry whose key matches want in everything but the credential hash.
+// withoutCredential returns key with the credential hash cleared: the key of
+// its target in pool.latest.
+func withoutCredential(key poolKey) poolKey {
+	key.credentialHash = ""
+	return key
+}
+
+// sysadmin returns the login check result of the most recently used
+// initialised entry for target key want; ok is false without one, or when
+// its login is unknown.
 func (p *pool) sysadmin(want poolKey) (sysadmin, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	var latest time.Time
-	for key, entry := range p.entries {
-		key.credentialHash = want.credentialHash
-		if key != want || entry.db == nil {
-			continue
-		}
-		if !ok || entry.lastUsed.After(latest) {
-			sysadmin, ok, latest = entry.sysadmin, true, entry.lastUsed
-		}
+	entry := p.latest[want]
+	if entry == nil || !entry.login.known {
+		return false, false
 	}
-	return sysadmin, ok
+	return entry.login.elevated, true
+}
+
+// useLocked records a new reference to the initialised entry for key.
+func (p *pool) useLocked(key poolKey, entry *poolEntry) {
+	entry.refs++
+	entry.lastUsed = p.now()
+	p.latest[withoutCredential(key)] = entry
+}
+
+// removeLocked deletes entry, stored under key, from the pool.
+func (p *pool) removeLocked(key poolKey, entry *poolEntry) {
+	if p.entries[key] == entry {
+		delete(p.entries, key)
+	}
+	if target := withoutCredential(key); p.latest[target] == entry {
+		delete(p.latest, target)
+	}
+}
+
+// claimRecheckLocked reports whether the caller should re-run entry's login
+// check: the last check is at least checkInterval old and no other caller is
+// already re-running it.  A true result marks the re-check as in progress.
+func (p *pool) claimRecheckLocked(entry *poolEntry) bool {
+	if p.checkInterval <= 0 || entry.rechecking || p.now().Sub(entry.checkedAt) < p.checkInterval {
+		return false
+	}
+	entry.rechecking = true
+	return true
+}
+
+// recheck re-runs entry's login check with recheck, without holding p.mu.
+// A failed check keeps the last result; either way the next one is due a
+// full checkInterval later, so a failing target is not re-checked on every
+// Open.
+func (p *pool) recheck(ctx context.Context, entry *poolEntry, previous loginState, recheck func(context.Context, *sql.DB, loginState) (loginState, error)) {
+	state, err := recheck(ctx, entry.db, previous)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err == nil {
+		entry.login = state
+	}
+	entry.checkedAt = p.now()
+	entry.rechecking = false
 }
 
 // acquire returns the handle for key, creating it with create if needed.
 // create runs without holding p.mu so a slow target does not block Opens for
 // other keys; concurrent callers for the same key wait for the single
-// in-flight creation instead of starting their own.
-func (p *pool) acquire(ctx context.Context, key poolKey, create func(context.Context) (*sql.DB, bool, error)) (*sql.DB, func(), error) {
+// in-flight creation instead of starting their own.  When the entry's login
+// check is due, the one caller that claims it re-runs it with recheck, also
+// without holding p.mu, before returning.
+func (p *pool) acquire(ctx context.Context, key poolKey, create func(context.Context) (*sql.DB, loginState, error), recheck func(context.Context, *sql.DB, loginState) (loginState, error)) (*sql.DB, func(), error) {
 	for {
 		p.mu.Lock()
 		if p.closed {
@@ -540,10 +676,14 @@ func (p *pool) acquire(ctx context.Context, key poolKey, create func(context.Con
 		}
 		select {
 		case <-entry.ready:
-			entry.refs++
-			entry.lastUsed = p.now()
+			p.useLocked(key, entry)
+			due := p.claimRecheckLocked(entry)
+			previous := entry.login
 			p.mu.Unlock()
 			closeHandles(stale)
+			if due {
+				p.recheck(ctx, entry, previous, recheck)
+			}
 			return entry.db, p.releaser(entry), nil
 		default:
 		}
@@ -562,26 +702,25 @@ func (p *pool) acquire(ctx context.Context, key poolKey, create func(context.Con
 	}
 }
 
-func (p *pool) initialize(ctx context.Context, key poolKey, entry *poolEntry, create func(context.Context) (*sql.DB, bool, error)) (*sql.DB, func(), error) {
-	db, sysadmin, err := create(ctx)
+// initialize creates entry's handle with create and publishes the result.
+func (p *pool) initialize(ctx context.Context, key poolKey, entry *poolEntry, create func(context.Context) (*sql.DB, loginState, error)) (*sql.DB, func(), error) {
+	db, login, err := create(ctx)
 	p.mu.Lock()
 	if err == nil && p.closed {
 		_ = db.Close()
 		db, err = nil, ErrManagerClosed
 	}
 	if err != nil {
-		if p.entries[key] == entry {
-			delete(p.entries, key)
-		}
+		p.removeLocked(key, entry)
 		entry.err = err
 		close(entry.ready)
 		p.mu.Unlock()
 		return nil, nil, err
 	}
 	entry.db = db
-	entry.sysadmin = sysadmin
-	entry.refs = 1
-	entry.lastUsed = p.now()
+	entry.login = login
+	entry.checkedAt = p.now()
+	p.useLocked(key, entry)
 	close(entry.ready)
 	p.mu.Unlock()
 	return db, p.releaser(entry), nil
@@ -611,7 +750,7 @@ func (p *pool) sweepLocked() []*sql.DB {
 	var stale []*sql.DB
 	for key, entry := range p.entries {
 		if entry.db != nil && entry.refs == 0 && now.Sub(entry.lastUsed) >= p.idleTTL {
-			delete(p.entries, key)
+			p.removeLocked(key, entry)
 			stale = append(stale, entry.db)
 		}
 	}
@@ -632,7 +771,7 @@ func (p *pool) close() error {
 		if entry.db != nil {
 			handles = append(handles, entry.db)
 		}
-		delete(p.entries, key)
+		p.removeLocked(key, entry)
 	}
 	p.mu.Unlock()
 	var errs []error

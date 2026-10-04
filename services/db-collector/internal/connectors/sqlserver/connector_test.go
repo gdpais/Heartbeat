@@ -23,14 +23,15 @@ const testPassword = "s3cr3t-P@ssw0rd"
 
 // fakeDriver is a database/sql driver whose connect/ping behaviour is
 // controlled per test.  Each test registers its own instance under a unique
-// name.  Queries answer the pool's sysadmin check with one row holding member.
+// name.  Queries answer the pool's login check with one row holding login.
 type fakeDriver struct {
 	// ping, when set, is called on every ping and every query with the DSN
 	// host.
 	ping func(ctx context.Context, host string) error
-	// member is the IS_SRVROLEMEMBER result of the check query: int64(1),
-	// int64(0) or nil for NULL.  Guarded by mu; see setMember.
-	member driver.Value
+	// login holds the IS_SRVROLEMEMBER('sysadmin') and CONTROL SERVER
+	// HAS_PERMS_BY_NAME results of the check query: int64(1), int64(0) or
+	// nil for NULL.  Guarded by mu; see setLogin.
+	login [2]driver.Value
 
 	connectors atomic.Int64 // sql.Open calls (one per *sql.DB)
 	closed     atomic.Int64 // *sql.DB closes
@@ -45,7 +46,7 @@ var fakeDriverSeq atomic.Int64
 
 func newFakeDriver(t *testing.T) (*fakeDriver, string) {
 	t.Helper()
-	d := &fakeDriver{member: int64(0)}
+	d := &fakeDriver{login: [2]driver.Value{int64(0), int64(0)}}
 	name := fmt.Sprintf("sqlserver-fake-%d", fakeDriverSeq.Add(1))
 	sql.Register(name, d)
 	return d, name
@@ -76,10 +77,10 @@ func (d *fakeDriver) lastDSN() string {
 	return d.dsns[len(d.dsns)-1]
 }
 
-func (d *fakeDriver) setMember(member driver.Value) {
+func (d *fakeDriver) setLogin(member, control driver.Value) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.member = member
+	d.login = [2]driver.Value{member, control}
 }
 
 func (d *fakeDriver) allQueries() []string {
@@ -118,30 +119,34 @@ func (f *fakeConn) Ping(ctx context.Context) error {
 	return nil
 }
 
-// QueryContext records query and answers it like the sysadmin check.
+// QueryContext records query and answers it like the login check.
 func (f *fakeConn) QueryContext(ctx context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
 	d := f.c.d
 	d.mu.Lock()
 	d.queries = append(d.queries, query)
-	member := d.member
+	login := d.login
 	d.mu.Unlock()
 	if err := f.Ping(ctx); err != nil {
 		return nil, err
 	}
-	return &fakeRows{values: []driver.Value{member}}, nil
+	return &fakeRows{row: login[:]}, nil
 }
 
-// fakeRows is a single-column result set.
-type fakeRows struct{ values []driver.Value }
+// fakeRows is a result set of at most one two-column row.
+type fakeRows struct {
+	row  []driver.Value
+	done bool
+}
 
-func (*fakeRows) Columns() []string { return []string{""} }
+func (*fakeRows) Columns() []string { return []string{"", ""} }
 func (*fakeRows) Close() error      { return nil }
 
 func (r *fakeRows) Next(dest []driver.Value) error {
-	if len(r.values) == 0 {
+	if r.done {
 		return io.EOF
 	}
-	dest[0], r.values = r.values[0], r.values[1:]
+	r.done = true
+	copy(dest, r.row)
 	return nil
 }
 
@@ -653,19 +658,46 @@ func TestWithSessionSettings(t *testing.T) {
 	}
 }
 
-func TestOpenChecksSysadminOncePerPool(t *testing.T) {
+func TestClassifyLogin(t *testing.T) {
+	null := sql.NullInt64{}
+	yes := sql.NullInt64{Int64: 1, Valid: true}
+	no := sql.NullInt64{Valid: true}
 	for _, tc := range []struct {
-		name     string
-		member   driver.Value
-		sysadmin bool
+		name            string
+		member, control sql.NullInt64
+		want            loginState
 	}{
-		{"sysadmin", int64(1), true},
-		{"least privilege", int64(0), false},
-		{"unknown membership", nil, false},
+		{"sysadmin", yes, yes, loginState{known: true, elevated: true}},
+		{"control server only", no, yes, loginState{known: true, elevated: true}},
+		{"sysadmin with unknown control server", yes, null, loginState{known: true, elevated: true}},
+		{"least privilege", no, no, loginState{known: true}},
+		{"unknown membership", null, no, loginState{}},
+		{"unknown control server", no, null, loginState{}},
+		{"all unknown", null, null, loginState{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyLogin(tc.member, tc.control); got != tc.want {
+				t.Fatalf("classifyLogin = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOpenChecksLoginOncePerPool(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		member, control driver.Value
+		sysadmin, ok    bool
+		warnings        int
+	}{
+		{"sysadmin", int64(1), int64(1), true, true, 1},
+		{"control server", int64(0), int64(1), true, true, 1},
+		{"least privilege", int64(0), int64(0), false, true, 0},
+		{"unknown", nil, int64(0), false, false, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, d, _ := newTestManager(t)
-			d.setMember(tc.member)
+			d.setLogin(tc.member, tc.control)
 			var logs bytes.Buffer
 			m.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 			tg := target("a", "db-a.example", "ref-a")
@@ -678,19 +710,18 @@ func TestOpenChecksSysadminOncePerPool(t *testing.T) {
 				cleanup()
 			}
 			sysadmin, ok := m.Sysadmin(tg)
-			if !ok || sysadmin != tc.sysadmin {
-				t.Fatalf("Sysadmin = %v, %v; want %v, true", sysadmin, ok, tc.sysadmin)
+			if sysadmin != tc.sysadmin || ok != tc.ok {
+				t.Fatalf("Sysadmin = %v, %v; want %v, %v", sysadmin, ok, tc.sysadmin, tc.ok)
 			}
 			queries := d.allQueries()
 			if len(queries) != 1 {
 				t.Fatalf("queries = %d, want 1 check per pool", len(queries))
 			}
-			if !strings.HasPrefix(queries[0], SessionSettings) || !strings.Contains(queries[0], "IS_SRVROLEMEMBER('sysadmin')") {
-				t.Fatalf("check query = %q, want session settings and IS_SRVROLEMEMBER", queries[0])
+			if queries[0] != loginCheckQuery || !strings.HasPrefix(queries[0], SessionSettings) {
+				t.Fatalf("check query = %q, want %q", queries[0], loginCheckQuery)
 			}
-			warnings := strings.Count(logs.String(), "level=WARN")
-			if want := map[bool]int{true: 1, false: 0}[tc.sysadmin]; warnings != want {
-				t.Fatalf("warnings = %d, want %d; logs:\n%s", warnings, want, logs.String())
+			if got := strings.Count(logs.String(), "level=WARN"); got != tc.warnings {
+				t.Fatalf("warnings = %d, want %d; logs:\n%s", got, tc.warnings, logs.String())
 			}
 			for _, secret := range []string{testPassword, "collector"} {
 				if strings.Contains(logs.String(), secret) {
@@ -701,24 +732,160 @@ func TestOpenChecksSysadminOncePerPool(t *testing.T) {
 	}
 }
 
+// fakeTime is a manually advanced clock for pool.now.
+type fakeTime struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *fakeTime) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeTime) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+func TestOpenRechecksLoginPeriodically(t *testing.T) {
+	m, d, _ := newTestManager(t)
+	var logs bytes.Buffer
+	var logMu sync.Mutex
+	m.Logger = slog.New(slog.NewTextHandler(writerFunc(func(p []byte) (int, error) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		return logs.Write(p)
+	}), &slog.HandlerOptions{Level: slog.LevelDebug}))
+	clock := &fakeTime{now: time.Unix(1_700_000_000, 0)}
+	m.pool.now = clock.Now
+	var failing atomic.Bool
+	d.ping = func(context.Context, string) error {
+		if failing.Load() {
+			return errors.New("connection reset")
+		}
+		return nil
+	}
+	tg := target("a", "db-a.example", "ref-a")
+	open := func() {
+		t.Helper()
+		_, cleanup := mustOpen(t, m, tg)
+		cleanup()
+	}
+	assertState := func(step string, queries int, sysadmin bool) {
+		t.Helper()
+		if got := len(d.allQueries()); got != queries {
+			t.Fatalf("%s: queries = %d, want %d", step, got, queries)
+		}
+		if got, ok := m.Sysadmin(tg); !ok || got != sysadmin {
+			t.Fatalf("%s: Sysadmin = %v, %v; want %v, true", step, got, ok, sysadmin)
+		}
+	}
+
+	open()
+	assertState("pool created", 1, false)
+
+	d.setLogin(int64(1), int64(1))
+	clock.Advance(defaultLoginCheckInterval - time.Second)
+	open()
+	assertState("before the interval", 1, false)
+
+	clock.Advance(time.Second)
+	open()
+	assertState("interval reached: re-checked", 2, true)
+	open()
+	assertState("just re-checked", 2, true)
+
+	failing.Store(true)
+	clock.Advance(defaultLoginCheckInterval)
+	open() // a failed re-check does not fail Open: the probe query reports it
+	assertState("failed re-check keeps the last result", 3, true)
+	failing.Store(false)
+	open()
+	assertState("failed re-check is not retried on every Open", 3, true)
+
+	logMu.Lock()
+	text := logs.String()
+	logMu.Unlock()
+	if got := strings.Count(text, "level=WARN"); got != 1 {
+		t.Fatalf("warnings = %d, want 1 (only the change to sysadmin); logs:\n%s", got, text)
+	}
+	if !strings.Contains(text, "re-check failed") {
+		t.Fatalf("failed re-check not logged at debug; logs:\n%s", text)
+	}
+}
+
+// writerFunc adapts a function to io.Writer.
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+func TestOnlyOneCallerRechecksLogin(t *testing.T) {
+	m, d, _ := newTestManager(t)
+	m.Logger = slog.New(slog.DiscardHandler)
+	clock := &fakeTime{now: time.Unix(1_700_000_000, 0)}
+	m.pool.now = clock.Now
+	tg := target("a", "db-a.example", "ref-a")
+	_, cleanup := mustOpen(t, m, tg)
+	cleanup()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var blocking atomic.Bool
+	blocking.Store(true)
+	d.ping = func(context.Context, string) error {
+		if blocking.CompareAndSwap(true, false) {
+			close(entered)
+			<-release
+		}
+		return nil
+	}
+	clock.Advance(defaultLoginCheckInterval)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, c := mustOpen(t, m, tg)
+		c()
+	}()
+	<-entered
+
+	// While the re-check is in flight, other Opens neither wait for it nor
+	// start their own, and the pool mutex is free.
+	for range 5 {
+		openDone := make(chan struct{})
+		go func() {
+			defer close(openDone)
+			_, c := mustOpen(t, m, tg)
+			c()
+		}()
+		select {
+		case <-openDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Open blocked behind an in-flight login re-check")
+		}
+	}
+	if _, ok := m.Sysadmin(tg); !ok {
+		t.Fatal("Sysadmin should answer from the last result during a re-check")
+	}
+	close(release)
+	<-done
+	if got := len(d.allQueries()); got != 2 {
+		t.Fatalf("queries = %d, want 2 (creation and one re-check)", got)
+	}
+}
+
 func TestSysadminFollowsTheMostRecentPool(t *testing.T) {
 	m, d, r := newTestManager(t)
 	m.Logger = slog.New(slog.DiscardHandler)
-	var mu sync.Mutex
-	now := time.Unix(1_700_000_000, 0)
-	m.pool.now = func() time.Time {
-		mu.Lock()
-		defer mu.Unlock()
-		now = now.Add(time.Second)
-		return now
-	}
 	tg := target("a", "db-a.example", "ref-a")
 
-	d.setMember(int64(1))
+	d.setLogin(int64(1), int64(1))
 	_, c1 := mustOpen(t, m, tg)
 	c1()
 	r.set("ref-a", Credential{Username: "collector", Password: "rotated"})
-	d.setMember(int64(0))
+	d.setLogin(int64(0), int64(0))
 	_, c2 := mustOpen(t, m, tg)
 	c2()
 	if sysadmin, ok := m.Sysadmin(tg); !ok || sysadmin {
@@ -732,6 +899,12 @@ func TestSysadminFollowsTheMostRecentPool(t *testing.T) {
 	}
 	if _, ok := (Manager{Resolver: r}).Sysadmin(tg); ok {
 		t.Fatal("Sysadmin known for a Manager without a pool")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, ok := m.Sysadmin(tg); ok {
+		t.Fatal("Sysadmin known after Close")
 	}
 }
 

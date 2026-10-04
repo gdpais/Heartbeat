@@ -84,9 +84,11 @@ const (
 	// Labels: collector.
 	MetricCycleDuration = "heartbeat_collector_cycle_duration_seconds"
 	// MetricTargetLoginSysadmin is 1 when the collector's login for the target
-	// is a member of the sysadmin server role and 0 when it is not.  Absent
-	// while unknown, or when the executor is not a [SysadminReporter].
-	// Labels: collector, environment, target.
+	// is sysadmin-equivalent (a member of the sysadmin server role, or holding
+	// CONTROL SERVER) and 0 when it is not, as of the last check, which runs
+	// when the target's connection pool is created and about every 10
+	// minutes after.  Absent while unknown, or when the executor is not a
+	// [SysadminReporter].  Labels: collector, environment, target.
 	MetricTargetLoginSysadmin = "heartbeat_collector_target_login_sysadmin"
 )
 
@@ -104,9 +106,10 @@ type ProbeExecutor interface {
 // Runner's executor implements it, the Runner exports
 // [MetricTargetLoginSysadmin] with each target's health series.
 type SysadminReporter interface {
-	// TargetSysadmin reports whether the login used for target is a member of
-	// the sysadmin server role.  ok is false while that is unknown, for
-	// example before the first connection to the target.  It must not block.
+	// TargetSysadmin reports whether the login used for target is
+	// sysadmin-equivalent (a member of sysadmin, or holding CONTROL SERVER).
+	// ok is false while that is unknown, for example before the first
+	// connection to the target.  It must not block.
 	TargetSysadmin(target collectormetadata.DatabaseTarget) (sysadmin, ok bool)
 }
 
@@ -488,7 +491,7 @@ func (r Runner) recordHealth(collectorID string, group targetGroup, result Targe
 	if sysadmin, ok := r.targetSysadmin(group); ok {
 		samples = append(samples, collectorexport.Sample{
 			Metric: MetricTargetLoginSysadmin,
-			Help:   "Whether the collector's login for the target is a member of the sysadmin server role (1) or not (0).",
+			Help:   "Whether the collector's login for the target is sysadmin-equivalent, a member of sysadmin or holding CONTROL SERVER (1), or not (0); checked when the target's connection pool is created and about every 10 minutes after.",
 			Value:  sysadmin,
 			Labels: labels(),
 		})
@@ -496,8 +499,8 @@ func (r Runner) recordHealth(collectorID string, group targetGroup, result Targe
 	r.recordScope(collectorexport.Scope{Collector: collectorID, Target: group.name, Probe: healthScopeProbe}, samples)
 }
 
-// targetSysadmin returns 1 or 0 for whether the login of group's target is a
-// member of sysadmin, and false when the executor cannot tell.
+// targetSysadmin returns 1 or 0 for whether the login of group's target is
+// sysadmin-equivalent, and false when the executor cannot tell.
 func (r Runner) targetSysadmin(group targetGroup) (float64, bool) {
 	reporter, ok := r.executor.(SysadminReporter)
 	if !ok || len(group.items) == 0 {
@@ -667,8 +670,8 @@ func (e SQLExecutor) RunProbe(ctx context.Context, item collectormetadata.Schedu
 	return decodeRows(item, probe, maps), buildEvidence(item, probe, maps), nil
 }
 
-// TargetSysadmin implements [SysadminReporter] from the sysadmin check the
-// Manager ran when it established target's connection pool.
+// TargetSysadmin implements [SysadminReporter] from the Manager's last login
+// check for target's connection pool.
 func (e SQLExecutor) TargetSysadmin(target collectormetadata.DatabaseTarget) (sysadmin, ok bool) {
 	return e.Manager.Sysadmin(target)
 }

@@ -28,6 +28,10 @@ const (
 	// liveSACredentialRef is HEARTBEAT_CREDENTIAL_SQLSERVER_TEST_SA, the sa
 	// login.  Only the sysadmin check uses it; probes never run as sa.
 	liveSACredentialRef = "sqlserver-test-sa"
+	// liveControlCredentialRef is HEARTBEAT_CREDENTIAL_SQLSERVER_TEST_CONTROL,
+	// a login holding CONTROL SERVER without being in sysadmin.  Only the
+	// sysadmin check uses it.
+	liveControlCredentialRef = "sqlserver-test-control"
 )
 
 // liveExecutor returns an executor for the disposable test server and its
@@ -142,20 +146,22 @@ SELECT 'deadlock_priority', deadlock_priority FROM sys.dm_exec_sessions WHERE se
 	}
 }
 
-// Checks the sysadmin flag the Manager records when it creates a pool: 0 for
-// the collector login, 1 for sa.
+// Checks the sysadmin-equivalence flag the Manager records when it creates a
+// pool: 0 for the collector login, 1 for sa and for a CONTROL SERVER login.
 func TestSysadminCheckAgainstSQLServer(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		credentialRef string
+		env           string
 		want          bool
 	}{
-		{"least-privilege login", liveCredentialRef, false},
-		{"sa", liveSACredentialRef, true},
+		{"least-privilege login", liveCredentialRef, "", false},
+		{"sa", liveSACredentialRef, "HEARTBEAT_CREDENTIAL_SQLSERVER_TEST_SA", true},
+		{"control server login", liveControlCredentialRef, "HEARTBEAT_CREDENTIAL_SQLSERVER_TEST_CONTROL", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.credentialRef == liveSACredentialRef && os.Getenv("HEARTBEAT_CREDENTIAL_SQLSERVER_TEST_SA") == "" {
-				t.Skip("HEARTBEAT_CREDENTIAL_SQLSERVER_TEST_SA is not set")
+			if tc.env != "" && os.Getenv(tc.env) == "" {
+				t.Skip(tc.env + " is not set")
 			}
 			executor, target := liveExecutor(t, tc.credentialRef)
 			if _, ok := executor.TargetSysadmin(target); ok {
