@@ -1,8 +1,21 @@
 # TODO
 
-Implementation task list for Heartbeat. Phases and priorities are in the
-[roadmap](docs/product/roadmap.md); the original plan this list was derived from
-is [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
+Single source of truth for delivery order and task status. The
+[roadmap](docs/product/roadmap.md) summarizes this checklist by phase; the
+original plan this list was derived from is
+[archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
+
+Core delivery order: **DB collector → OTel gateway → API/control plane → Web UI**,
+after foundations and schema prerequisites (sections 2–5). Later-service
+integrations are explicitly identified below; they do not block independent
+stage work, but they do block end-to-end completion of the dependent feature.
+
+Test each implementation action as it lands. Section 16 is a shared validation
+inventory used throughout delivery, not a final testing stage. Remaining
+delivery order after the Web UI: production delivery [18] → product workflows
+[10–11] → investigations, alerting and reporting [6, 7, 12–14] → advanced
+reliability [19] → fallback ingestion [20] → Oracle integration, gated by an
+Alloy coverage check [21] → final Alloy comparison [22].
 
 ## 0. Cross-cutting foundations
 
@@ -10,6 +23,7 @@ is [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
 - [x] Write product and architecture baseline docs ([docs index](docs/README.md))
 - [x] Design current-runtime and target-architecture diagrams, link them from the README, and verify them against source/configuration
 - [x] Reorganize docs by audience; record key decisions as ADRs; archive superseded plans
+- [x] Reorder delivery: collector → gateway → API → Web; production delivery after the Web UI; Oracle after fallback ingestion and gated by an Alloy coverage check; Alloy comparison last
 - [ ] Freeze subsystem boundaries, responsibilities, and interfaces
 - [ ] Freeze ownership rules:
   - [ ] app-owned workflows derive environment through `applications.environment_id`
@@ -42,18 +56,18 @@ is [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
 - [x] Define reporting payload contract
 - [x] Define integration YAML schema
 
-### 0.4 Kubernetes delivery (kind + Helm)
+### 0.4 Kubernetes delivery: kind and CI
+
+Production delivery is section 18.
+
 - [x] Assess the Compose-to-kind migration and choose shared Helm delivery ([ADR 0003](docs/architecture/decisions/0003-helm-on-kind-and-production.md))
 - [x] Decide platform (AWS EKS), deploy mechanism (Argo CD), registry (ECR), secrets (AWS Secrets Manager + ESO), version policy, alert channels incl. WhatsApp, dead-man's switch and Grafana access ([ADR 0005](docs/architecture/decisions/0005-production-delivery-and-operations-defaults.md))
 - [x] Pin tools to the EKS-supported minor (kind node v1.36.4, kubectl 1.35–1.37, Helm 4.2, Go 1.27.1); add `make tools-check`
 - [x] Bump engines to latest stable under Compose first (Prometheus, Grafana, Loki, Alertmanager, otelcol); add Renovate
-- [ ] Install the Renovate GitHub App on the repository (config is in `renovate.json`)
-- [ ] Before the first production deploy: document where the monitored SQL Servers sit relative to the EKS VPC; set up the WhatsApp Business Account and alert template
 - [x] Build the Helm chart and kind workflow; adapt Make and CI; pass the ADR 0003 acceptance criteria (`make chart-check`, `make kind-e2e`; evidence in ADR 0003)
 - [x] Retire the platform Compose definition and the Kustomize bundle
+- [ ] Install the Renovate GitHub App on the repository (config is in `renovate.json`)
 - [ ] Agree the local loop's time and resource budget (measured: about 2.0 GiB RAM for the full profile)
-- [ ] Production track (ADR 0005): `heartbeat-deploy` repo with Argo CD Applications and values; CI pushes images and the chart to ECR via GitHub OIDC; EKS infrastructure; External Secrets; healthchecks.io; Discord receiver, then Slack/Teams/WhatsApp
-- [ ] Optional: rehearse Argo CD on kind before the first production deploy
 
 ---
 
@@ -124,113 +138,109 @@ is [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
 
 ---
 
-## 2. Core system: API / control plane (`apps/api`)
+## 2. Core system: DB collector (`services/db-collector`)
+
+Delivery stage 1. Runtime collection can proceed using YAML configuration without
+API/UI. Requires shared config/schema [0.3, 8.1–8.2] and Prometheus wiring [9.1].
+Probe assignments from API/PostgreSQL [2.5] are a stage-3 integration task, not a
+collector-stage completion prerequisite. Query safety [2.2] and endpoint
+security [2.7] must pass before live validation against a shared target; do not
+defer them to general hardening [15.2].
+
+- [ ] Validate this stage: connector/probe/config/metric tests, safe non-production SQL queries, and live SQL Server → collector → Prometheus → Grafana on kind, including reloads and target outages [16.1–16.2]
+- [ ] Validate evidence publication/retrieval before investigation enrichment; the current default evidence sink is a no-op, so sink wiring alone is not publication
 
 ### 2.1 Service bootstrap
-- [ ] Create Go service entrypoint `apps/api/cmd/api/`
-- [ ] Create idiomatic Go package layout under `apps/api/internal/`
-- [ ] Add config loading, logging, health endpoints, metrics, graceful shutdown
-- [ ] Add PostgreSQL and Redis connectivity
+- [x] Create Go service entrypoint `services/db-collector/cmd/db-collector/`
+- [x] Create internal packages for config, collectors, SQL Server connectors, probes, export
+- [x] Add health/metrics/logging/graceful shutdown
 
-### 2.2 Identity and access
-- [ ] Implement local auth for MVP
-- [ ] Implement users/roles/user_roles management
-- [ ] Add minimal admin/wallboard access model
-- [ ] Defer OIDC/SSO unless required early
+### 2.2 SQL Server connectivity and safety
+- [x] Implement secure SQL Server connector manager
+- [ ] Enforce least-privilege credentials
+- [x] Enforce query timeout/budget guards
+- [x] Pool SQL Server connections per target
+- [ ] Review all production queries for non-blocking behavior
+- [ ] Define safe probe review/versioning process
 
-### 2.3 Environment/application inventory
-- [ ] Implement environments CRUD
-- [ ] Implement applications CRUD
-- [ ] Implement application components CRUD
-- [ ] Enforce app -> environment ownership path
+### 2.3 Probe implementation
+- [x] Implement waits probes
+- [x] Implement locks/blocking probes
+- [x] Implement sessions/connections probes
+- [x] Implement memory pressure probes
+- [x] Implement storage probes
+- [x] Implement throughput/latency probes as needed
+- [x] Replace generic column-to-metric decoding with explicit per-probe metric descriptors
+- [ ] Fix the `throughput` probe's duplicate `Transactions/sec` series and padded `counter_name` labels; check `memory_pressure` for the same padding ([#4](https://github.com/gdpais/Heartbeat/issues/4))
 
-### 2.4 Telemetry source management
-- [ ] Implement telemetry sources CRUD
-- [ ] Support OutSystems telemetry source registration
-- [ ] Associate telemetry source to application
-- [ ] Derive environment through application
-- [ ] Validate ingest mode and required config
-- [ ] Store secret refs only
-- [ ] Defer file-based telemetry/data ingestion support as a fallback-only ingest mode when direct SQL Server or other database connectivity is unavailable
+### 2.4 Metrics and evidence output
+- [x] Normalize SQL Server outputs into Prometheus-friendly metrics
+- [x] Expose scrape endpoint
+- [x] Produce structured evidence for blocking/session probes
+- [ ] Export cumulative SQL Server values (waits, throughput counters) as counters and show rates in the dashboard
+- [ ] Publish retrievable investigation evidence snapshots (the default `LoggingEvidenceSink` currently discards them)
+- [ ] Define the evidence destination, schema, target/probe identity, timestamps, retention, redaction and bounded delivery/failure behavior; keep raw evidence out of PostgreSQL
+- [ ] Test a blocking/session snapshot through publication and subsequent investigation retrieval, separately from Prometheus metric tests
+- [x] Keep DB collector metric output stateless and Prometheus-scraped instead of persisted in PostgreSQL
+- [ ] Add collector self-observability
 
-### 2.5 Database target management
-- [ ] Implement database targets CRUD
-- [ ] Implement probe definition management/versioning
-- [ ] Implement probe assignment management
-- [ ] Validate target config and safe probe policies
-- [ ] Store credential refs only
+### 2.5 Runtime config model
+- [x] Read desired runtime collector config from `config/integrations.yaml`
+- [x] Read active target/probe runtime config from YAML/Kubernetes convention
+- [ ] Reintroduce API/PostgreSQL-driven probe assignments only after the control-plane workflow exists
+- [x] Keep desired state out of PostgreSQL
 
-### 2.6 Investigations API
-- [ ] Implement create investigation endpoint
-- [ ] Implement read investigation status/results endpoint
-- [ ] Implement evidence links endpoint
-- [ ] Persist durable investigation metadata in PostgreSQL
-- [ ] Queue jobs through Redis
+### 2.6 Collector reliability baseline
 
-### 2.7 Alerting API
-- [ ] Implement alert policies CRUD
-- [ ] Implement notification routes CRUD
-- [ ] Implement adaptive baseline metadata endpoints
-- [ ] Implement rule rendering/provisioning interface to Prometheus/Alertmanager
+Replica ownership and outage testing are section 19. Design details:
+[Collector recovery and high availability](docs/architecture/database-observability.md#collector-recovery-and-high-availability-planned).
 
-### 2.8 Reporting API
-- [ ] Implement report templates CRUD
-- [ ] Implement report schedules CRUD
-- [ ] Implement report run status/read endpoints
-- [ ] Support on-demand report triggering
+- [x] Align SQL Server Prometheus recording-rule names with the current probe catalog; validate the rules against emitted metrics (promtool unit tests in `make rules-check`, Go test for metric-name drift)
+- [x] Document the planned HA improvements and the Alloy comparison in architecture and roadmap docs
+- [x] Isolate probe/target failures so one failed target cannot stop unrelated collection
+- [x] Retry transient collection failures with bounded exponential backoff and jitter; expose persistent failures without retry storms
+- [x] Expose per-target success, consecutive failures, last-success time, and freshness; expire stale/removed metric series
+- [ ] Add per-probe cumulative error counters
+- [x] Make readiness reflect expected collector state and add deployment health probes and restart/recovery policies
+- [x] Validate safe reloads, including partial reconciliation failure (rollback) and replacement-poller startup failure (unit-tested)
 
-### 2.9 Log search / Grafana deep links
-- [ ] Implement deep-link generation from YAML templates
-- [ ] Implement log-search helper endpoints if needed for UI flows
-- [ ] Keep Grafana/Loki integration template-driven, not DB-driven
-
-### 2.10 Audit output
-- [ ] Append admin/operator mutations to JSONL audit files
-- [ ] Include request ID, actor, entity type/id, before/after, config version when relevant
-- [ ] Ensure secrets never enter audit logs
+### 2.7 Collector endpoint security
+- [ ] Diagnostics: require the admin token for `GET /admin/config`; keep `/readyz` to status only and move raw driver errors (host, port, login) behind auth
+- [ ] Redaction: mask notification channel `config` values in `Redacted()`, strip userinfo from endpoint URLs, and reject credentials embedded in `loki`/`alertmanager` URLs at validation
+- [ ] Admin token: compare in constant time
+- [ ] Network exposure: add a NetworkPolicy limiting port 8082 to Prometheus and operator access
+- [ ] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; consider per-target TLS settings instead of a process-wide flag
 
 ---
 
-## 3. Core system: Web UI (`apps/web`)
+## 3. Core system: OTel gateway (`services/otel-gateway`)
 
-### 3.1 UI bootstrap
-- [ ] Create React/TypeScript app
-- [ ] Set up routing, API client, auth/session handling, shared UI components
+Delivery stage 2. Requires shared event/config contracts [0.3, 8.1–8.2],
+stock OTel Collector routing [9.5], Loki label/storage conventions [9.2] and
+representative OutSystems events/field mappings [10.2–10.3]. Deliver these
+prerequisites with gateway work rather than waiting for the later feature track.
+Use explicitly configured application/environment identities until API inventory
+exists; API-managed onboarding [4.4, 10.1] follows in stage 3.
+Generic source expansion [3.4] remains later work and does not block the initial
+OutSystems gateway. Grafana dashboards [10.4] follow the ingest path.
 
-### 3.2 Primary operator screens
-- [ ] Environments/applications screen
-- [ ] Application details/components screen
-- [ ] Telemetry sources screen
-- [ ] Database targets onboarding screen
-- [ ] Investigations screen
-- [ ] Alert policies screen
-- [ ] Reports screen
-- [ ] Integrations/admin informational screen
+- [ ] Validate this stage: representative Traditional/Reactive parser fixtures, normalized contract/labels and OTLP → Loki/Prometheus integration [16.1–16.2]
 
-### 3.3 MVP UX rules
-- [ ] Make session investigation app-first: filter by application + user/IP + time range
-- [ ] Derive/show environment from application
-- [ ] Provide drill-down links to Grafana/Loki
-- [ ] Keep assets out of phase-1 UI unless topology scope is approved
-
----
-
-## 4. Core system: OTel gateway (`services/otel-gateway`)
-
-### 4.1 Service bootstrap
+### 3.1 Service bootstrap
 - [x] Create Go service entrypoint `services/otel-gateway/cmd/otel-gateway/`
 - [x] Create internal packages for parsers and normalization
 - [x] Add health/metrics/logging/graceful shutdown
 
-### 4.2 Collector-first integration
+### 3.2 Collector-first integration
 - [x] Configure stock OpenTelemetry Collector first
 - [x] Keep custom app code thin
 - [x] Ensure custom code outputs shared Heartbeat telemetry contract
 - [x] Avoid rebuilding OTel Collector behavior in service code
 
-### 4.3 OutSystems normalization
+### 3.3 OutSystems normalization
 - [ ] Implement OutSystems parser(s)
 - [ ] Implement OutSystems normalization pipeline
+- [ ] Forward normalized events to the OTel Collector (the gateway currently normalizes and returns them)
 - [ ] Support Traditional + Reactive OutSystems
 - [ ] Preserve default OutSystems log field/query compatibility first
 - [ ] Normalize:
@@ -245,55 +255,125 @@ is [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
   - [ ] host/node/runtime metadata
 - [ ] Keep high-cardinality fields out of Loki labels where possible
 
-### 4.4 Generic telemetry expansion
+### 3.4 Generic telemetry expansion
 - [ ] Harden generic OTLP ingest after OutSystems path works
 - [ ] Add MuleSoft parser later
 - [ ] Add generic JSON/plaintext normalization later
 
 ---
 
-## 5. Core system: DB collector (`services/db-collector`)
+## 4. Core system: API / control plane (`apps/api`)
 
-### 5.1 Service bootstrap
-- [x] Create Go service entrypoint `services/db-collector/cmd/db-collector/`
-- [x] Create internal packages for config, collectors, SQL Server connectors, probes, export
-- [x] Add health/metrics/logging/graceful shutdown
+Delivery stage 3. PostgreSQL schema [1], Redis [0.2], runtime config [8]
+and collector/gateway contracts are prerequisites. CRUD, metadata persistence,
+queue submission and worker interfaces can be delivered before their workers.
+Investigation results [4.6] need analyzer/evidence assembly [6, 12]; adaptive
+baselines [4.7] need computation [6.3, 13.2]; report execution/status [4.8] needs
+reporting workers/delivery [7, 14]. Do not mark these workflows complete from
+endpoint or queue tests alone. Rule/route provisioning [4.7] needs [9.1, 9.4,
+13.1]; deep links [4.9] need YAML templates/datasources [8.1, 9.3, 15.1].
 
-### 5.2 SQL Server connectivity and safety
-- [x] Implement secure SQL Server connector manager
-- [ ] Enforce least-privilege credentials
-- [x] Enforce query timeout/budget guards
-- [x] Pool SQL Server connections per target
-- [ ] Review all production queries for non-blocking behavior
-- [ ] Define safe probe review/versioning process
+- [ ] Define/version API-to-worker job/result contracts before queue producers and consumers; integration-test each complete workflow when its worker lands
+- [ ] Define how approved metadata probe assignments become YAML/Kubernetes runtime config [2.5, 8]; keep runtime desired state out of PostgreSQL
+- [ ] Validate this stage: auth/ownership/secret refs, CRUD persistence, audit redaction, queue contracts and collector/gateway onboarding [16.1–16.2]
 
-### 5.3 Probe implementation
-- [x] Implement waits probes
-- [x] Implement locks/blocking probes
-- [x] Implement sessions/connections probes
-- [x] Implement memory pressure probes
-- [x] Implement storage probes
-- [x] Implement throughput/latency probes as needed
-- [x] Replace generic column-to-metric decoding with explicit per-probe metric descriptors
+### 4.1 Service bootstrap
+- [ ] Create Go service entrypoint `apps/api/cmd/api/`
+- [ ] Create idiomatic Go package layout under `apps/api/internal/`
+- [ ] Add config loading, logging, health endpoints, metrics, graceful shutdown
+- [ ] Add PostgreSQL and Redis connectivity
+- [ ] Add PostgreSQL and Redis to the Helm chart once the API consumes them; keep monitored databases and test fixtures external
 
-### 5.4 Deferred fallback ingestion
-- [ ] Add file-based data ingestion for uploaded/exported files only after live database collection is stable
-- [ ] Restrict file-based ingestion to last-resort operational scenarios, not the default onboarding path
-- [ ] Define accepted file formats, validation rules, lineage metadata, and freshness warnings for fallback ingestion
+### 4.2 Identity and access
+- [ ] Implement local auth for MVP
+- [ ] Implement users/roles/user_roles management
+- [ ] Add minimal admin/wallboard access model
+- [ ] Defer OIDC/SSO unless required early
 
-### 5.5 Metrics and evidence output
-- [x] Normalize SQL Server outputs into Prometheus-friendly metrics
-- [x] Expose scrape endpoint
-- [x] Produce structured evidence for blocking/session probes
-- [ ] Persist or publish evidence snapshots (the default sink currently discards them)
-- [x] Keep DB collector metric output stateless and Prometheus-scraped instead of persisted in PostgreSQL
-- [ ] Add collector self-observability
+### 4.3 Environment/application inventory
+- [ ] Implement environments CRUD
+- [ ] Implement applications CRUD
+- [ ] Implement application components CRUD
+- [ ] Enforce app -> environment ownership path
 
-### 5.6 Runtime config model
-- [x] Read desired runtime collector config from `config/integrations.yaml`
-- [x] Read active target/probe runtime config from YAML/Kubernetes convention
-- [ ] Reintroduce API/PostgreSQL-driven probe assignments only after the control-plane workflow exists
-- [x] Keep desired state out of PostgreSQL
+### 4.4 Telemetry source management
+- [ ] Implement telemetry sources CRUD
+- [ ] Support OutSystems telemetry source registration
+- [ ] Associate telemetry source to application
+- [ ] Derive environment through application
+- [ ] Validate ingest mode and required config
+- [ ] Store secret refs only
+
+### 4.5 Database target management
+- [ ] Implement database targets CRUD
+- [ ] Implement probe definition management/versioning
+- [ ] Implement probe assignment management
+- [ ] Validate target config and safe probe policies
+- [ ] Store credential refs only
+
+### 4.6 Investigations API
+- [ ] Implement create investigation endpoint
+- [ ] Implement read investigation status/results endpoint
+- [ ] Implement evidence links endpoint
+- [ ] Persist durable investigation metadata in PostgreSQL
+- [ ] Queue jobs through Redis
+
+### 4.7 Alerting API
+- [ ] Implement alert policies CRUD
+- [ ] Implement notification routes CRUD
+- [ ] Implement adaptive baseline metadata endpoints
+- [ ] Implement rule rendering/provisioning interface to Prometheus/Alertmanager
+
+### 4.8 Reporting API
+- [ ] Implement report templates CRUD
+- [ ] Implement report schedules CRUD
+- [ ] Implement report run status/read endpoints
+- [ ] Support on-demand report triggering
+
+### 4.9 Log search / Grafana deep links
+- [ ] Implement deep-link generation from YAML templates
+- [ ] Implement log-search helper endpoints if needed for UI flows
+- [ ] Keep Grafana/Loki integration template-driven, not DB-driven
+
+### 4.10 Audit output
+- [ ] Append admin/operator mutations to JSONL audit files
+- [ ] Include request ID, actor, entity type/id, before/after, config version when relevant
+- [ ] Ensure secrets never enter audit logs
+
+---
+
+## 5. Core system: Web UI (`apps/web`)
+
+Delivery stage 4. Bootstrap/auth/inventory/onboarding screens require API
+bootstrap, auth and CRUD [4.1–4.5]. Investigation screens require [4.6, 6, 12];
+alert screens require policy/rule/route integration [4.7, 9.4, 13]; reports need
+[4.8, 7, 14]. Deliver screen shells against contracts first, then validate real
+workflows as later services arrive; shells/mocks are not end-to-end completion.
+Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
+15.1]. Minimal authorization [4.2] precedes operator access; later hardening
+[15.2] does not replace it.
+
+- [ ] Validate this stage: API-backed login, roles, inventory/onboarding and deep links; validate investigation/alert/report UI end to end with their later workers [16.3]
+
+### 5.1 UI bootstrap
+- [ ] Create React/TypeScript app
+- [ ] Set up routing, API client, auth/session handling, shared UI components
+
+### 5.2 Primary operator screens
+- [ ] Environments/applications screen
+- [ ] Application details/components screen
+- [ ] Telemetry sources screen
+- [ ] Database targets onboarding screen
+- [ ] Investigations screen
+- [ ] Alert policies screen
+- [ ] Reports screen
+- [ ] Integrations/admin informational screen
+
+### 5.3 MVP UX rules
+- [ ] Make session investigation app-first: filter by application + user/IP + time range
+- [ ] Derive/show environment from application
+- [ ] Provide drill-down links to Grafana/Loki
+- [ ] Keep assets out of the first UI release unless topology scope is approved
 
 ---
 
@@ -537,21 +617,8 @@ is [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
 
 ## 15. Feature track: Integrations and hardening
 
-### 15.0 Collector recovery and high availability
-- [x] Align SQL Server Prometheus recording-rule names with the current probe catalog; validate the rules against emitted metrics (promtool unit tests in `make rules-check`, Go test for metric-name drift)
-- [ ] Export cumulative SQL Server values (waits, throughput counters) as counters and show rates in the dashboard
-- [x] Document the planned HA improvements and late-stage Alloy comparison in architecture and roadmap docs
-- [x] Isolate probe/target failures so one failed target cannot stop unrelated collection
-- [x] Retry transient collection failures with bounded exponential backoff and jitter; expose persistent failures without retry storms
-- [x] Expose per-target success, consecutive failures, last-success time, and freshness; expire stale/removed metric series
-- [ ] Add per-probe cumulative error counters
-- [x] Make readiness reflect expected collector state and add deployment health probes and restart/recovery policies (local K8s bundle)
-- [x] Validate safe reloads, including partial reconciliation failure (rollback) and replacement-poller startup failure (unit-tested)
-- [ ] Define target ownership and takeover across replicas, with fencing or equivalent protection against duplicate SQL polling during partitions
-- [ ] Define recovery-time and acceptable data-gap objectives; design downstream buffering/replay limits separately from collector failover
-- [ ] Test target outages, process/node loss, network partitions, reloads during failure, and storage outages; record recovery time, gaps, duplicates, and database load
-
-Design details: [Collector recovery and high availability](docs/architecture/database-observability.md#collector-recovery-and-high-availability-planned).
+Collector reliability and endpoint security are in sections 2.6–2.7; replica
+ownership and outage testing are in section 19.
 
 ### 15.1 Grafana/Loki productization
 - [ ] validate integration config from YAML
@@ -561,11 +628,6 @@ Design details: [Collector recovery and high availability](docs/architecture/dat
 
 ### 15.2 Security and reliability
 - [ ] add authn/authz hardening
-- [ ] db-collector diagnostics: require the admin token for `GET /admin/config`; keep `/readyz` to status only and move raw driver errors (host, port, login) behind auth
-- [ ] db-collector redaction: mask notification channel `config` values in `Redacted()`, strip userinfo from endpoint URLs, and reject credentials embedded in `loki`/`alertmanager` URLs at validation
-- [ ] db-collector admin token: compare in constant time
-- [ ] db-collector network exposure: add a NetworkPolicy limiting port 8082 to Prometheus and operator access
-- [ ] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; consider per-target TLS settings instead of a process-wide flag
 - [ ] add query budgets
 - [ ] add rate limits
 - [ ] add retry/idempotency rules
@@ -622,19 +684,75 @@ Design details: [Collector recovery and high availability](docs/architecture/dat
 - [ ] historical collector fleet inventory in PostgreSQL
 - [ ] OIDC/SSO
 - [ ] Mimir scale-out path
-- [ ] non-SQL-Server engine parity
+- [ ] Additional monitored engines beyond SQL Server and Oracle (Oracle is planned in section 21)
 - [ ] richer integration CRUD UI backed by DB
 - [ ] DB-backed audit/compliance search
 - [ ] custom dashboard engine
 - [ ] autonomous RCA
 
-## 18. Late-stage collector comparison (planned)
-- [ ] After the core monitoring workflow and reliability baseline are validated, create a dedicated branch for the custom collector versus Grafana Alloy comparison
-- [ ] Run both implementations in parallel against equivalent non-production workloads with isolated metric identities and controlled combined query load
-- [ ] Compare signal coverage, custom probes/evidence, metric semantics, permissions/TLS, database load, resource use, configuration/reload, recovery, and operational cost
-- [ ] Exercise target/collector/node/network/downstream outages and measure recovery, freshness, gaps, duplicates, and buffering/replay behavior
-- [ ] Assess SQL Server fit first and future Oracle extensibility separately; do not assume connector parity
-- [ ] Record an evidence-backed decision: retain custom collection, adopt Alloy for suitable workloads, or support both with explicit per-target ownership and a shared telemetry contract
-- [ ] Merge any selected implementation only after reviewing the comparison; keep production adoption separate from the experiment
+---
 
-Evaluation design: [Custom collector and Alloy comparison](docs/architecture/database-observability.md#custom-collector-and-alloy-comparison-late-roadmap).
+## 18. Production delivery: EKS and Argo CD
+
+The shared chart already runs on kind and in CI [0.4]. This stage takes it to
+production with the defaults in
+[ADR 0005](docs/architecture/decisions/0005-production-delivery-and-operations-defaults.md).
+It follows the Web UI so the first production deploy carries a usable product;
+pull it forward if a production SQL Server must be monitored sooner.
+
+- [ ] `heartbeat-deploy` config repository with Argo CD Applications and per-environment values
+- [ ] CI publishes multi-arch images and the chart to ECR through GitHub OIDC
+- [ ] EKS infrastructure as code; AWS Secrets Manager with External Secrets
+- [ ] Route the Watchdog to healthchecks.io and test loss of the monitoring path
+- [ ] Notification receivers: Discord, then Slack, Teams and WhatsApp; set up the WhatsApp Business Account and alert template
+- [ ] Document where the monitored SQL Servers sit relative to the EKS VPC; validate pod-to-database DNS/TCP/authentication/TLS from EKS
+- [ ] Validate production-specific networking, identity, TLS, storage, retention and restore in the target environment; kind tests alone do not establish production acceptance
+- [ ] Optional: rehearse Argo CD on kind before the first production deploy
+
+## 19. Advanced collector reliability and HA
+
+Builds on the single-collector baseline [2.6]. Keep the collector a singleton
+until ownership is validated. Design details:
+[Collector recovery and high availability](docs/architecture/database-observability.md#collector-recovery-and-high-availability-planned).
+
+- [ ] Define per-target ownership/takeover across replicas with fencing or equivalent duplicate-polling protection
+- [ ] Define recovery-time/data-gap objectives and downstream buffering/replay limits separately from collector failover
+- [ ] Test target/process/node loss, network partitions, reloads during failure, and storage/downstream outages; measure recovery, gaps, duplicates and database load, and re-check the baseline [2.6] under these failures
+- [ ] Validate security, operational runbooks, audit rotation/shipping and restore procedures [15]
+
+## 20. Fallback file ingestion
+
+- [ ] Implement ingestion of uploaded/exported files only after live collection and reliability are validated, for cases where direct database connectivity is unavailable
+- [ ] Keep it a last-resort, fallback-only ingest mode, never the default onboarding path; expose it as a telemetry source ingest mode [4.4]
+- [ ] Define accepted formats, validation, lineage, source identity and freshness warnings
+- [ ] Test malformed/stale inputs, accepted formats and investigation use end to end
+
+## 21. Oracle collector and integration
+
+The coverage check below gates the rest of this section: building a custom
+Oracle collector before knowing what Alloy covers risks discarding it after the
+comparison [22].
+
+- [ ] Before any Oracle code, time-boxed to about half a day: check what Grafana Alloy (and established Oracle exporters) cover for the planned Oracle signals, permissions, TLS and evidence needs. Record the outcome as an ADR: build the custom Oracle collector, adopt Alloy for Oracle, or run the comparison [22] before this section
+- [ ] Define supported Oracle versions, signal coverage, connector/licensing constraints, least-privilege permissions and query budgets
+- [ ] Implement secure connectivity, credential refs/TLS, pooling, bounded queries and Oracle probes with explicit metric units/types/labels and structured evidence
+- [ ] Extend config/schema, API target/probe management and Web onboarding for Oracle
+- [ ] Add Oracle recording/alert rules, Grafana dashboards and investigation/report integration
+- [ ] Add an isolated non-production Oracle fixture, Helm delivery support and onboarding/operations runbook
+- [ ] Test supported-version queries, permissions, telemetry semantics and database load
+- [ ] Validate onboarding → collection → dashboards → alerts/investigations/reports and repeat failure/reload/freshness/ownership tests; retain evidence before section 22
+
+## 22. Final custom collector versus Grafana Alloy comparison
+
+The last planned delivery stage, after all preceding required workflows and
+validation gates, including Oracle integration (unless the coverage check [21]
+moved it earlier). Conditional section-17 scope is not a prerequisite unless
+explicitly promoted into the delivery plan. Evaluation design:
+[Custom collector and Alloy comparison](docs/architecture/database-observability.md#custom-collector-and-alloy-comparison-late-roadmap).
+
+- [ ] Create a dedicated comparison branch only after preceding stages pass validation
+- [ ] Verify Alloy's SQL Server and Oracle capabilities at evaluation time; document unsupported coverage rather than assuming parity
+- [ ] Run equivalent non-production workloads with isolated metric identities and controlled combined query load
+- [ ] Compare coverage, custom evidence, metric semantics, permissions/TLS, query load/resources, reloads, failure/recovery, gaps/duplicates, buffering/replay and operational cost, for each engine separately
+- [ ] Record reproducible configurations, results and an evidence-backed decision: retain custom collection, adopt Alloy for suitable workloads, or support both with explicit per-target ownership and a shared telemetry contract
+- [ ] Review the decision before merging the selected implementation; treat production adoption separately from the experiment

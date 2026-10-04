@@ -90,10 +90,16 @@ evaluation.
 ## Custom collector and Alloy comparison (late roadmap)
 
 The agreed plan is a parallel evaluation, not a decision to replace the custom
-collector. Schedule it near the end of the roadmap, after the core monitoring
-workflow and reliability baseline are validated. Perform the experiment in a
-dedicated comparison branch created at that time; do not mix it with ordinary
+collector. It is the last planned roadmap phase, after the core workflows,
+reliability work and Oracle integration are validated. Perform the experiment in
+a dedicated comparison branch created at that time; do not mix it with ordinary
 collector fixes or introduce Alloy into production as part of planning.
+
+Oracle work starts with a short, time-boxed check of what Alloy and established
+Oracle exporters cover. It is a desk check, not this comparison. It decides
+whether to build a custom Oracle collector, adopt Alloy for Oracle, or run this
+comparison before the Oracle phase, so that a custom collector is not built only
+to be replaced.
 
 Run the custom collector and Grafana Alloy against equivalent non-production
 SQL Server workloads. Isolate their metric identities or storage destinations so
@@ -114,8 +120,8 @@ possible. Compare:
   and behavior during collector, node, network, and downstream outages.
 - Buffering/replay limits, recovery time, gaps, duplicates, deployment complexity,
   upgrades, diagnostics, and ongoing maintenance cost.
-- SQL Server fit now and Oracle extensibility later, assessed separately rather
-  than assuming equivalent engine support.
+- SQL Server and Oracle fit, assessed separately rather than assuming
+  equivalent engine support.
 
 Record versions/configurations, reproducible tests, measurements, coverage gaps,
 and operational tradeoffs in a decision record on the comparison branch. Verify
