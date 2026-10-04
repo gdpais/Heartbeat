@@ -75,11 +75,11 @@ func writeTestConfig(t *testing.T, path string, collectors ...testCollector) {
       probes:
         - name: waits
       targets:
-        - name: core-db
+        - name: core-db-%s
           host: sql.example.internal
           port: 1433
           database_name: Heartbeat
-`, c.id, c.id, c.env, interval)
+`, c.id, c.id, c.env, interval, c.id)
 	}
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)

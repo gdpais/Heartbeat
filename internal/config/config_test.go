@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadRuntimeConfigFiltersEnabledSQLServerCollectors(t *testing.T) {
@@ -299,5 +301,60 @@ func TestDiffCollectorsUsesStableIDs(t *testing.T) {
 	}
 	if len(diff.Removed) != 1 || diff.Removed[0] != "a" {
 		t.Fatalf("unexpected removed collectors: %#v", diff.Removed)
+	}
+}
+
+func TestValidateRejectsTargetScrapedByTwoSQLServerCollectors(t *testing.T) {
+	target := func(name, env string) TargetRuntimeConfig {
+		return TargetRuntimeConfig{Name: name, EnvironmentSlug: env, Host: "db", Port: 1433}
+	}
+	collector := func(id string, enabled bool, kind string, targetNames []string, targets ...TargetRuntimeConfig) CollectorRuntimeConfig {
+		return CollectorRuntimeConfig{ID: id, Kind: kind, Enabled: enabled, ScrapeInterval: time.Minute, TargetNames: targetNames, Targets: targets}
+	}
+	tests := []struct {
+		name       string
+		collectors []CollectorRuntimeConfig
+		wantErr    bool
+	}{
+		{"same target in two enabled collectors", []CollectorRuntimeConfig{
+			collector("a", true, "sqlserver", nil, target("core-db", "prod")),
+			collector("b", true, "sqlserver", nil, target("core-db", "prod")),
+		}, true},
+		{"same name in another environment", []CollectorRuntimeConfig{
+			collector("a", true, "sqlserver", nil, target("core-db", "prod")),
+			collector("b", true, "sqlserver", nil, target("core-db", "staging")),
+		}, false},
+		{"second collector disabled", []CollectorRuntimeConfig{
+			collector("a", true, "sqlserver", nil, target("core-db", "prod")),
+			collector("b", false, "sqlserver", nil, target("core-db", "prod")),
+		}, false},
+		{"second collector of another kind", []CollectorRuntimeConfig{
+			collector("a", true, "sqlserver", nil, target("core-db", "prod")),
+			collector("b", true, "oracle", nil, target("core-db", "prod")),
+		}, false},
+		{"target_names leaves the duplicate unselected", []CollectorRuntimeConfig{
+			collector("a", true, "sqlserver", nil, target("core-db", "prod")),
+			collector("b", true, "sqlserver", []string{"other-db"}, target("core-db", "prod"), target("other-db", "prod")),
+		}, false},
+		{"target_names selects the duplicate", []CollectorRuntimeConfig{
+			collector("a", true, "sqlserver", nil, target("core-db", "prod")),
+			collector("b", true, "sqlserver", []string{"core-db"}, target("core-db", "prod"), target("other-db", "prod")),
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validate(RuntimeConfig{
+				Grafana:      Endpoint{BaseURL: "http://grafana:3000"},
+				Loki:         Endpoint{BaseURL: "http://loki:3100"},
+				Alertmanager: Endpoint{BaseURL: "http://alertmanager:9093"},
+				Collectors:   tt.collectors,
+			})
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("wantErr %v, got %v", tt.wantErr, err)
+			}
+			if err != nil && !strings.Contains(err.Error(), `target "core-db" in environment "prod" is scraped by collectors a and b`) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
