@@ -15,7 +15,8 @@ import (
 // Per-probe self-observability metrics, maintained by [ProbeMetrics].
 const (
 	// MetricProbeDuration is a histogram of probe execution time, failed and
-	// timed-out executions included.  Probes that never started are not
+	// timed-out executions included.  An abandoned execution is observed with
+	// the time until it was abandoned.  Probes that never started are not
 	// observed.  Labels: collector, environment, target, probe.
 	MetricProbeDuration = "heartbeat_collector_probe_duration_seconds"
 	// MetricProbeErrors counts failed probe executions by reason (see
@@ -28,14 +29,16 @@ const (
 // the label stays bounded; error text never becomes a label value.
 const (
 	// ReasonTimeout is a probe that exceeded its own timeout or the cycle
-	// deadline while running.
+	// deadline while running, including one the Runner abandoned because it
+	// did not stop after its context ended.
 	ReasonTimeout = "timeout"
 	// ReasonError is any other probe failure: connection, login, query, or
 	// result decoding errors.  Probes interrupted because the poller is
 	// stopping (shutdown or reload) are not counted.
 	ReasonError = "error"
 	// ReasonNotStarted is a probe that could not start before the cycle
-	// deadline because earlier probes of its target used the time.
+	// deadline because earlier probes of its target used the time, or
+	// because an abandoned probe of its target is still running.
 	ReasonNotStarted = "not_started"
 	// ReasonPanic is a probe whose executor panicked.
 	ReasonPanic = "panic"

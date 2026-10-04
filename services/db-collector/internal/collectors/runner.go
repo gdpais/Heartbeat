@@ -17,6 +17,15 @@
 //     backoff state, reports every cycle through its Report callback, and
 //     keeps running until the context is cancelled, whatever the probes do.
 //
+// Every probe has a hard deadline: when the executor has not returned
+// [DefaultAbandonGrace] after the probe's context is done (its timeout, the
+// cycle deadline, or cancellation), the Runner stops waiting, reports the probe
+// as timed out, and leaves the call to finish in the background.  A database
+// driver that cannot cancel a query on a dead connection therefore never stalls
+// the cycle, the other targets, or a Poller stopping.  An abandoned call's late
+// result is discarded, and while it is still running no other probe of its
+// target starts, so a dead target holds at most one call and one connection.
+//
 // With [Runner.WithProbeMetrics], every probe execution is also timed and
 // every probe failure counted by reason (see [ProbeMetrics]).
 //
@@ -55,6 +64,12 @@ import (
 // it.
 const DefaultMaxConcurrentTargets = 8
 
+// DefaultAbandonGrace is how long the Runner keeps waiting for a probe after
+// its context is done before abandoning it.  Cancelling a healthy query takes
+// one round trip, so the grace only expires when the executor ignores its
+// context, typically on a connection whose peer froze or vanished.
+const DefaultAbandonGrace = 2 * time.Second
+
 const (
 	// maxBackoff caps the delay before a failing target is retried.
 	maxBackoff = 5 * time.Minute
@@ -88,9 +103,15 @@ const (
 	MetricCycleDuration = "heartbeat_collector_cycle_duration_seconds"
 )
 
-// fallbackSinkMu serialises evidence publishing for Runners that were not
-// built with [NewRunner].
-var fallbackSinkMu sync.Mutex
+// fallbackSinkMu serialises evidence publishing, and fallbackProbeCalls
+// tracks probe calls, for Runners that were not built with [NewRunner].
+var (
+	fallbackSinkMu     sync.Mutex
+	fallbackProbeCalls = newProbeCalls()
+)
+
+// errProbeAbandoned marks a probe the Runner stopped waiting for.
+var errProbeAbandoned = errors.New("abandoned while still running")
 
 // ProbeExecutor executes a single scheduled probe against a live database and
 // returns the decoded metric samples along with any structured evidence.
@@ -108,8 +129,10 @@ type EvidenceSink interface {
 // all scheduled targets, records the resulting metric samples, and forwards
 // evidence to the configured sink.
 //
-// Runner is a value type that may be shared by many Pollers; it carries no
-// per-collector state.
+// Runner is a value type that may be shared by many Pollers; its only
+// per-collector state is the set of probe calls in flight, which every copy
+// shares so a Poller replaced by a reload sees the calls its predecessor
+// abandoned.
 type Runner struct {
 	executor      ProbeExecutor
 	exporter      collectorexport.Recorder
@@ -117,10 +140,15 @@ type Runner struct {
 	logger        *slog.Logger
 	metrics       *ProbeMetrics
 	maxConcurrent int
+	// abandonGrace overrides DefaultAbandonGrace when positive (tests).
+	abandonGrace time.Duration
 	// sinkMu serialises Publish calls because EvidenceSink implementations
 	// need not be safe for concurrent use.  It is shared by every copy of
 	// the Runner.
 	sinkMu *sync.Mutex
+	// calls tracks executor calls in flight, abandoned ones included.  It is
+	// shared by every copy of the Runner.
+	calls *probeCalls
 }
 
 // WithLogger returns a copy of r that logs through logger.  A nil logger
@@ -150,7 +178,7 @@ func (r Runner) WithMaxConcurrentTargets(n int) Runner {
 // When exporter implements [collectorexport.ScopedRecorder], stale series are
 // deleted per probe scope.
 func NewRunner(executor ProbeExecutor, exporter collectorexport.Recorder, sink EvidenceSink) Runner {
-	return Runner{executor: executor, exporter: exporter, sink: sink, sinkMu: &sync.Mutex{}}
+	return Runner{executor: executor, exporter: exporter, sink: sink, sinkMu: &sync.Mutex{}, calls: newProbeCalls()}
 }
 
 // RunOnce executes one scrape cycle for collector and returns its result.
@@ -391,39 +419,115 @@ func (r Runner) runScopedProbe(ctx context.Context, collector collectorconfig.Co
 }
 
 // executeProbe runs item under its probe timeout.  Probes that cannot start
-// before the cycle deadline and probes that panic are reported as errors.
-// Executions are timed and failures counted through the Runner's
-// [ProbeMetrics].
+// before the cycle deadline, probes whose target still has an abandoned call
+// running, and probes that panic are reported as errors.  A probe that does
+// not return within the abandon grace after its context is done is abandoned
+// and reported as timed out.  Executions are timed and failures counted
+// through the Runner's [ProbeMetrics].
 func (r Runner) executeProbe(ctx context.Context, item collectormetadata.ScheduledProbe, interval time.Duration) ([]collectorexport.Sample, []collectormetadata.Evidence, error) {
 	name := item.Definition.Name
 	if err := ctx.Err(); err != nil {
 		r.metrics.failedUnlessCanceled(ctx, item, ReasonNotStarted)
 		return nil, nil, notStartedError(name, err)
 	}
+	call, busy := r.probeCalls().start(item, time.Now())
+	if busy != nil {
+		r.metrics.failedUnlessCanceled(ctx, item, ReasonNotStarted)
+		return nil, nil, fmt.Errorf("probe %s not started: probe %s of the target was abandoned and is still running after %s",
+			name, busy.probe, time.Since(busy.started).Round(time.Millisecond))
+	}
 	timeout := probeTimeout(item.Definition.TimeoutMS, interval)
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	var samples []collectorexport.Sample
-	var evidence []collectormetadata.Evidence
-	var err error
-	attrs := []any{"collector", item.CollectorID, "target", item.Target.Name, "probe", name}
-	started := time.Now()
-	panicErr := r.protect("probe "+name, attrs, func() {
-		samples, evidence, err = r.executor.RunProbe(probeCtx, item)
-	})
-	r.metrics.observe(item, time.Since(started))
-	if panicErr != nil {
-		r.metrics.failed(item, ReasonPanic)
-		return nil, nil, panicErr
+	out := r.callExecutor(probeCtx, item, call)
+	r.metrics.observe(item, out.elapsed)
+	if out.abandoned {
+		r.metrics.failedUnlessCanceled(ctx, item, ReasonTimeout)
+		return nil, nil, abandonedError(ctx, name, timeout, r.grace())
 	}
-	if err == nil {
-		return samples, evidence, nil
+	if out.panicErr != nil {
+		r.metrics.failed(item, ReasonPanic)
+		return nil, nil, out.panicErr
+	}
+	if out.err == nil {
+		return out.samples, out.evidence, nil
 	}
 	r.metrics.failedUnlessCanceled(ctx, item, failureReason(probeCtx))
 	if ctx.Err() == nil && errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
-		return nil, nil, fmt.Errorf("probe %s timed out after %s: %w", name, timeout, err)
+		return nil, nil, fmt.Errorf("probe %s timed out after %s: %w", name, timeout, out.err)
 	}
-	return nil, nil, fmt.Errorf("probe %s: %w", name, err)
+	return nil, nil, fmt.Errorf("probe %s: %w", name, out.err)
+}
+
+// probeOutcome is the result of one executor call as seen by executeProbe.
+type probeOutcome struct {
+	samples  []collectorexport.Sample
+	evidence []collectormetadata.Evidence
+	err      error
+	panicErr error
+	// elapsed is the call's duration, or the time until it was abandoned.
+	elapsed time.Duration
+	// abandoned reports that the call outlived its hard deadline; the other
+	// fields except elapsed are then unset.
+	abandoned bool
+}
+
+// callExecutor runs the executor for item in its own goroutine and waits for
+// it until the abandon grace after probeCtx is done.  call must have been
+// registered for item; it is finished when the executor returns, whether or
+// not the Runner still waits.  The result of an abandoned call is discarded:
+// it is never recorded, published, or counted.
+func (r Runner) callExecutor(probeCtx context.Context, item collectormetadata.ScheduledProbe, call *probeCall) probeOutcome {
+	calls := r.probeCalls()
+	attrs := []any{"collector", item.CollectorID, "target", item.Target.Name, "probe", item.Definition.Name}
+	// Buffered so an abandoned call never blocks on the send.
+	results := make(chan probeOutcome, 1)
+	go func() {
+		var out probeOutcome
+		out.panicErr = r.protect("probe "+item.Definition.Name, attrs, func() {
+			out.samples, out.evidence, out.err = r.executor.RunProbe(probeCtx, item)
+		})
+		out.elapsed = time.Since(call.started)
+		// Send before finishing, so a call that finishes is always readable.
+		results <- out
+		if calls.finish(item, call) {
+			args := append(attrs, "running", out.elapsed.Round(time.Millisecond).String())
+			if out.err != nil {
+				args = append(args, "error", out.err)
+			}
+			r.log().Info("abandoned probe returned; result discarded", args...)
+		}
+	}()
+	select {
+	case out := <-results:
+		return out
+	case <-probeCtx.Done():
+	}
+	grace := time.NewTimer(r.grace())
+	defer grace.Stop()
+	select {
+	case out := <-results:
+		return out
+	case <-grace.C:
+	}
+	if !calls.abandon(call) {
+		// The call returned while the grace expired.
+		return <-results
+	}
+	return probeOutcome{abandoned: true, elapsed: time.Since(call.started)}
+}
+
+// abandonedError explains why a probe was abandoned.  ctx is the cycle
+// context the probe ran under.
+func abandonedError(ctx context.Context, probe string, timeout, grace time.Duration) error {
+	cause := "timed out after " + timeout.String()
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		cause = "reached the cycle deadline"
+	case ctx.Err() != nil:
+		cause = "was canceled"
+	}
+	return fmt.Errorf("probe %s %s and did not stop within %s: %w", probe, cause, grace, errProbeAbandoned)
 }
 
 // notStartedError explains why a probe was never started.
@@ -432,6 +536,78 @@ func notStartedError(probe string, cause error) error {
 		return fmt.Errorf("probe %s not started before cycle deadline: %w", probe, cause)
 	}
 	return fmt.Errorf("probe %s not started: %w", probe, cause)
+}
+
+// probeCalls tracks the executor calls in flight, at most one per target of
+// a collector, including calls the Runner abandoned.  Probes of one target run
+// serially, so a second call for a target can only be requested while an
+// abandoned one is still running; start refuses it.  This bounds a dead target
+// to one stuck goroutine and connection however long the outage lasts.
+// probeCalls is safe for concurrent use.
+type probeCalls struct {
+	mu    sync.Mutex
+	calls map[probeCallKey]*probeCall
+}
+
+// probeCallKey identifies a target of a collector.
+type probeCallKey struct {
+	collector string
+	target    string
+}
+
+// probeCall is one executor call.  probe and started never change.
+type probeCall struct {
+	probe   string
+	started time.Time
+	// abandoned and finished are guarded by probeCalls.mu.
+	abandoned bool
+	finished  bool
+}
+
+func newProbeCalls() *probeCalls {
+	return &probeCalls{calls: map[probeCallKey]*probeCall{}}
+}
+
+func callKey(item collectormetadata.ScheduledProbe) probeCallKey {
+	return probeCallKey{collector: item.CollectorID, target: item.Target.Name}
+}
+
+// start registers a call of item's probe starting at now.  When a call for
+// item's target is still in flight it registers nothing and returns that call
+// as busy instead.
+func (c *probeCalls) start(item collectormetadata.ScheduledProbe, now time.Time) (call, busy *probeCall) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := callKey(item)
+	if busy := c.calls[key]; busy != nil {
+		return nil, busy
+	}
+	call = &probeCall{probe: item.Definition.Name, started: now}
+	c.calls[key] = call
+	return call, nil
+}
+
+// abandon marks call as abandoned and reports whether it was still running.
+func (c *probeCalls) abandon(call *probeCall) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if call.finished {
+		return false
+	}
+	call.abandoned = true
+	return true
+}
+
+// finish unregisters call once its executor returned and reports whether it
+// had been abandoned.
+func (c *probeCalls) finish(item collectormetadata.ScheduledProbe, call *probeCall) (abandoned bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	call.finished = true
+	if key := callKey(item); c.calls[key] == call {
+		delete(c.calls, key)
+	}
+	return call.abandoned
 }
 
 // finishTarget updates the backoff state of a target after its probes ran,
@@ -598,6 +774,22 @@ func (r Runner) concurrency() int {
 		return DefaultMaxConcurrentTargets
 	}
 	return r.maxConcurrent
+}
+
+// grace returns the effective abandon grace.
+func (r Runner) grace() time.Duration {
+	if r.abandonGrace > 0 {
+		return r.abandonGrace
+	}
+	return DefaultAbandonGrace
+}
+
+// probeCalls returns the shared probe call registry.
+func (r Runner) probeCalls() *probeCalls {
+	if r.calls == nil {
+		return fallbackProbeCalls
+	}
+	return r.calls
 }
 
 // LoggingEvidenceSink is a no-op [EvidenceSink] used in the default wiring.
