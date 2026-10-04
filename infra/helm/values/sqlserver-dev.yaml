@@ -33,6 +33,9 @@ integrations:
           - name: memory_pressure
           - name: storage
           - name: throughput
+          - name: cpu
+          - name: buffer_cache
+          - name: file_io
         targets:
           - name: sqlserver-dev
             environment: local-dev
