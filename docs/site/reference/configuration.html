@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="../assets/style.css?v=8486b06a573b">
 <script defer src="../assets/site.js?v=5b67932127bb"></script>
 </head>
-<body data-root="../" data-search-index="assets/search-index.js?v=aa145c824108">
+<body data-root="../" data-search-index="assets/search-index.js?v=f810fed2c733">
 <a class="skip-link" href="#content">Skip to content</a>
 <header class="topbar">
   <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
@@ -51,9 +51,11 @@
       <section class="nav-group">
         <h2>Developers</h2>
         <ul class="nav-list">
+          <li><a href="../guides/kind-walkthrough.html">Walkthrough</a>
+          </li>
           <li><a href="../guides/local-development.html">Local development</a>
           </li>
-          <li><a href="../guides/kubernetes-local.html">Kubernetes (local)</a>
+          <li><a href="../guides/kubernetes-local.html">Kubernetes delivery</a>
           </li>
           <li><a href="../architecture/data-model.html">Data model</a>
           </li>
@@ -63,6 +65,7 @@
               <li><a href="../architecture/decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
               <li><a href="../architecture/decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
               <li><a href="../architecture/decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+              <li><a href="../architecture/decisions/0005-production-delivery-and-operations-defaults.html">0005. Production delivery and operations defaults</a></li>
             </ul>
           </li>
           <li><a href="../services/db-collector/index.html">DB collector</a>
@@ -124,36 +127,46 @@ variables. Why config lives in YAML rather than PostgreSQL is explained in
 <ul>
 <li>Loader and validation: <a href="https://github.com/gdpais/Heartbeat/blob/master/internal/config/config.go"><code>internal/config/config.go</code></a></li>
 <li>JSON schema: <a href="https://github.com/gdpais/Heartbeat/blob/master/packages/config-schema/src/integrations.schema.json"><code>packages/config-schema/src/integrations.schema.json</code></a></li>
-<li>Default file: <a href="https://github.com/gdpais/Heartbeat/blob/master/config/integrations.yaml"><code>config/integrations.yaml</code></a> (no SQL Server targets)</li>
-<li>Local SQL Server example: <a href="https://github.com/gdpais/Heartbeat/blob/master/config/integrations.local-dev.example.yaml"><code>config/integrations.local-dev.example.yaml</code></a></li>
+<li>Deployed config: the <code>integrations</code> key of the Helm chart's values
+(<a href="https://github.com/gdpais/Heartbeat/blob/master/infra/helm/heartbeat/values.yaml">defaults</a>, no SQL Server targets),
+overridden per environment by files in <a href="https://github.com/gdpais/Heartbeat/tree/master/infra/helm/values"><code>infra/helm/values/</code></a></li>
+<li>Binary default for running a service outside Kubernetes:
+<a href="https://github.com/gdpais/Heartbeat/blob/master/config/integrations.yaml"><code>config/integrations.yaml</code></a></li>
 </ul>
 <h2 id="config-files-by-environment">Config files by environment<a href="#config-files-by-environment" class="anchor" title="Link to this section">#</a></h2>
+<p>The chart renders <code>integrations</code> into the <code>heartbeat-integrations</code> ConfigMap,
+mounted at <code>/app/config/integrations.yaml</code>. Helm merges maps across values
+files but <strong>replaces lists</strong>, so an environment that changes <code>collectors</code>
+restates the whole list.</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Environment</th>
-<th>File the collector reads</th>
-<th>How it gets there</th>
+<th>Where <code>integrations</code> comes from</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Host-run or Docker Compose</td>
-<td><code>config/integrations.yaml</code></td>
-<td>Mounted at <code>/app/config/integrations.yaml</code></td>
+<td>kind</td>
+<td>Chart defaults (<code>values.yaml</code>) plus <a href="https://github.com/gdpais/Heartbeat/blob/master/infra/helm/values/kind.yaml"><code>kind.yaml</code></a></td>
 </tr>
 <tr>
-<td>SQL Server dev overlay</td>
-<td><code>config/integrations.local-dev.yaml</code> (git-ignored)</td>
-<td>Created by <code>make sqlserver-dev-init</code></td>
+<td>kind with the SQL Server sandbox</td>
+<td>Adds <a href="https://github.com/gdpais/Heartbeat/blob/master/infra/helm/values/sqlserver-dev.yaml"><code>sqlserver-dev.yaml</code></a></td>
 </tr>
 <tr>
-<td>Local Kubernetes bundle</td>
-<td><code>integrations.yaml</code> key in <code>infra/k8s/local/configmap-config.yaml</code></td>
-<td>ConfigMap volume</td>
+<td>Production</td>
+<td>Values in the <code>heartbeat-deploy</code> config repository; <a href="https://github.com/gdpais/Heartbeat/blob/master/infra/helm/values/production.example.yaml"><code>production.example.yaml</code></a> shows the shape</td>
+</tr>
+<tr>
+<td>Service run directly (<code>go run</code>)</td>
+<td><code>config/integrations.yaml</code>, or <code>HEARTBEAT_INTEGRATIONS_PATH</code></td>
 </tr>
 </tbody>
 </table></div>
+<p>Helm validates <code>integrations</code> against the integrations schema (embedded in the
+chart's <code>values.schema.json</code>) before anything is applied, and <code>make chart-check</code>
+loads each profile's rendered file with the Go loader.</p>
 <h2 id="integrationsyaml"><code>integrations.yaml</code><a href="#integrationsyaml" class="anchor" title="Link to this section">#</a></h2>
 <h3 id="endpoints">Endpoints<a href="#endpoints" class="anchor" title="Link to this section">#</a></h3>
 <div class="table-wrap"><table>
@@ -255,8 +268,9 @@ same login, so review it with the DBAs; see the
 <a href="../guides/database-targets.html#collector-login-permissions">login permissions</a>.</p>
 <h3 id="validation-and-reload-behavior">Validation and reload behavior<a href="#validation-and-reload-behavior" class="anchor" title="Link to this section">#</a></h3>
 <ul>
-<li>The file is validated on startup and on every reload. <code>make config</code> validates
-Compose syntax only, not this file.</li>
+<li>The file is validated on startup and on every reload. Values that fail the
+schema never render; a ConfigMap edited by hand can still be invalid, and is
+then rejected as below.</li>
 <li>An invalid candidate is rejected and the previous config keeps running.
 <code>POST /admin/config/reload</code> returns 400 for invalid config and 500 for a
 failed apply.</li>
@@ -291,8 +305,10 @@ polling when <code>HEARTBEAT_CONFIG_WATCH_INTERVAL</code> is set.</li>
 </tbody>
 </table></div>
 <p>The variable must be present in the <strong>container's</strong> environment; exporting it
-in your host shell does not pass it into Compose or Kubernetes. Changing it
-requires restarting the collector.</p>
+in your host shell does not pass it into Kubernetes. The chart loads every key
+of the Secret named by <code>dbCollector.credentials.existingSecret</code> as an
+environment variable. Changing it requires restarting the collector
+(<code>kubectl rollout restart statefulset/db-collector</code>).</p>
 <h2 id="environment-variables">Environment variables<a href="#environment-variables" class="anchor" title="Link to this section">#</a></h2>
 <h3 id="db-collector">DB collector<a href="#db-collector" class="anchor" title="Link to this section">#</a></h3>
 <div class="table-wrap"><table>
@@ -322,7 +338,7 @@ requires restarting the collector.</p>
 <tr>
 <td><code>HEARTBEAT_CONFIG_WATCH_INTERVAL</code></td>
 <td>unset (off)</td>
-<td>Go duration; poll the config file for changes (Compose uses <code>2s</code>)</td>
+<td>Go duration; poll the config file for changes (the chart sets <code>5s</code>, <code>dbCollector.configWatchInterval</code>)</td>
 </tr>
 <tr>
 <td><code>HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE</code></td>
@@ -371,22 +387,17 @@ requires restarting the collector.</p>
 <tr>
 <td><code>.env.sqlserver-dev.example</code></td>
 <td>yes</td>
-<td>Template for the SQL Server dev overlay</td>
+<td>Template for the SQL Server sandbox</td>
 </tr>
 <tr>
 <td><code>.env.sqlserver-dev</code></td>
 <td>no (mode 600)</td>
-<td>Random per-machine SA password and collector credential, generated by <code>make sqlserver-dev-init</code></td>
+<td>Random per-machine SA password and collector credential, generated by <code>make sqlserver-dev-init</code>; <code>make sqlserver-dev-up</code> copies the credential into the <code>heartbeat-sqlserver-dev-credentials</code> Secret</td>
 </tr>
 <tr>
-<td><code>config/integrations.local-dev.example.yaml</code></td>
+<td><code>infra/helm/values/sqlserver-dev.yaml</code></td>
 <td>yes</td>
-<td>Template collector config with the dev SQL Server target</td>
-</tr>
-<tr>
-<td><code>config/integrations.local-dev.yaml</code></td>
-<td>no</td>
-<td>Local copy used by the overlay</td>
+<td>Values that point the collector at the sandbox container</td>
 </tr>
 </tbody>
 </table></div>

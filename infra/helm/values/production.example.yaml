@@ -1,0 +1,171 @@
+# Example production values (ADR 0005). Not deployed from this repository:
+# real per-environment values live in the heartbeat-deploy config repository,
+# where Argo CD renders the chart with them. Every <...> and example.internal
+# value is a placeholder. This file is rendered in CI so it stays valid against
+# the chart.
+#
+# Production specifics:
+# - Images come from Amazon ECR and are pinned by digest.
+# - Secrets come from AWS Secrets Manager through External Secrets Operator;
+#   the chart only references their names.
+# - Grafana: generated admin password, anonymous access off, TLS at an internal
+#   ALB with an ACM certificate.
+# - Alerts: Slack and Microsoft Teams; WhatsApp for critical alerts through
+#   Amazon SNS; Watchdog to healthchecks.io.
+
+dbCollector:
+  image:
+    repository: <account>.dkr.ecr.<region>.amazonaws.com/heartbeat/db-collector
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  adminToken:
+    existingSecret: heartbeat-runtime
+  # ExternalSecret-managed: HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_<NAME>=<login>:<password>.
+  credentials:
+    existingSecret: heartbeat-sqlserver-credentials
+
+otelGateway:
+  image:
+    repository: <account>.dkr.ecr.<region>.amazonaws.com/heartbeat/otel-gateway
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+integrations:
+  grafana:
+    base_url: https://grafana.heartbeat.example.internal
+    dashboard_templates:
+      sqlserver-overview: /d/sqlserver-overview
+      heartbeat-overview: /d/heartbeat-overview
+      outsystems-overview: /d/outsystems-overview
+    deep_link_templates:
+      loki-logs: /explore?orgId=1&left=${loki_query}
+      sqlserver-target: /d/sqlserver-overview?var-target=${target}
+  loki:
+    base_url: https://grafana.heartbeat.example.internal
+    endpoint: http://loki:3100/loki/api/v1/push
+  alertmanager:
+    base_url: http://alertmanager:9093
+    endpoint: http://alertmanager:9093/api/v2/alerts
+  notification_channels: []
+  credential_refs:
+    sqlserver-orders: env/sqlserver-orders
+  collectors:
+    - id: sqlserver-prod
+      kind: sqlserver
+      enabled: true
+      credential_ref: kv/sqlserver-prod
+      config:
+        environment: production
+        scrape_interval: 30s
+        target_names: []
+        probes:
+          - name: waits
+          - name: blocking
+          - name: sessions
+          - name: memory_pressure
+          - name: storage
+          - name: throughput
+        targets:
+          - name: orders-db
+            environment: production
+            host: orders-db.example.internal
+            port: 1433
+            database_name: master
+            credential_ref: env/sqlserver-orders
+
+prometheus:
+  server:
+    retention: 30d
+    persistentVolume:
+      storageClass: gp3
+      size: 50Gi
+  alertmanager:
+    persistence:
+      storageClass: gp3
+    # ExternalSecret-managed webhook URLs, read with *_file settings so they
+    # never appear in the rendered config.
+    extraSecretMounts:
+      - name: alert-receivers
+        mountPath: /etc/alertmanager/secrets
+        secretName: heartbeat-alert-receivers
+        readOnly: true
+    config:
+      route:
+        receiver: chat
+        group_by: ["alertname", "job", "environment"]
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 4h
+        routes:
+          - receiver: deadmans-switch
+            matchers: ['alertname="Watchdog"']
+            group_wait: 0s
+            group_interval: 1m
+            repeat_interval: 1m
+          # Critical only: messages cost money and reach personal phones.
+          - receiver: chat-and-whatsapp
+            matchers: ['severity="critical"']
+      receivers:
+        - name: chat
+          slack_configs:
+            - api_url_file: /etc/alertmanager/secrets/slack-webhook-url
+              channel: "#heartbeat-alerts"
+              send_resolved: true
+          msteamsv2_configs:
+            - webhook_url_file: /etc/alertmanager/secrets/teams-webhook-url
+              send_resolved: true
+        - name: chat-and-whatsapp
+          slack_configs:
+            - api_url_file: /etc/alertmanager/secrets/slack-webhook-url
+              channel: "#heartbeat-alerts"
+              send_resolved: true
+          msteamsv2_configs:
+            - webhook_url_file: /etc/alertmanager/secrets/teams-webhook-url
+              send_resolved: true
+          # SNS -> Lambda -> AWS End User Messaging Social (WhatsApp template).
+          sns_configs:
+            - topic_arn: arn:aws:sns:<region>:<account>:heartbeat-critical-alerts
+              sigv4:
+                region: <region>
+        - name: deadmans-switch
+          webhook_configs:
+            - url_file: /etc/alertmanager/secrets/healthchecks-ping-url
+              send_resolved: false
+
+grafana:
+  admin:
+    existingSecret: grafana-admin
+  ingress:
+    enabled: true
+    ingressClassName: alb
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internal
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+      alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:<region>:<account>:certificate/<id>
+    hosts:
+      - grafana.heartbeat.example.internal
+  grafana.ini:
+    server:
+      root_url: https://grafana.heartbeat.example.internal
+
+loki:
+  loki:
+    storage:
+      type: s3
+      bucketNames:
+        chunks: <heartbeat-loki-chunks>
+        ruler: <heartbeat-loki-ruler>
+        admin: <heartbeat-loki-admin>
+      s3:
+        region: <region>
+    schemaConfig:
+      configs:
+        - from: "2024-01-01"
+          store: tsdb
+          object_store: s3
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+  singleBinary:
+    persistence:
+      storageClass: gp3

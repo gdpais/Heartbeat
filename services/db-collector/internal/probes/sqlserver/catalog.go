@@ -16,6 +16,11 @@
 //   - throughput     – batch/transaction rate counters from sys.dm_os_performance_counters
 package sqlserver
 
+import (
+	"maps"
+	"slices"
+)
+
 // Probe describes a named SQL Server probe: the SQL to execute and the metrics
 // to extract from the result set.
 type Probe struct {
@@ -114,9 +119,12 @@ func DefaultCatalog() Catalog {
 			}},
 		},
 		{
-			Name:          "throughput",
-			Category:      "throughput",
-			QueryTemplate: "SELECT counter_name, cntr_value FROM sys.dm_os_performance_counters WHERE counter_name IN ('Batch Requests/sec', 'Transactions/sec')",
+			Name:     "throughput",
+			Category: "throughput",
+			// Server-wide values only. Transactions/sec has one row per database
+			// plus _Total, so keep _Total. counter_name is nchar(128), so trim
+			// the padding before it becomes a label value.
+			QueryTemplate: "SELECT RTRIM(counter_name) AS counter_name, cntr_value FROM sys.dm_os_performance_counters WHERE counter_name = 'Batch Requests/sec' OR (counter_name = 'Transactions/sec' AND instance_name = '_Total')",
 			Metrics: []Metric{{
 				Name:         "heartbeat_sqlserver_throughput",
 				Help:         "SQL Server throughput performance counter value.",
@@ -137,4 +145,9 @@ func DefaultCatalog() Catalog {
 func (c Catalog) Get(name string) (Probe, bool) {
 	probe, ok := c.byName[name]
 	return probe, ok
+}
+
+// Names returns the names of every probe in the catalog, sorted.
+func (c Catalog) Names() []string {
+	return slices.Sorted(maps.Keys(c.byName))
 }

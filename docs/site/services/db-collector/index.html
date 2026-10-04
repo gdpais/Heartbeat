@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="../../assets/style.css?v=8486b06a573b">
 <script defer src="../../assets/site.js?v=5b67932127bb"></script>
 </head>
-<body data-root="../../" data-search-index="assets/search-index.js?v=aa145c824108">
+<body data-root="../../" data-search-index="assets/search-index.js?v=f810fed2c733">
 <a class="skip-link" href="#content">Skip to content</a>
 <header class="topbar">
   <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
@@ -51,9 +51,11 @@
       <section class="nav-group">
         <h2>Developers</h2>
         <ul class="nav-list">
+          <li><a href="../../guides/kind-walkthrough.html">Walkthrough</a>
+          </li>
           <li><a href="../../guides/local-development.html">Local development</a>
           </li>
-          <li><a href="../../guides/kubernetes-local.html">Kubernetes (local)</a>
+          <li><a href="../../guides/kubernetes-local.html">Kubernetes delivery</a>
           </li>
           <li><a href="../../architecture/data-model.html">Data model</a>
           </li>
@@ -63,6 +65,7 @@
               <li><a href="../../architecture/decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
               <li><a href="../../architecture/decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
               <li><a href="../../architecture/decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+              <li><a href="../../architecture/decisions/0005-production-delivery-and-operations-defaults.html">0005. Production delivery and operations defaults</a></li>
             </ul>
           </li>
           <li><a href="index.html" aria-current="page">DB collector</a>
@@ -121,7 +124,9 @@ metrics.</p>
 <p>The current implementation is intentionally narrow:</p>
 <ul>
 <li>SQL Server is the only supported engine.</li>
-<li>Collector desired state comes from <code>config/integrations.yaml</code>.</li>
+<li>Collector desired state comes from <code>integrations.yaml</code> (the Helm chart's
+<code>integrations</code> values when deployed; <code>config/integrations.yaml</code> when run
+directly).</li>
 <li>Probe definitions are implemented as a built-in SQL Server catalog.</li>
 <li>Metrics are exported to Prometheus.</li>
 <li>Structured evidence is produced for blocking/session-style probes, but the
@@ -275,7 +280,8 @@ columns.</li>
 </ol>
 <p>To add a new collector:</p>
 <ol>
-<li>Declare it in <code>config/integrations.yaml</code>.</li>
+<li>Declare it in the environment's <code>integrations</code> values (or
+<code>config/integrations.yaml</code> when running the binary directly).</li>
 <li>Ensure the collector kind is <code>sqlserver</code>.</li>
 <li>Provide target credentials through the configured credential reference.</li>
 <li>Confirm the collector appears in <code>/readyz</code> and exports metrics on

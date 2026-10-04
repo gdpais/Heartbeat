@@ -1,0 +1,90 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Version policy: ADR 0005 (latest stable, pinned exactly, reviewed updates).",
+  "extends": ["config:recommended", ":dependencyDashboard"],
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "postUpdateOptions": ["gomodTidy"],
+  "packageRules": [
+    {
+      "description": "Batch low-risk updates into one weekly PR.",
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "non-major dependencies"
+    },
+    {
+      "description": "Majors arrive one per PR so release notes are read one at a time.",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Keep go.mod and the Go builder images on the same release.",
+      "matchPackageNames": ["go", "golang"],
+      "groupName": "go toolchain"
+    },
+    {
+      "description": "kubectl stays on the kind node's Kubernetes minor (ADR 0005): patch updates only.",
+      "matchDepNames": ["kubernetes/kubernetes"],
+      "matchUpdateTypes": ["major", "minor"],
+      "enabled": false
+    },
+    {
+      "description": "HELM3_VERSION only checks that the chart still renders with Helm 3; keep it on Helm 3.",
+      "matchDepNames": ["helm/helm"],
+      "matchCurrentValue": "/^v3\\./",
+      "allowedVersions": "<4"
+    },
+    {
+      "description": "The kind node image must match both the kind release and the newest Kubernetes minor Amazon EKS supports (ADR 0005); update it by hand from the kind release notes.",
+      "matchPackageNames": ["kindest/node"],
+      "enabled": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "kind CLI pin in the Makefile.",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": ["KIND_VERSION := (?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "kubernetes-sigs/kind",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "Minimum Helm version in the Makefile.",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": ["HELM_MIN_VERSION := (?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "helm/helm",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "Exact Helm versions CI installs (make install-tools).",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": ["HELM_VERSION := (?<currentValue>v\\d+\\.\\d+\\.\\d+)", "HELM3_VERSION := (?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "helm/helm",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "kubectl version CI installs (make install-tools).",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": ["KUBECTL_VERSION := (?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "kubernetes/kubernetes",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "kind node image in the Makefile (tracked so the dashboard lists it; updates disabled above).",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": ["KIND_NODE_IMAGE := (?<depName>kindest/node):(?<currentValue>v[\\d.]+)@(?<currentDigest>sha256:[a-f0-9]+)"],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Prometheus image used for promtool in the Makefile.",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": ["PROMETHEUS_IMAGE := (?<depName>prom/prometheus):(?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "datasourceTemplate": "docker"
+    }
+  ]
+}

@@ -5,12 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="generator" content="Heartbeat docsite (make docs-site)">
 <meta name="color-scheme" content="light dark">
-<title>Kubernetes (local) · Heartbeat docs</title>
+<title>Kubernetes Delivery (Helm on kind) · Heartbeat docs</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%230369a1' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' d='M2 12h4l3-7 4 14 3-7h6'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="../assets/style.css?v=8486b06a573b">
 <script defer src="../assets/site.js?v=5b67932127bb"></script>
 </head>
-<body data-root="../" data-search-index="assets/search-index.js?v=aa145c824108">
+<body data-root="../" data-search-index="assets/search-index.js?v=f810fed2c733">
 <a class="skip-link" href="#content">Skip to content</a>
 <header class="topbar">
   <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
@@ -51,9 +51,11 @@
       <section class="nav-group">
         <h2>Developers</h2>
         <ul class="nav-list">
+          <li><a href="kind-walkthrough.html">Walkthrough</a>
+          </li>
           <li><a href="local-development.html">Local development</a>
           </li>
-          <li><a href="kubernetes-local.html" aria-current="page">Kubernetes (local)</a>
+          <li><a href="kubernetes-local.html" aria-current="page">Kubernetes delivery</a>
           </li>
           <li><a href="../architecture/data-model.html">Data model</a>
           </li>
@@ -63,6 +65,7 @@
               <li><a href="../architecture/decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
               <li><a href="../architecture/decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
               <li><a href="../architecture/decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+              <li><a href="../architecture/decisions/0005-production-delivery-and-operations-defaults.html">0005. Production delivery and operations defaults</a></li>
             </ul>
           </li>
           <li><a href="../services/db-collector/index.html">DB collector</a>
@@ -101,86 +104,209 @@
     <details class="toc-inline">
       <summary>On this page</summary>
       <ul>
-        <li class="toc-h2"><a href="#what-it-deploys">What it deploys</a></li>
-        <li class="toc-h2"><a href="#run-it">Run it</a></li>
-        <li class="toc-h2"><a href="#add-a-sql-server-target">Add a SQL Server target</a></li>
+        <li class="toc-h2"><a href="#layout">Layout</a></li>
+        <li class="toc-h2"><a href="#what-the-chart-deploys">What the chart deploys</a></li>
+        <li class="toc-h2"><a href="#secrets">Secrets</a></li>
+        <li class="toc-h2"><a href="#images">Images</a></li>
+        <li class="toc-h2"><a href="#the-cluster">The cluster</a></li>
+        <li class="toc-h2"><a href="#working-with-it">Working with it</a></li>
+        <li class="toc-h2"><a href="#production">Production</a></li>
       </ul>
     </details>
     <article class="markdown">
-<h1 id="kubernetes-local">Kubernetes (local)<a href="#kubernetes-local" class="anchor" title="Link to this section">#</a></h1>
-<p>A minimal Kustomize bundle in <a href="https://github.com/gdpais/Heartbeat/tree/master/infra/k8s/local"><code>infra/k8s/local</code></a> runs
-the Heartbeat services on a local cluster (for example kind). It is a stopgap:
-<a href="../architecture/decisions/0003-helm-on-kind-and-production.html">ADR 0003</a>
-replaces it with a Helm chart shared by kind, CI and production.</p>
-<h2 id="what-it-deploys">What it deploys<a href="#what-it-deploys" class="anchor" title="Link to this section">#</a></h2>
-<p>Namespace <code>heartbeat</code>:</p>
+<h1 id="kubernetes-delivery-helm-on-kind">Kubernetes Delivery (Helm on kind)<a href="#kubernetes-delivery-helm-on-kind" class="anchor" title="Link to this section">#</a></h1>
+<p>Heartbeat is packaged as one Helm chart, used unchanged for kind, CI and
+production with environment-specific values
+(<a href="../architecture/decisions/0003-helm-on-kind-and-production.html">ADR 0003</a>,
+<a href="../architecture/decisions/0005-production-delivery-and-operations-defaults.html">ADR 0005</a>).
+To just run it, see <a href="local-development.html">local development</a>. This page
+explains what is deployed and how to work with it.</p>
+<h2 id="layout">Layout<a href="#layout" class="anchor" title="Link to this section">#</a></h2>
 <div class="table-wrap"><table>
 <thead>
 <tr>
-<th>File</th>
-<th>Creates</th>
+<th>Path</th>
+<th>Contents</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>namespace.yaml</code></td>
-<td>The <code>heartbeat</code> namespace</td>
+<td><code>infra/helm/heartbeat/</code></td>
+<td>The chart: Heartbeat templates, <code>values.yaml</code> defaults, <code>values.schema.json</code>, <code>Chart.yaml</code>/<code>Chart.lock</code></td>
 </tr>
 <tr>
-<td><code>secret-postgres.yaml</code></td>
-<td>PostgreSQL user, password, database, DSN, and the collector admin token (local values only)</td>
+<td><code>infra/helm/heartbeat/files/</code></td>
+<td>Prometheus rules (and their promtool tests) and Grafana dashboards, shipped as ConfigMaps</td>
 </tr>
 <tr>
-<td><code>configmap-config.yaml</code></td>
-<td><code>integrations.yaml</code>, mounted into the services. Ships with <code>targets: []</code></td>
+<td><code>infra/helm/values/</code></td>
+<td>Environment values: <code>kind.yaml</code>, <code>minimal.yaml</code>, <code>sqlserver-dev.yaml</code>, <code>production.example.yaml</code></td>
 </tr>
 <tr>
-<td><code>postgres.yaml</code></td>
-<td>PostgreSQL StatefulSet and Service</td>
+<td><code>infra/kind/cluster.yaml</code></td>
+<td>kind cluster: one node, host port mappings on 127.0.0.1</td>
 </tr>
 <tr>
-<td><code>db-collector.yaml</code></td>
-<td>DB collector Deployment (liveness/readiness probes, 45s shutdown grace) and Service on port 8082</td>
+<td><code>scripts/kind.sh</code></td>
+<td>Cluster, image and deploy workflow behind the <code>make kind-*</code> targets</td>
 </tr>
 <tr>
-<td><code>otel-gateway.yaml</code></td>
-<td>OTel gateway Deployment and Service on port 8083</td>
-</tr>
-<tr>
-<td><code>kustomization.yaml</code></td>
-<td>Lists the files applied together</td>
+<td><code>scripts/kind-e2e.sh</code></td>
+<td>Acceptance checks on an isolated, temporary cluster (<code>make kind-e2e</code>)</td>
 </tr>
 </tbody>
 </table></div>
-<p>Prometheus, Grafana, Loki, Alertmanager and the OTel Collector are <strong>not</strong>
-included. Use Docker Compose for the full stack.</p>
-<h2 id="run-it">Run it<a href="#run-it" class="anchor" title="Link to this section">#</a></h2>
-<pre><code class="language-bash">make k8s-up                        # build heartbeat/db-collector:local and kubectl apply -k infra/k8s/local
-make kind-load-db-collector-image  # kind only: load the image into the cluster
+<h2 id="what-the-chart-deploys">What the chart deploys<a href="#what-the-chart-deploys" class="anchor" title="Link to this section">#</a></h2>
+<p>Heartbeat's own objects (fixed names; one release per namespace):</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Object</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>StatefulSet/db-collector</code></td>
+<td>Always one replica: a replacement pod starts only after the old one is gone, so SQL targets are never polled twice. Liveness <code>/healthz</code> (process only), readiness <code>/readyz</code>. No config checksum: ConfigMap changes hot-reload without a restart</td>
+</tr>
+<tr>
+<td><code>Service/db-collector-headless</code></td>
+<td>Headless, <code>publishNotReadyAddresses</code>; Prometheus discovers the collector through it even while it is unready</td>
+</tr>
+<tr>
+<td><code>Service/db-collector</code></td>
+<td>Operator access (health, admin reload); ready pods only</td>
+</tr>
+<tr>
+<td><code>Deployment/otel-gateway</code>, <code>Service/otel-gateway</code></td>
+<td>Rolls on config change (it reads <code>integrations.yaml</code> once)</td>
+</tr>
+<tr>
+<td><code>ConfigMap/heartbeat-integrations</code></td>
+<td><code>integrations.yaml</code>, rendered from the <code>integrations</code> values</td>
+</tr>
+<tr>
+<td><code>ConfigMap/heartbeat-prometheus-rules</code></td>
+<td>Rule files; Prometheus mounts them at <code>/etc/prometheus-rules</code> and its config reloader reloads on change</td>
+</tr>
+<tr>
+<td><code>ConfigMap/heartbeat-dashboards</code></td>
+<td>Dashboards; label <code>grafana_dashboard: &quot;1&quot;</code> for shared Grafanas with a dashboard sidecar</td>
+</tr>
+</tbody>
+</table></div>
+<p>Third-party engines are pinned chart dependencies, each turned off with
+<code>&lt;name&gt;.enabled=false</code> so an environment can use shared services instead:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Dependency</th>
+<th>Version</th>
+<th>Engine</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prometheus</code> (prometheus-community)</td>
+<td>29.35.0</td>
+<td>Prometheus v3.15.0, Alertmanager v0.34.1</td>
+<td>Static and DNS discovery only, no cluster RBAC. Sends alerts to Alertmanager</td>
+</tr>
+<tr>
+<td><code>grafana</code> (grafana-community)</td>
+<td>13.2.7</td>
+<td>Grafana 13.2.3</td>
+<td>Stateless; datasources and dashboards from source</td>
+</tr>
+<tr>
+<td><code>loki</code> (grafana-community)</td>
+<td>18.13.7</td>
+<td>Loki 3.7.8</td>
+<td>Monolithic, filesystem storage locally</td>
+</tr>
+<tr>
+<td><code>opentelemetry-collector</code> (alias <code>otelCollector</code>)</td>
+<td>0.175.0</td>
+<td>otelcol-contrib 0.161.0</td>
+<td>Same pipelines as before: metrics to Prometheus, logs to Loki</td>
+</tr>
+</tbody>
+</table></div>
+<p>Rules the chart keeps (checked by <code>make chart-check</code>): only namespaced
+objects, no CRDs; deterministic rendering (no random values, lookups or
+hooks), because Argo CD renders the chart itself; Secrets created outside the
+chart and referenced by name; renders with Helm 3 and Helm 4.</p>
+<h2 id="secrets">Secrets<a href="#secrets" class="anchor" title="Link to this section">#</a></h2>
+<p>The chart never creates Secrets. <code>scripts/kind.sh</code> creates kind-only values:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Secret</th>
+<th>Keys</th>
+<th>kind value</th>
+<th>Production</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>heartbeat-runtime</code></td>
+<td><code>admin-token</code></td>
+<td><code>local-admin-token</code></td>
+<td>External Secrets Operator</td>
+</tr>
+<tr>
+<td><code>grafana-admin</code></td>
+<td><code>admin-user</code>, <code>admin-password</code></td>
+<td><code>admin</code> / <code>admin</code></td>
+<td>Generated, External Secrets Operator</td>
+</tr>
+<tr>
+<td><code>heartbeat-sqlserver-dev-credentials</code></td>
+<td><code>HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV</code></td>
+<td>From <code>.env.sqlserver-dev</code></td>
+<td>Per-environment credential Secret</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="images">Images<a href="#images" class="anchor" title="Link to this section">#</a></h2>
+<p><code>make kind-images</code> builds both service images for the node's CPU architecture
+(it refuses a mismatch), tags each <code>dev-&lt;first 12 hex of the image ID&gt;</code> and
+loads them with <code>kind load</code>. Pods use <code>imagePullPolicy: Never</code>, so the cluster
+can only run what was loaded. The tag changes whenever the binary changes, so a
+code change always produces a new pod. Production references ECR images by
+digest (<code>image.digest</code>).</p>
+<h2 id="the-cluster">The cluster<a href="#the-cluster" class="anchor" title="Link to this section">#</a></h2>
+<p><code>make kind-up</code> creates <code>heartbeat</code> from the node image pinned in the Makefile
+(<code>KIND_NODE_IMAGE</code>, the newest Kubernetes minor EKS supports) and
+<code>infra/kind/cluster.yaml</code>. NodePorts map to the Compose-era host ports on
+127.0.0.1 only. Every <code>kubectl</code>/<code>helm</code> call in the scripts names the
+<code>kind-heartbeat</code> context, so they never act on another cluster.</p>
+<p>SQL Server is not in the cluster: <code>make sqlserver-dev-up</code> runs it as a Docker
+container on the <code>kind</code> network, and pods reach it by container name.</p>
+<h2 id="working-with-it">Working with it<a href="#working-with-it" class="anchor" title="Link to this section">#</a></h2>
+<pre><code class="language-bash">make kind-status                                   # pods and services
+kubectl --context kind-heartbeat -n heartbeat logs statefulset/db-collector
+kubectl --context kind-heartbeat -n heartbeat port-forward svc/loki 3100
+helm --kube-context kind-heartbeat -n heartbeat get values heartbeat
+EXTRA_VALUES=my-values.yaml make kind-deploy        # layer your own values
 </code></pre>
-<p><code>make k8s-up</code> builds only the collector image. For the gateway, build and load
-<code>heartbeat/otel-gateway:local</code> yourself:</p>
-<pre><code class="language-bash">docker build -t heartbeat/otel-gateway:local -f services/otel-gateway/Dockerfile .
-kind load docker-image heartbeat/otel-gateway:local
-</code></pre>
-<p>Expose PostgreSQL and the collector on your laptop:</p>
-<pre><code class="language-bash">make k8s-port-forward
-curl http://localhost:8082/healthz
-curl http://localhost:8082/readyz
-</code></pre>
-<p>Remove everything with <code>make k8s-down</code>.</p>
-<h2 id="add-a-sql-server-target">Add a SQL Server target<a href="#add-a-sql-server-target" class="anchor" title="Link to this section">#</a></h2>
-<ol>
-<li>Add the target to the <code>integrations.yaml</code> embedded in
-<code>infra/k8s/local/configmap-config.yaml</code>
-(see <a href="database-targets.html">database targets</a>).</li>
-<li>Make the credential available to the collector pod as
-<code>HEARTBEAT_CREDENTIAL_&lt;REF&gt;</code>
-(<a href="../reference/configuration.html#credential-resolution">credential resolution</a>).</li>
-<li>Re-apply with <code>make k8s-up</code>. ConfigMap updates reach the pod after kubelet
-propagation (up to about a minute); then reload the collector or wait for its
-file polling.</li>
-</ol>
+<p>Change the deployed config through values and <code>make kind-deploy</code>. Helm 4
+upgrades with server-side apply, so a field you edit by hand with <code>kubectl</code>
+(for example the integrations ConfigMap) becomes owned by kubectl, and the next
+upgrade fails with a conflict. Re-apply the chart's version with
+<code>--server-side --field-manager=helm --force-conflicts</code>, or delete the object
+and redeploy. In production Argo CD reverts such drift.</p>
+<h2 id="production">Production<a href="#production" class="anchor" title="Link to this section">#</a></h2>
+<p>Production values live in the <code>heartbeat-deploy</code> config repository and Argo CD
+renders the chart from them (ADR 0005).
+<a href="https://github.com/gdpais/Heartbeat/blob/master/infra/helm/values/production.example.yaml"><code>production.example.yaml</code></a>
+shows the shape (ECR digests, External Secrets, gp3 volumes, S3 for Loki,
+internal ALB for Grafana, Slack/Teams/WhatsApp and healthchecks.io receivers)
+and is rendered in CI so it stays valid. kind does not test cloud storage,
+networking, identity, ingress or TLS; those need testing in the target
+environment.</p>
 
     </article>
     <footer class="page-footer">
@@ -190,9 +316,13 @@ file polling.</li>
   <aside class="toc" aria-label="On this page">
     <h2>On this page</h2>
     <ul>
-      <li class="toc-h2"><a href="#what-it-deploys">What it deploys</a></li>
-      <li class="toc-h2"><a href="#run-it">Run it</a></li>
-      <li class="toc-h2"><a href="#add-a-sql-server-target">Add a SQL Server target</a></li>
+      <li class="toc-h2"><a href="#layout">Layout</a></li>
+      <li class="toc-h2"><a href="#what-the-chart-deploys">What the chart deploys</a></li>
+      <li class="toc-h2"><a href="#secrets">Secrets</a></li>
+      <li class="toc-h2"><a href="#images">Images</a></li>
+      <li class="toc-h2"><a href="#the-cluster">The cluster</a></li>
+      <li class="toc-h2"><a href="#working-with-it">Working with it</a></li>
+      <li class="toc-h2"><a href="#production">Production</a></li>
     </ul>
   </aside>
 </div>

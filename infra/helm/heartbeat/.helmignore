@@ -1,0 +1,6 @@
+# promtool unit tests run from the source tree (make rules-check); they are not
+# chart content.
+files/prometheus/rules/tests/
+.DS_Store
+*.swp
+*.tmp

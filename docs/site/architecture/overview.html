@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="../assets/style.css?v=8486b06a573b">
 <script defer src="../assets/site.js?v=5b67932127bb"></script>
 </head>
-<body data-root="../" data-search-index="assets/search-index.js?v=aa145c824108">
+<body data-root="../" data-search-index="assets/search-index.js?v=f810fed2c733">
 <a class="skip-link" href="#content">Skip to content</a>
 <header class="topbar">
   <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
@@ -51,9 +51,11 @@
       <section class="nav-group">
         <h2>Developers</h2>
         <ul class="nav-list">
+          <li><a href="../guides/kind-walkthrough.html">Walkthrough</a>
+          </li>
           <li><a href="../guides/local-development.html">Local development</a>
           </li>
-          <li><a href="../guides/kubernetes-local.html">Kubernetes (local)</a>
+          <li><a href="../guides/kubernetes-local.html">Kubernetes delivery</a>
           </li>
           <li><a href="data-model.html">Data model</a>
           </li>
@@ -63,6 +65,7 @@
               <li><a href="decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
               <li><a href="decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
               <li><a href="decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+              <li><a href="decisions/0005-production-delivery-and-operations-defaults.html">0005. Production delivery and operations defaults</a></li>
             </ul>
           </li>
           <li><a href="../services/db-collector/index.html">DB collector</a>
@@ -126,14 +129,16 @@ PostgreSQL holds the durable metadata used by the planned control plane.</p>
 configuration and people. Dashed outlines group components by environment
 or plane.</li>
 <li>Solid arrows are implemented or configured connections, not proof of a
-successful live deployment. Dashed arrows are planned; the <strong>amber arrow</strong>
-marks a known gap in otherwise-implemented components.</li>
+successful live deployment. Dashed arrows are planned; an <strong>amber arrow</strong>,
+where present, marks a known gap in otherwise-implemented components.</li>
 <li>The diagrams are SVG files in <a href="https://github.com/gdpais/Heartbeat/tree/master/docs/architecture/diagrams"><code>diagrams/</code></a>. Edit them together
 with this page when the architecture changes.</li>
 </ul>
 <h2 id="current-runtime">Current runtime<a href="#current-runtime" class="anchor" title="Link to this section">#</a></h2>
-<p>This diagram reflects the checked-in services and Compose configuration.</p>
-<p><img src="diagrams/current-runtime.svg" alt="Current runtime: SQL Server targets and OTLP clients feed the DB collector and OTel Collector; Prometheus, Loki and Alertmanager; Grafana and the operator"></p>
+<p>This diagram reflects the checked-in services and the Helm chart
+(<a href="https://github.com/gdpais/Heartbeat/tree/master/infra/helm/heartbeat"><code>infra/helm/heartbeat</code></a>), as deployed on kind and,
+with production values, on EKS.</p>
+<p><img src="diagrams/current-runtime.svg" alt="Current runtime: SQL Server targets and OTLP clients feed the DB collector and OTel Collector on Kubernetes; Prometheus, Loki and Alertmanager with its Watchdog dead-man's switch; Grafana and the operator"></p>
 <p>The default integration file has no SQL Server targets. Configure a target using
 the <a href="../guides/database-targets.html">database onboarding runbook</a>, or use the
 <a href="../guides/local-development.html#sql-server-sandbox">local development sandbox</a>, to collect database metrics.
@@ -169,25 +174,23 @@ is still pending.</p>
 <tr>
 <td>Prometheus</td>
 <td><code>:9090</code></td>
-<td>15s scrape. Rule files <code>heartbeat.rules.yml</code> and <code>generated/</code> (currently empty). No <code>alerting</code> block.</td>
+<td>15s scrape. Rule files <code>heartbeat.rules.yml</code> and <code>generated/</code> (currently empty). Sends alerts to Alertmanager.</td>
 </tr>
 <tr>
 <td>Alertmanager</td>
 <td><code>:9093</code></td>
-<td>One <code>default</code> webhook receiver pointing at the gateway, <code>send_resolved: true</code>.</td>
+<td><code>default</code> webhook receiver pointing at the gateway, <code>send_resolved: true</code>; the always-firing <code>Watchdog</code> alert routes to a <code>deadmans-switch</code> receiver (no integration on kind).</td>
 </tr>
 <tr>
 <td>Loki / Grafana</td>
 <td><code>:3100</code> / <code>:3000</code></td>
 <td>Grafana provisioned with Prometheus (default) and Loki data sources.</td>
 </tr>
-<tr>
-<td>PostgreSQL / Redis</td>
-<td><code>:5432</code> / <code>:6379</code></td>
-<td>Provisioned in Compose; no service reads or writes them yet.</td>
-</tr>
 </tbody>
 </table></div>
+<p>PostgreSQL and Redis are not deployed until a service uses them
+(<a href="decisions/0003-helm-on-kind-and-production.html">ADR 0003</a>); integration tests
+use a disposable PostgreSQL fixture.</p>
 <h2 id="target-platform">Target platform<a href="#target-platform" class="anchor" title="Link to this section">#</a></h2>
 <p>The target adds operator workflows around the telemetry path. The implemented
 collectors are collapsed into one node and Prometheus and Loki into one
@@ -207,9 +210,9 @@ current evidence sink does not retain them.</p>
 events (via the API into PostgreSQL), or removed once Alertmanager delivers
 notifications directly?</li>
 <li>Should the gateway export normalized events to the OTel Collector, and should
-its Compose <code>depends_on: otel-collector</code> wait for that?</li>
-<li>Who renders <code>infra/prometheus/rules/generated/</code> — the API (as drawn) or a
-build step?</li>
+it wait for the collector to be ready?</li>
+<li>Who renders the chart's <code>files/prometheus/rules/generated/</code> — the API (as
+drawn) or a build step?</li>
 </ul>
 <h2 id="data-ownership-and-boundaries">Data ownership and boundaries<a href="#data-ownership-and-boundaries" class="anchor" title="Link to this section">#</a></h2>
 <div class="table-wrap"><table>
@@ -260,18 +263,16 @@ recovery, replica ownership, fencing, and downstream buffering remain
 Oracle is a future target; Grafana Alloy is a later comparison, not a selected
 replacement in the current architecture.</p>
 <h2 id="implementation-references">Implementation references<a href="#implementation-references" class="anchor" title="Link to this section">#</a></h2>
-<p>These diagrams were checked against the repository on 2026-09-29; this is a
-source/configuration review, not live runtime validation.</p>
+<p>The current runtime diagram was checked against the chart and a kind
+deployment on 2026-10-03 (<code>make kind-e2e</code>).</p>
 <ul>
-<li><a href="https://github.com/gdpais/Heartbeat/blob/master/infra/docker-compose.yml">Compose services</a>,
-<a href="https://github.com/gdpais/Heartbeat/blob/master/infra/prometheus/prometheus.yml">Prometheus scrape/rule configuration</a>,
-<a href="https://github.com/gdpais/Heartbeat/blob/master/infra/otel-collector/config.yaml">OTel pipelines</a>, and
-<a href="https://github.com/gdpais/Heartbeat/blob/master/infra/alertmanager/alertmanager.yml">Alertmanager route</a>.</li>
+<li><a href="https://github.com/gdpais/Heartbeat/blob/master/infra/helm/heartbeat/values.yaml">Chart values</a>: Prometheus scrape jobs
+and alerting, OTel pipelines, Alertmanager routes, Grafana data sources;
+<a href="https://github.com/gdpais/Heartbeat/tree/master/infra/helm/heartbeat/templates">Heartbeat templates</a>.</li>
 <li><a href="https://github.com/gdpais/Heartbeat/blob/master/services/db-collector/internal/app/app.go">DB collector wiring</a>,
 <a href="https://github.com/gdpais/Heartbeat/blob/master/services/db-collector/internal/collectors/runner.go">probe runner and evidence sink</a>,
 and <a href="https://github.com/gdpais/Heartbeat/blob/master/services/otel-gateway/internal/app/app.go">gateway HTTP handlers</a>.</li>
-<li><a href="https://github.com/gdpais/Heartbeat/blob/master/config/integrations.yaml">Integration configuration</a>,
-<a href="https://github.com/gdpais/Heartbeat/blob/master/infra/grafana/provisioning/datasources/datasources.yml">Grafana data sources</a>,
+<li>Integration configuration (the chart's <code>integrations</code> values),
 <a href="workflows.html">operator workflows</a>, <a href="data-model.html">data model</a>, and
 <a href="https://github.com/gdpais/Heartbeat/blob/master/TODO.md">implementation checklist</a>.</li>
 </ul>

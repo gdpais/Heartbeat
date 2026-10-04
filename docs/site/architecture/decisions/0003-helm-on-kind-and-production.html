@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="../../assets/style.css?v=8486b06a573b">
 <script defer src="../../assets/site.js?v=5b67932127bb"></script>
 </head>
-<body data-root="../../" data-search-index="assets/search-index.js?v=aa145c824108">
+<body data-root="../../" data-search-index="assets/search-index.js?v=f810fed2c733">
 <a class="skip-link" href="#content">Skip to content</a>
 <header class="topbar">
   <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
@@ -51,9 +51,11 @@
       <section class="nav-group">
         <h2>Developers</h2>
         <ul class="nav-list">
+          <li><a href="../../guides/kind-walkthrough.html">Walkthrough</a>
+          </li>
           <li><a href="../../guides/local-development.html">Local development</a>
           </li>
-          <li><a href="../../guides/kubernetes-local.html">Kubernetes (local)</a>
+          <li><a href="../../guides/kubernetes-local.html">Kubernetes delivery</a>
           </li>
           <li><a href="../data-model.html">Data model</a>
           </li>
@@ -63,6 +65,7 @@
               <li><a href="0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
               <li><a href="0003-helm-on-kind-and-production.html" aria-current="page">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
               <li><a href="0004-core-technology-choices.html">0004. Core technology choices</a></li>
+              <li><a href="0005-production-delivery-and-operations-defaults.html">0005. Production delivery and operations defaults</a></li>
             </ul>
           </li>
           <li><a href="../../services/db-collector/index.html">DB collector</a>
@@ -103,16 +106,18 @@
       <ul>
         <li class="toc-h2"><a href="#context">Context</a></li>
         <li class="toc-h2"><a href="#decision">Decision</a></li>
-        <li class="toc-h2"><a href="#proposed-design-current-working-plan-subject-to-change">Proposed design (current working plan, subject to change)</a></li>
+        <li class="toc-h2"><a href="#proposed-design-as-planned-see-implementation-for-what-changed">Proposed design (as planned; see Implementation for what changed)</a></li>
         <li class="toc-h2"><a href="#consequences-and-risks">Consequences and risks</a></li>
         <li class="toc-h2"><a href="#acceptance-criteria">Acceptance criteria</a></li>
+        <li class="toc-h2"><a href="#implementation-2026-10-03">Implementation (2026-10-03)</a></li>
         <li class="toc-h2"><a href="#open-decisions">Open decisions</a></li>
       </ul>
     </details>
     <article class="markdown">
 <h1 id="0003-deliver-the-platform-with-helm-on-kind-and-production-kubernetes">0003. Deliver the platform with Helm on kind and production Kubernetes<a href="#0003-deliver-the-platform-with-helm-on-kind-and-production-kubernetes" class="anchor" title="Link to this section">#</a></h1>
 <ul>
-<li>Status: Accepted (direction). Implementation not started.</li>
+<li>Status: Accepted. Implemented for kind and CI on 2026-10-03; production
+delivery follows <a href="0005-production-delivery-and-operations-defaults.html">ADR 0005</a>.</li>
 <li>Date: 2026-09-29</li>
 </ul>
 <h2 id="context">Context<a href="#context" class="anchor" title="Link to this section">#</a></h2>
@@ -138,7 +143,7 @@ fixture) stays as Docker fixtures.</li>
 <li>Keep the <strong>collector a singleton</strong> until explicit target ownership across
 replicas exists; never scale it by raising the replica count.</li>
 </ul>
-<h2 id="proposed-design-current-working-plan-subject-to-change">Proposed design (current working plan, subject to change)<a href="#proposed-design-current-working-plan-subject-to-change" class="anchor" title="Link to this section">#</a></h2>
+<h2 id="proposed-design-as-planned-see-implementation-for-what-changed">Proposed design (as planned; see Implementation for what changed)<a href="#proposed-design-as-planned-see-implementation-for-what-changed" class="anchor" title="Link to this section">#</a></h2>
 <ul>
 <li>One umbrella chart <code>heartbeat</code> owns Heartbeat workloads and content
 (collector, gateway, integrations config, Prometheus rules, Grafana
@@ -206,11 +211,118 @@ collection gap and SQL-side concurrency are measured.</li>
 are isolated and cannot delete developer resources.</li>
 <li>The daily development loop meets an agreed time and resource budget.</li>
 </ul>
+<h2 id="implementation-2026-10-03">Implementation (2026-10-03)<a href="#implementation-2026-10-03" class="anchor" title="Link to this section">#</a></h2>
+<p>The chart is <a href="https://github.com/gdpais/Heartbeat/tree/master/infra/helm/heartbeat"><code>infra/helm/heartbeat</code></a>, values are
+in <a href="https://github.com/gdpais/Heartbeat/tree/master/infra/helm/values"><code>infra/helm/values</code></a>, and the workflow is
+<code>make kind-*</code> (<a href="../../guides/kubernetes-local.html">guide</a>). The proposed design
+was followed, with these differences:</p>
+<ul>
+<li>Object names are fixed (<code>db-collector</code>, <code>prometheus</code>, <code>alertmanager</code>, <code>loki</code>,
+<code>otel-collector</code>, ...) and one release runs per namespace, so in-cluster
+addresses match the Compose-era names that <code>integrations.yaml</code> and the engine
+configs already used.</li>
+<li>Grafana and Loki come from the <code>grafana-community</code> chart repository, where
+Grafana moved those charts. Every engine chart pins the same engine version
+Compose ran.</li>
+<li>The integrations schema is embedded in the chart's <code>values.schema.json</code>, so
+Helm rejects invalid config before applying anything; a Go test keeps the
+copy in sync and loads each rendered profile with the Go loader.</li>
+<li>Loki has no host port: its chart cannot set a NodePort. It is reached through
+Grafana or <code>kubectl port-forward</code>.</li>
+<li>PostgreSQL, Redis and the platform Compose stack were removed. Compose
+remains only as the disposable PostgreSQL test fixture.</li>
+<li>Helm 4 upgrades with server-side apply, so a hand edit to a chart-owned field
+makes the next upgrade conflict until the chart's version is re-applied.</li>
+</ul>
+<p>Acceptance criteria and how they are checked (<code>make chart-check</code> and
+<code>make kind-e2e</code>, both in CI). Measurements are from one kind run on an AMD64
+host; the e2e script prints them on every run.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Criterion</th>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Fresh cluster loads both images on the node's architecture; all workloads ready</td>
+<td>e2e; <code>kind.sh</code> refuses an architecture mismatch</td>
+<td>All 7 workloads ready; full deploy about 50s after images load</td>
+</tr>
+<tr>
+<td>One chart renders for kind, CI and production values</td>
+<td>chart-check over 5 profiles, Helm 4 and Helm 3</td>
+<td>Pass</td>
+</tr>
+<tr>
+<td>A pod reaches the Docker SQL target (DNS, TCP, auth, TLS) without widening exposure</td>
+<td>e2e; SQL Server on the kind network, no host port in CI, loopback only locally</td>
+<td>Target up</td>
+</tr>
+<tr>
+<td>A code change produces a new running image</td>
+<td>Content-derived tags, <code>imagePullPolicy: Never</code>; e2e compares the running image to the built tag</td>
+<td>Pass</td>
+</tr>
+<tr>
+<td>Target metrics fresh in Prometheus; Grafana shows the target</td>
+<td>e2e queries Prometheus and Grafana's datasource proxy</td>
+<td>Pass</td>
+</tr>
+<tr>
+<td>Valid ConfigMap update changes the config version</td>
+<td>e2e, same pod</td>
+<td>About 65s (kubelet sync dominates)</td>
+</tr>
+<tr>
+<td>Invalid ConfigMap update rejected visibly while collection continues</td>
+<td>e2e checks <code>last_reload_err</code>, version and freshness</td>
+<td>Reported after about 90s; collection uninterrupted</td>
+</tr>
+<tr>
+<td>Partial reload failure rolls back or reports divergence</td>
+<td>Unit tests in the collector (not repeated on kind)</td>
+<td>Pass</td>
+</tr>
+<tr>
+<td>Unavailable target shows failed; others continue; no restart</td>
+<td>e2e stops the SQL container; a second, unresolvable target stays failed</td>
+<td>Down after about 20s, recovered about 60s after restart, restartCount 0</td>
+</tr>
+<tr>
+<td>Singleton update drains the old pod first; gap and SQL concurrency measured</td>
+<td>e2e samples running pods and SQL Server sessions every second during a rollout</td>
+<td>Never more than 1 collector or 2 sessions; collection gap 12s and 31s in two runs at a 20s scrape interval</td>
+</tr>
+<tr>
+<td>Stateful restart keeps persistent data</td>
+<td>e2e replaces the Prometheus and Alertmanager pods</td>
+<td>TSDB and silences kept</td>
+</tr>
+<tr>
+<td>Concurrent CI runs isolated, cannot delete developer resources</td>
+<td>e2e uses its own cluster name, kubeconfig and container names, and deletes only those</td>
+<td>By construction</td>
+</tr>
+<tr>
+<td>Daily loop meets an agreed budget</td>
+<td>Measured, budget not yet agreed</td>
+<td>Full profile about 2.0 GiB RAM in the kind node (SQL Server sandbox +0.9 GiB); redeploy under a minute; <code>minimal</code> profile for smaller machines</td>
+</tr>
+</tbody>
+</table></div>
+<p>Not covered by kind (risk 4): cloud storage classes, ingress and TLS, IAM and
+External Secrets, ECR pulls, and SQL connectivity from the EKS VPC.</p>
 <h2 id="open-decisions">Open decisions<a href="#open-decisions" class="anchor" title="Link to this section">#</a></h2>
 <p>Production Kubernetes distribution and cloud; image and chart registry; deploy
 mechanism (GitOps or CI); where production values live; dead-man's-switch
 service; secrets backend; Grafana SSO provider. These are tracked in
 <a href="https://github.com/gdpais/Heartbeat/blob/master/TODO.md">TODO.md</a>.</p>
+<p>Update 2026-09-30: decided in
+<a href="0005-production-delivery-and-operations-defaults.html">ADR 0005</a> (AWS EKS, Argo CD,
+ECR, AWS Secrets Manager, alert channels, Grafana access).</p>
 
     </article>
     <footer class="page-footer">
@@ -222,9 +334,10 @@ service; secrets backend; Grafana SSO provider. These are tracked in
     <ul>
       <li class="toc-h2"><a href="#context">Context</a></li>
       <li class="toc-h2"><a href="#decision">Decision</a></li>
-      <li class="toc-h2"><a href="#proposed-design-current-working-plan-subject-to-change">Proposed design (current working plan, subject to change)</a></li>
+      <li class="toc-h2"><a href="#proposed-design-as-planned-see-implementation-for-what-changed">Proposed design (as planned; see Implementation for what changed)</a></li>
       <li class="toc-h2"><a href="#consequences-and-risks">Consequences and risks</a></li>
       <li class="toc-h2"><a href="#acceptance-criteria">Acceptance criteria</a></li>
+      <li class="toc-h2"><a href="#implementation-2026-10-03">Implementation (2026-10-03)</a></li>
       <li class="toc-h2"><a href="#open-decisions">Open decisions</a></li>
     </ul>
   </aside>

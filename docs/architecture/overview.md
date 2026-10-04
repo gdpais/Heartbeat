@@ -13,16 +13,18 @@ PostgreSQL holds the durable metadata used by the planned control plane.
   configuration and people. Dashed outlines group components by environment
   or plane.
 - Solid arrows are implemented or configured connections, not proof of a
-  successful live deployment. Dashed arrows are planned; the **amber arrow**
-  marks a known gap in otherwise-implemented components.
+  successful live deployment. Dashed arrows are planned; an **amber arrow**,
+  where present, marks a known gap in otherwise-implemented components.
 - The diagrams are SVG files in [`diagrams/`](diagrams/). Edit them together
   with this page when the architecture changes.
 
 ## Current runtime
 
-This diagram reflects the checked-in services and Compose configuration.
+This diagram reflects the checked-in services and the Helm chart
+([`infra/helm/heartbeat`](../../infra/helm/heartbeat)), as deployed on kind and,
+with production values, on EKS.
 
-![Current runtime: SQL Server targets and OTLP clients feed the DB collector and OTel Collector; Prometheus, Loki and Alertmanager; Grafana and the operator](diagrams/current-runtime.svg)
+![Current runtime: SQL Server targets and OTLP clients feed the DB collector and OTel Collector on Kubernetes; Prometheus, Loki and Alertmanager with its Watchdog dead-man's switch; Grafana and the operator](diagrams/current-runtime.svg)
 
 The default integration file has no SQL Server targets. Configure a target using
 the [database onboarding runbook](../guides/database-targets.md), or use the
@@ -40,10 +42,13 @@ is still pending.
 | DB collector | `:8082` — `/metrics`, `/healthz`, `/readyz`, `/admin/config`, `POST /admin/config/reload` | Reload also on SIGHUP, and on file change when `HEARTBEAT_CONFIG_WATCH_INTERVAL` is set. Credentials resolved from `HEARTBEAT_CREDENTIAL_*`. |
 | OTel Collector | OTLP `:4317` gRPC / `:4318` HTTP; Prometheus export `:8889`; health `:13133` | Drops `user_id`, `session_id`, `request_id`, `client_ip` from log attributes. |
 | OTel gateway | `:8083` — `/metrics`, `/healthz`, `/readyz`, `POST /v1/heartbeat/events`, `POST /v1/heartbeat/alerts` | Events are normalized and returned to the caller, not exported. Alerts are counted, not stored or delivered. |
-| Prometheus | `:9090` | 15s scrape. Rule files `heartbeat.rules.yml` and `generated/` (currently empty). No `alerting` block. |
-| Alertmanager | `:9093` | One `default` webhook receiver pointing at the gateway, `send_resolved: true`. |
+| Prometheus | `:9090` | 15s scrape. Rule files `heartbeat.rules.yml` and `generated/` (currently empty). Sends alerts to Alertmanager. |
+| Alertmanager | `:9093` | `default` webhook receiver pointing at the gateway, `send_resolved: true`; the always-firing `Watchdog` alert routes to a `deadmans-switch` receiver (no integration on kind). |
 | Loki / Grafana | `:3100` / `:3000` | Grafana provisioned with Prometheus (default) and Loki data sources. |
-| PostgreSQL / Redis | `:5432` / `:6379` | Provisioned in Compose; no service reads or writes them yet. |
+
+PostgreSQL and Redis are not deployed until a service uses them
+([ADR 0003](decisions/0003-helm-on-kind-and-production.md)); integration tests
+use a disposable PostgreSQL fixture.
 
 ## Target platform
 
@@ -68,9 +73,9 @@ current evidence sink does not retain them.
   events (via the API into PostgreSQL), or removed once Alertmanager delivers
   notifications directly?
 - Should the gateway export normalized events to the OTel Collector, and should
-  its Compose `depends_on: otel-collector` wait for that?
-- Who renders `infra/prometheus/rules/generated/` — the API (as drawn) or a
-  build step?
+  it wait for the collector to be ready?
+- Who renders the chart's `files/prometheus/rules/generated/` — the API (as
+  drawn) or a build step?
 
 ## Data ownership and boundaries
 
@@ -92,18 +97,16 @@ replacement in the current architecture.
 
 ## Implementation references
 
-These diagrams were checked against the repository on 2026-09-29; this is a
-source/configuration review, not live runtime validation.
+The current runtime diagram was checked against the chart and a kind
+deployment on 2026-10-03 (`make kind-e2e`).
 
-- [Compose services](../../infra/docker-compose.yml),
-  [Prometheus scrape/rule configuration](../../infra/prometheus/prometheus.yml),
-  [OTel pipelines](../../infra/otel-collector/config.yaml), and
-  [Alertmanager route](../../infra/alertmanager/alertmanager.yml).
+- [Chart values](../../infra/helm/heartbeat/values.yaml): Prometheus scrape jobs
+  and alerting, OTel pipelines, Alertmanager routes, Grafana data sources;
+  [Heartbeat templates](../../infra/helm/heartbeat/templates/).
 - [DB collector wiring](../../services/db-collector/internal/app/app.go),
   [probe runner and evidence sink](../../services/db-collector/internal/collectors/runner.go),
   and [gateway HTTP handlers](../../services/otel-gateway/internal/app/app.go).
-- [Integration configuration](../../config/integrations.yaml),
-  [Grafana data sources](../../infra/grafana/provisioning/datasources/datasources.yml),
+- Integration configuration (the chart's `integrations` values),
   [operator workflows](workflows.md), [data model](data-model.md), and
   [implementation checklist](../../TODO.md).
 

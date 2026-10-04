@@ -1,0 +1,12 @@
+{{- if or .Values.dbCollector.enabled .Values.otelGateway.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "heartbeat.integrationsConfigMap" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "heartbeat.labels" . | nindent 4 }}
+data:
+  integrations.yaml: |
+    {{- include "heartbeat.integrationsYaml" . | nindent 4 }}
+{{- end }}

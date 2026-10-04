@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Heartbeat chart values",
+  "description": "Validates the embedded integrations.yaml. properties.integrations is a copy of packages/config-schema/src/integrations.schema.json (without $schema); tests/chart_values_test.go fails when they differ.",
+  "type": "object",
+  "required": [
+    "integrations"
+  ],
+  "properties": {
+    "integrations": {
+      "$id": "https://heartbeat.local/schemas/integrations.schema.json",
+      "title": "Heartbeat Integrations Config",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grafana",
+        "loki",
+        "alertmanager",
+        "collectors"
+      ],
+      "properties": {
+        "grafana": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "base_url",
+            "dashboard_templates"
+          ],
+          "properties": {
+            "base_url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "dashboard_templates": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "deep_link_templates": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "loki": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "base_url"
+          ],
+          "properties": {
+            "base_url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "endpoint": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        },
+        "alertmanager": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "base_url"
+          ],
+          "properties": {
+            "base_url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "endpoint": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        },
+        "opentelemetry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "endpoint"
+          ],
+          "properties": {
+            "endpoint": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        },
+        "notification_channels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "channel_type",
+              "target_ref"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "channel_type": {
+                "type": "string"
+              },
+              "target_ref": {
+                "type": "string"
+              },
+              "credential_ref": {
+                "type": "string"
+              },
+              "config": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "credential_refs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "collectors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "kind",
+              "enabled"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "credential_ref": {
+                "type": "string"
+              },
+              "config": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "environment": {
+                    "type": "string"
+                  },
+                  "scrape_interval": {
+                    "type": "string"
+                  },
+                  "target_names": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "probes": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/probe"
+                    }
+                  },
+                  "targets": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/target"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "$defs": {
+        "probe": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "query_template": {
+              "type": "string"
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "host",
+            "port"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "environment": {
+              "type": "string"
+            },
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "database_name": {
+              "type": "string"
+            },
+            "credential_ref": {
+              "type": "string"
+            },
+            "probes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/probe"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

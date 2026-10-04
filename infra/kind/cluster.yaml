@@ -1,0 +1,17 @@
+# Local kind cluster for Heartbeat. scripts/kind.sh creates it with the node
+# image pinned in the Makefile (KIND_NODE_IMAGE).
+#
+# Host ports are the ones the Compose stack used, bound to 127.0.0.1 only. Each
+# maps to a fixed NodePort set in infra/helm/values/kind.yaml.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - {containerPort: 30300, hostPort: 3000, listenAddress: 127.0.0.1, protocol: TCP} # Grafana
+      - {containerPort: 30090, hostPort: 9090, listenAddress: 127.0.0.1, protocol: TCP} # Prometheus
+      - {containerPort: 30093, hostPort: 9093, listenAddress: 127.0.0.1, protocol: TCP} # Alertmanager
+      - {containerPort: 30082, hostPort: 8082, listenAddress: 127.0.0.1, protocol: TCP} # DB collector
+      - {containerPort: 30083, hostPort: 8083, listenAddress: 127.0.0.1, protocol: TCP} # OTel gateway
+      - {containerPort: 30317, hostPort: 4317, listenAddress: 127.0.0.1, protocol: TCP} # OTLP gRPC
+      - {containerPort: 30318, hostPort: 4318, listenAddress: 127.0.0.1, protocol: TCP} # OTLP HTTP

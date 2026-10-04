@@ -1,7 +1,7 @@
 # Heartbeat OTel Gateway
 
 A thin Go service for platform-specific telemetry normalization. The stock
-OpenTelemetry Collector (`infra/otel-collector/config.yaml`) remains responsible
+OpenTelemetry Collector (`otelCollector.config` in the [Helm chart values](../../infra/helm/heartbeat/values.yaml)) remains responsible
 for OTLP ingest, processing and routing. The gateway exists only for parsing
 that collector configuration cannot express cleanly, starting with OutSystems.
 See [operator workflows](../../docs/architecture/workflows.md#application-telemetry-ingestion-outsystems-first).
@@ -52,6 +52,6 @@ curl -s -X POST http://localhost:8083/v1/heartbeat/events \
 
 ## Next steps
 
-Tracked in [TODO.md](../../TODO.md) §4.3: OutSystems parsers, forwarding
+Tracked in [TODO.md](../../TODO.md) §3.3: OutSystems parsers, forwarding
 normalized events to the OTel Collector, and deciding what the alert endpoint
 becomes ([open questions](../../docs/architecture/overview.md#open-questions)).

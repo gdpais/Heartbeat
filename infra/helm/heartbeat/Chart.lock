@@ -1,0 +1,15 @@
+dependencies:
+- name: prometheus
+  repository: https://prometheus-community.github.io/helm-charts
+  version: 29.35.0
+- name: grafana
+  repository: https://grafana-community.github.io/helm-charts
+  version: 13.2.7
+- name: loki
+  repository: https://grafana-community.github.io/helm-charts
+  version: 18.13.7
+- name: opentelemetry-collector
+  repository: https://open-telemetry.github.io/opentelemetry-helm-charts
+  version: 0.175.0
+digest: sha256:1bba00c39f5832231f7691aa01c075ec58e5e177c78be675cb99076c26dcd1e9
+generated: "2026-10-03T18:27:53Z"

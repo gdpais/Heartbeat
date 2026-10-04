@@ -1,0 +1,42 @@
+# Throwaway local SQL Server target (make sqlserver-dev-up). Layer after
+# kind.yaml. The container runs in Docker on the kind network, so the
+# collector reaches it by container name.
+#
+# It logs in as sa and trusts the container's self-signed certificate. Both are
+# acceptable only because the container is disposable; real targets need a
+# dedicated login and a trusted certificate (docs/guides/database-targets.md).
+
+dbCollector:
+  # Created by scripts/kind.sh from .env.sqlserver-dev; holds
+  # HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV=sa:<password>.
+  credentials:
+    existingSecret: heartbeat-sqlserver-dev-credentials
+  sqlserver:
+    trustServerCertificate: true
+
+integrations:
+  credential_refs:
+    sqlserver-dev: env/sqlserver-dev
+  collectors:
+    - id: sqlserver-dev
+      kind: sqlserver
+      enabled: true
+      credential_ref: kv/sqlserver-dev
+      config:
+        environment: local-dev
+        scrape_interval: 15s
+        target_names: []
+        probes:
+          - name: waits
+          - name: blocking
+          - name: sessions
+          - name: memory_pressure
+          - name: storage
+          - name: throughput
+        targets:
+          - name: sqlserver-dev
+            environment: local-dev
+            host: heartbeat-sqlserver-dev
+            port: 1433
+            database_name: master
+            credential_ref: env/sqlserver-dev

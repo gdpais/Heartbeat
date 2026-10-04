@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="../assets/style.css?v=8486b06a573b">
 <script defer src="../assets/site.js?v=5b67932127bb"></script>
 </head>
-<body data-root="../" data-search-index="assets/search-index.js?v=aa145c824108">
+<body data-root="../" data-search-index="assets/search-index.js?v=f810fed2c733">
 <a class="skip-link" href="#content">Skip to content</a>
 <header class="topbar">
   <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
@@ -51,9 +51,11 @@
       <section class="nav-group">
         <h2>Developers</h2>
         <ul class="nav-list">
+          <li><a href="../guides/kind-walkthrough.html">Walkthrough</a>
+          </li>
           <li><a href="../guides/local-development.html">Local development</a>
           </li>
-          <li><a href="../guides/kubernetes-local.html">Kubernetes (local)</a>
+          <li><a href="../guides/kubernetes-local.html">Kubernetes delivery</a>
           </li>
           <li><a href="../architecture/data-model.html">Data model</a>
           </li>
@@ -63,6 +65,7 @@
               <li><a href="../architecture/decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
               <li><a href="../architecture/decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
               <li><a href="../architecture/decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+              <li><a href="../architecture/decisions/0005-production-delivery-and-operations-defaults.html">0005. Production delivery and operations defaults</a></li>
             </ul>
           </li>
           <li><a href="../services/db-collector/index.html">DB collector</a>
@@ -101,7 +104,7 @@
     <details class="toc-inline">
       <summary>On this page</summary>
       <ul>
-        <li class="toc-h2"><a href="#local-ports-docker-compose">Local ports (Docker Compose)</a></li>
+        <li class="toc-h2"><a href="#local-ports-kind">Local ports (kind)</a></li>
         <li class="toc-h2"><a href="#db-collector-8082">DB collector (:8082)</a></li>
         <li class="toc-h2"><a href="#otel-gateway-8083">OTel gateway (:8083)</a></li>
         <li class="toc-h2"><a href="#metrics">Metrics</a></li>
@@ -117,7 +120,9 @@
 <p>Ports, HTTP endpoints and Prometheus metrics exposed by the local stack and
 Heartbeat services. For how the pieces connect, see the
 <a href="../architecture/overview.html">architecture overview</a>.</p>
-<h2 id="local-ports-docker-compose">Local ports (Docker Compose)<a href="#local-ports-docker-compose" class="anchor" title="Link to this section">#</a></h2>
+<h2 id="local-ports-kind">Local ports (kind)<a href="#local-ports-kind" class="anchor" title="Link to this section">#</a></h2>
+<p>The kind cluster (<a href="https://github.com/gdpais/Heartbeat/blob/master/infra/kind/cluster.yaml"><code>infra/kind/cluster.yaml</code></a>)
+maps fixed NodePorts to these ports on 127.0.0.1 only.</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -135,7 +140,7 @@ Heartbeat services. For how the pieces connect, see the
 <tr>
 <td>OTel gateway</td>
 <td>8083</td>
-<td>Heartbeat service</td>
+<td>Heartbeat service (<code>full</code> profile)</td>
 </tr>
 <tr>
 <td>Prometheus</td>
@@ -148,37 +153,31 @@ Heartbeat services. For how the pieces connect, see the
 <td>Local login <code>admin</code>/<code>admin</code>, anonymous viewer enabled. <strong>Local only.</strong></td>
 </tr>
 <tr>
-<td>Loki</td>
-<td>3100</td>
-<td></td>
-</tr>
-<tr>
 <td>Alertmanager</td>
 <td>9093</td>
 <td></td>
 </tr>
 <tr>
 <td>OpenTelemetry Collector</td>
-<td>4317 (OTLP gRPC), 4318 (OTLP HTTP), 8889 (Prometheus export), 13133 (health)</td>
-<td></td>
+<td>4317 (OTLP gRPC), 4318 (OTLP HTTP)</td>
+<td><code>full</code> profile</td>
 </tr>
 <tr>
-<td>PostgreSQL</td>
-<td>5432</td>
-<td>Schema only; no service uses it yet</td>
+<td>Loki</td>
+<td>none</td>
+<td>In-cluster only (<code>loki:3100</code>); query it through Grafana, or <code>kubectl port-forward svc/loki 3100</code></td>
 </tr>
 <tr>
-<td>Redis</td>
-<td>6379</td>
-<td>No service uses it yet</td>
-</tr>
-<tr>
-<td>SQL Server (dev overlay only)</td>
+<td>SQL Server (dev target only)</td>
 <td>127.0.0.1:11433</td>
-<td>Loopback-bound; see the <a href="../guides/local-development.html">local development guide</a></td>
+<td>Loopback-bound Docker container; see the <a href="../guides/local-development.html#sql-server-sandbox">local development guide</a></td>
 </tr>
 </tbody>
 </table></div>
+<p>Inside the cluster every component keeps its Compose-era name and port
+(<code>prometheus:9090</code>, <code>alertmanager:9093</code>, <code>loki:3100</code>, <code>otel-collector:4318</code>,
+<code>otel-gateway:8083</code>, <code>db-collector:8082</code>). PostgreSQL and Redis are not deployed
+until a service uses them (ADR 0003).</p>
 <h2 id="db-collector-8082">DB collector (<code>:8082</code>)<a href="#db-collector-8082" class="anchor" title="Link to this section">#</a></h2>
 <div class="table-wrap"><table>
 <thead>
@@ -298,12 +297,16 @@ counters from SQL Server but are exported as gauges; see
 <td><code>throughput</code></td>
 <td><code>sys.dm_os_performance_counters</code></td>
 <td><code>heartbeat_sqlserver_throughput</code></td>
-<td><code>counter_name</code></td>
+<td><code>counter_name</code> (server-wide <code>Batch Requests/sec</code> and <code>Transactions/sec</code>)</td>
 </tr>
 </tbody>
 </table></div>
 <p>A failed probe clears its series instead of exporting stale values, and a
-removed collector's series are deleted. The catalog lives in
+removed collector's series are deleted. A probe that returns no rows exports no
+series: <code>heartbeat_sqlserver_blocked_requests</code> is absent, not 0, while nothing
+is blocked. Queries that need a zero fall back to targets whose last cycle
+succeeded (<code>heartbeat_collector_target_up == 1</code>), as the dashboard's Blocked
+Requests panel does, so an unreachable target never reads as 0. The catalog lives in
 <a href="https://github.com/gdpais/Heartbeat/blob/master/services/db-collector/internal/probes/sqlserver/catalog.go"><code>catalog.go</code></a>.</p>
 <h3 id="collector-self-observability">Collector self-observability<a href="#collector-self-observability" class="anchor" title="Link to this section">#</a></h3>
 <div class="table-wrap"><table>
@@ -357,10 +360,14 @@ removed collector's series are deleted. The catalog lives in
 </tbody>
 </table></div>
 <h3 id="prometheus-scrape-jobs-and-rules">Prometheus scrape jobs and rules<a href="#prometheus-scrape-jobs-and-rules" class="anchor" title="Link to this section">#</a></h3>
-<p>Scrape jobs (<a href="https://github.com/gdpais/Heartbeat/blob/master/infra/prometheus/prometheus.yml"><code>prometheus.yml</code></a>):
-<code>prometheus</code>, <code>otel-collector</code>, <code>db-collector</code>, <code>otel-gateway</code>, <code>alertmanager</code>,
-<code>loki</code>.</p>
-<p>Rules (<a href="https://github.com/gdpais/Heartbeat/blob/master/infra/prometheus/rules/heartbeat.rules.yml"><code>heartbeat.rules.yml</code></a>):</p>
+<p>Scrape jobs (<code>prometheus.scrapeConfigs</code> in the chart's
+<a href="https://github.com/gdpais/Heartbeat/blob/master/infra/helm/heartbeat/values.yaml"><code>values.yaml</code></a>): <code>prometheus</code>,
+<code>otel-collector</code>, <code>db-collector</code>, <code>otel-gateway</code>, <code>alertmanager</code>, <code>loki</code>; the
+<code>minimal</code> profile drops the last three it does not deploy. <code>db-collector</code> uses
+DNS discovery on the headless <code>db-collector-headless</code> Service, which lists the
+pod even while it is unready, so the collector's failure metrics are still
+scraped. Prometheus sends alerts to <code>alertmanager:9093</code>.</p>
+<p>Rules (<a href="https://github.com/gdpais/Heartbeat/blob/master/infra/helm/heartbeat/files/prometheus/rules/heartbeat.rules.yml"><code>heartbeat.rules.yml</code></a>):</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -374,8 +381,16 @@ removed collector's series are deleted. The catalog lives in
 <td>Recording</td>
 </tr>
 <tr>
-<td><code>heartbeat:sqlserver_wait_seconds:rate5m</code>, <code>heartbeat:sqlserver_blocking_sessions:sum</code>, <code>heartbeat:sqlserver_connections:sum</code></td>
-<td>Recording (broken, see below)</td>
+<td><code>heartbeat:sqlserver_wait_seconds:rate5m</code></td>
+<td>Recording: wait seconds per second by <code>wait_type</code>, from <code>heartbeat_sqlserver_wait_time_ms</code></td>
+</tr>
+<tr>
+<td><code>heartbeat:sqlserver_blocked_requests:sum</code></td>
+<td>Recording: blocked requests per target; 0 when the target's last cycle succeeded and nothing is blocked</td>
+</tr>
+<tr>
+<td><code>heartbeat:sqlserver_sessions:sum</code></td>
+<td>Recording: sessions per target, all statuses</td>
 </tr>
 <tr>
 <td><code>heartbeat:outsystems_events:rate5m</code></td>
@@ -385,25 +400,33 @@ removed collector's series are deleted. The catalog lives in
 <td><code>HeartbeatServiceDown</code></td>
 <td>Alert: <code>up == 0</code> for the collector, gateway or OTel Collector</td>
 </tr>
+<tr>
+<td><code>Watchdog</code></td>
+<td>Alert: always firing. Alertmanager routes it to the <code>deadmans-switch</code> receiver (healthchecks.io in production, ADR 0005), which notifies when it stops arriving</td>
+</tr>
 </tbody>
 </table></div>
-<p><code>infra/prometheus/rules/generated/</code> is loaded but empty; it is reserved for
-rules rendered from alert policies.</p>
+<p><code>files/prometheus/rules/generated/</code> (in the chart) is loaded but empty; it is
+reserved for rules rendered from alert policies. The chart ships all rule files
+in the <code>heartbeat-prometheus-rules</code> ConfigMap. <code>make rules-check</code> validates the
+rules and runs their promtool unit tests (<code>files/prometheus/rules/tests/</code>), and a Go test
+fails if a rule or dashboard references a SQL Server metric the probe catalog
+does not emit.</p>
 <h2 id="known-gaps">Known gaps<a href="#known-gaps" class="anchor" title="Link to this section">#</a></h2>
 <ul>
-<li><strong>SQL Server recording rules reference old metric names.</strong> They use
-<code>heartbeat_sqlserver_wait_seconds_total</code>, <code>heartbeat_sqlserver_blocking_sessions</code>
-and <code>heartbeat_sqlserver_connections</code>, but the collector emits
-<code>heartbeat_sqlserver_wait_time_ms</code>, <code>heartbeat_sqlserver_blocked_requests</code> and
-<code>heartbeat_sqlserver_sessions</code>. The Grafana SQL Server dashboard already uses
-the current names. Tracked in TODO §15.0.</li>
-<li><strong>Counter semantics.</strong> Cumulative SQL Server values (waits) are exported as
-gauges, so <code>rate()</code> works only while the counter is monotonic; SQL Server
-restarts reset it.</li>
-<li><strong>No alert delivery.</strong> Prometheus has no <code>alerting</code> block, so alerts do not
-reach Alertmanager.</li>
+<li><strong>Counter semantics.</strong> Cumulative SQL Server values are exported as gauges:
+<code>heartbeat_sqlserver_wait_time_ms</code>, and the <code>Batch Requests/sec</code> and
+<code>Transactions/sec</code> values of <code>heartbeat_sqlserver_throughput</code> (cumulative
+despite their names). <code>rate()</code> still handles SQL Server restarts as counter
+resets, and the wait recording rule relies on that, but the metric type is
+wrong for tooling. The dashboard's Top Wait Types and Throughput panels show
+raw cumulative values rather than rates. Tracked in TODO §2.4.</li>
+<li><strong>Alert delivery stops at the gateway.</strong> Alerts reach Alertmanager, but the
+default receiver is the OTel gateway webhook, which only counts them. Chat
+and WhatsApp receivers exist only in
+<a href="https://github.com/gdpais/Heartbeat/blob/master/infra/helm/values/production.example.yaml"><code>production.example.yaml</code></a>.</li>
 <li><strong>Diagnostic endpoints.</strong> <code>GET /admin/config</code> is unauthenticated. Tracked in
-TODO §15.2.</li>
+TODO §2.7.</li>
 </ul>
 
     </article>
@@ -414,7 +437,7 @@ TODO §15.2.</li>
   <aside class="toc" aria-label="On this page">
     <h2>On this page</h2>
     <ul>
-      <li class="toc-h2"><a href="#local-ports-docker-compose">Local ports (Docker Compose)</a></li>
+      <li class="toc-h2"><a href="#local-ports-kind">Local ports (kind)</a></li>
       <li class="toc-h2"><a href="#db-collector-8082">DB collector (:8082)</a></li>
       <li class="toc-h2"><a href="#otel-gateway-8083">OTel gateway (:8083)</a></li>
       <li class="toc-h2"><a href="#metrics">Metrics</a></li>

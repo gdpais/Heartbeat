@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="../assets/style.css?v=8486b06a573b">
 <script defer src="../assets/site.js?v=5b67932127bb"></script>
 </head>
-<body data-root="../" data-search-index="assets/search-index.js?v=aa145c824108">
+<body data-root="../" data-search-index="assets/search-index.js?v=f810fed2c733">
 <a class="skip-link" href="#content">Skip to content</a>
 <header class="topbar">
   <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
@@ -51,9 +51,11 @@
       <section class="nav-group">
         <h2>Developers</h2>
         <ul class="nav-list">
+          <li><a href="kind-walkthrough.html">Walkthrough</a>
+          </li>
           <li><a href="local-development.html">Local development</a>
           </li>
-          <li><a href="kubernetes-local.html">Kubernetes (local)</a>
+          <li><a href="kubernetes-local.html">Kubernetes delivery</a>
           </li>
           <li><a href="../architecture/data-model.html">Data model</a>
           </li>
@@ -63,6 +65,7 @@
               <li><a href="../architecture/decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
               <li><a href="../architecture/decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
               <li><a href="../architecture/decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+              <li><a href="../architecture/decisions/0005-production-delivery-and-operations-defaults.html">0005. Production delivery and operations defaults</a></li>
             </ul>
           </li>
           <li><a href="../services/db-collector/index.html">DB collector</a>
@@ -154,7 +157,11 @@ needs a certificate the collector trusts.
 <code>HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE=true</code> is for the local
 dev container only.</p>
 <h2 id="2-add-the-target">2. Add the target<a href="#2-add-the-target" class="anchor" title="Link to this section">#</a></h2>
-<p>Add an entry under <code>collectors[].config.targets[]</code>:</p>
+<p>Add an entry under <code>collectors[].config.targets[]</code> of the environment's
+<code>integrations</code> values (the chart renders them into <code>integrations.yaml</code>; see
+<a href="../reference/configuration.html#config-files-by-environment">config by environment</a>).
+Lists replace rather than merge across values files, so restate the whole
+<code>collectors</code> list:</p>
 <pre><code class="language-yaml">collectors:
   - id: sqlserver-default
     kind: sqlserver
@@ -187,25 +194,28 @@ its series after the reload.</p>
 (<a href="../reference/configuration.html#credential-resolution">resolution rules</a>). The
 variable must reach the collector <strong>container</strong>. Keep values out of version
 control.</p>
+<p>Put the variable in a Secret and name it in
+<code>dbCollector.credentials.existingSecret</code>; the chart loads every key of that
+Secret into the collector's environment.</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
 <th>Where the collector runs</th>
-<th>How to pass the credential</th>
+<th>How the Secret is created</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Docker Compose</td>
-<td>A local Compose override or secret mechanism for the <code>db-collector</code> service. Exporting it in your host shell is not enough.</td>
+<td>kind</td>
+<td><code>kubectl -n heartbeat create secret generic &lt;name&gt; --from-literal=HEARTBEAT_CREDENTIAL_ENV_FINANCE_PROD=&lt;user&gt;:&lt;password&gt;</code></td>
 </tr>
 <tr>
-<td>SQL Server dev overlay</td>
-<td>Already wired from the ignored <code>.env.sqlserver-dev</code></td>
+<td>kind SQL Server sandbox</td>
+<td>Already wired: <code>make sqlserver-dev-up</code> creates it from the ignored <code>.env.sqlserver-dev</code></td>
 </tr>
 <tr>
-<td>Local Kubernetes</td>
-<td>An environment variable on the collector pod, from a Secret</td>
+<td>Production</td>
+<td>An External Secrets Operator <code>ExternalSecret</code> from AWS Secrets Manager (ADR 0005)</td>
 </tr>
 </tbody>
 </table></div>
@@ -219,21 +229,22 @@ control.</p>
 </thead>
 <tbody>
 <tr>
-<td>Docker Compose</td>
-<td>Edit <code>config/integrations.yaml</code>. Config-only changes apply within about 2s through file polling, <code>SIGHUP</code> or <code>POST /admin/config/reload</code>. <strong>Recreate</strong> <code>db-collector</code> when its environment (credentials) changes.</td>
+<td>kind</td>
+<td>Put the values in a file and run <code>EXTRA_VALUES=&lt;file&gt; make kind-deploy</code>.</td>
 </tr>
 <tr>
-<td>SQL Server dev overlay</td>
-<td>Edit <code>config/integrations.local-dev.yaml</code> instead</td>
-</tr>
-<tr>
-<td>Local Kubernetes</td>
-<td>Edit the embedded config in <code>infra/k8s/local/configmap-config.yaml</code> and run <code>make k8s-up</code> (<a href="kubernetes-local.html">guide</a>)</td>
+<td>Production</td>
+<td>Commit the values to the <code>heartbeat-deploy</code> repository; Argo CD syncs them.</td>
 </tr>
 </tbody>
 </table></div>
-<p>The collector validates the file on load; an invalid file is rejected and the
-previous config keeps running.</p>
+<p>Helm rejects values that fail the integrations schema before anything changes.
+A config-only change does not restart the collector: the ConfigMap reaches the
+pod within about a minute (kubelet sync) and the collector picks it up through
+file polling (5s). To apply it sooner, <code>POST /admin/config/reload</code> with the
+admin token. A change to the credentials Secret needs
+<code>kubectl -n heartbeat rollout restart statefulset/db-collector</code>. An invalid file
+is rejected and the previous config keeps running.</p>
 <h2 id="5-verify">5. Verify<a href="#5-verify" class="anchor" title="Link to this section">#</a></h2>
 <pre><code class="language-bash">curl -s http://localhost:8082/readyz        # the target appears; failed targets are listed without raw errors
 curl -s http://localhost:8082/metrics | grep 'heartbeat_collector_target_up{.*target=&quot;finance-prod&quot;'

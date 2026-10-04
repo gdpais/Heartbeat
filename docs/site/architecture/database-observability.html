@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="../assets/style.css?v=8486b06a573b">
 <script defer src="../assets/site.js?v=5b67932127bb"></script>
 </head>
-<body data-root="../" data-search-index="assets/search-index.js?v=aa145c824108">
+<body data-root="../" data-search-index="assets/search-index.js?v=f810fed2c733">
 <a class="skip-link" href="#content">Skip to content</a>
 <header class="topbar">
   <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
@@ -51,9 +51,11 @@
       <section class="nav-group">
         <h2>Developers</h2>
         <ul class="nav-list">
+          <li><a href="../guides/kind-walkthrough.html">Walkthrough</a>
+          </li>
           <li><a href="../guides/local-development.html">Local development</a>
           </li>
-          <li><a href="../guides/kubernetes-local.html">Kubernetes (local)</a>
+          <li><a href="../guides/kubernetes-local.html">Kubernetes delivery</a>
           </li>
           <li><a href="data-model.html">Data model</a>
           </li>
@@ -63,6 +65,7 @@
               <li><a href="decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
               <li><a href="decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
               <li><a href="decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+              <li><a href="decisions/0005-production-delivery-and-operations-defaults.html">0005. Production delivery and operations defaults</a></li>
             </ul>
           </li>
           <li><a href="../services/db-collector/index.html">DB collector</a>
@@ -211,7 +214,7 @@ emits today. Metric names and labels are listed in the
 <p>Output expectations: stable metric names; labels for environment, target,
 database, instance and, where safe, application; dashboards for overview,
 waits/locks, sessions, storage and regressions. Only
-<code>infra/grafana/dashboards/sqlserver-overview.json</code> exists so far.</p>
+<code>infra/helm/heartbeat/files/grafana/dashboards/sqlserver-overview.json</code> exists so far.</p>
 <h2 id="safety-rules">Safety rules<a href="#safety-rules" class="anchor" title="Link to this section">#</a></h2>
 <ul>
 <li>Credentials are referenced by <code>credential_ref</code> only.</li>
@@ -263,10 +266,15 @@ improvements in the core hardening phase; they do not depend on the later Alloy
 evaluation.</p>
 <h2 id="custom-collector-and-alloy-comparison-late-roadmap">Custom collector and Alloy comparison (late roadmap)<a href="#custom-collector-and-alloy-comparison-late-roadmap" class="anchor" title="Link to this section">#</a></h2>
 <p>The agreed plan is a parallel evaluation, not a decision to replace the custom
-collector. Schedule it near the end of the roadmap, after the core monitoring
-workflow and reliability baseline are validated. Perform the experiment in a
-dedicated comparison branch created at that time; do not mix it with ordinary
+collector. It is the last planned roadmap phase, after the core workflows,
+reliability work and Oracle integration are validated. Perform the experiment in
+a dedicated comparison branch created at that time; do not mix it with ordinary
 collector fixes or introduce Alloy into production as part of planning.</p>
+<p>Oracle work starts with a short, time-boxed check of what Alloy and established
+Oracle exporters cover. It is a desk check, not this comparison. It decides
+whether to build a custom Oracle collector, adopt Alloy for Oracle, or run this
+comparison before the Oracle phase, so that a custom collector is not built only
+to be replaced.</p>
 <p>Run the custom collector and Grafana Alloy against equivalent non-production
 SQL Server workloads. Isolate their metric identities or storage destinations so
 dashboards, recording rules, and alerts cannot accidentally double-count the
@@ -285,8 +293,8 @@ least privilege, credentials, and TLS behavior.</li>
 and behavior during collector, node, network, and downstream outages.</li>
 <li>Buffering/replay limits, recovery time, gaps, duplicates, deployment complexity,
 upgrades, diagnostics, and ongoing maintenance cost.</li>
-<li>SQL Server fit now and Oracle extensibility later, assessed separately rather
-than assuming equivalent engine support.</li>
+<li>SQL Server and Oracle fit, assessed separately rather than assuming
+equivalent engine support.</li>
 </ul>
 <p>Record versions/configurations, reproducible tests, measurements, coverage gaps,
 and operational tradeoffs in a decision record on the comparison branch. Verify

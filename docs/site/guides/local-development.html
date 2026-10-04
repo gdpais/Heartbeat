@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="../assets/style.css?v=8486b06a573b">
 <script defer src="../assets/site.js?v=5b67932127bb"></script>
 </head>
-<body data-root="../" data-search-index="assets/search-index.js?v=aa145c824108">
+<body data-root="../" data-search-index="assets/search-index.js?v=f810fed2c733">
 <a class="skip-link" href="#content">Skip to content</a>
 <header class="topbar">
   <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
@@ -51,9 +51,11 @@
       <section class="nav-group">
         <h2>Developers</h2>
         <ul class="nav-list">
+          <li><a href="kind-walkthrough.html">Walkthrough</a>
+          </li>
           <li><a href="local-development.html" aria-current="page">Local development</a>
           </li>
-          <li><a href="kubernetes-local.html">Kubernetes (local)</a>
+          <li><a href="kubernetes-local.html">Kubernetes delivery</a>
           </li>
           <li><a href="../architecture/data-model.html">Data model</a>
           </li>
@@ -63,6 +65,7 @@
               <li><a href="../architecture/decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
               <li><a href="../architecture/decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
               <li><a href="../architecture/decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+              <li><a href="../architecture/decisions/0005-production-delivery-and-operations-defaults.html">0005. Production delivery and operations defaults</a></li>
             </ul>
           </li>
           <li><a href="../services/db-collector/index.html">DB collector</a>
@@ -101,46 +104,97 @@
     <details class="toc-inline">
       <summary>On this page</summary>
       <ul>
-        <li class="toc-h2"><a href="#start-the-platform-stack">Start the platform stack</a></li>
+        <li class="toc-h2"><a href="#start-the-platform">Start the platform</a></li>
+        <li class="toc-h2"><a href="#daily-loop">Daily loop</a></li>
         <li class="toc-h2"><a href="#sql-server-sandbox">SQL Server sandbox</a></li>
         <li class="toc-h2"><a href="#run-tests">Run tests</a></li>
         <li class="toc-h3"><a href="#how-integration-tests-stay-isolated">How integration tests stay isolated</a></li>
         <li class="toc-h2"><a href="#build-images">Build images</a></li>
         <li class="toc-h2"><a href="#change-collector-config-without-restarting">Change collector config without restarting</a></li>
-        <li class="toc-h2"><a href="#local-kubernetes">Local Kubernetes</a></li>
       </ul>
     </details>
     <article class="markdown">
 <h1 id="local-development">Local Development<a href="#local-development" class="anchor" title="Link to this section">#</a></h1>
-<p>Run the Heartbeat stack on your machine, test it, and point the DB collector at
-a throwaway SQL Server.</p>
-<p>Prerequisites: Docker with Compose (v2, <code>up --wait</code> support) and Go 1.26+.
-Run <code>make help</code> for the full target list.</p>
-<h2 id="start-the-platform-stack">Start the platform stack<a href="#start-the-platform-stack" class="anchor" title="Link to this section">#</a></h2>
-<pre><code class="language-bash">make up        # docker compose -f infra/docker-compose.yml up -d
-make config    # validate Compose syntax (does not validate integrations.yaml)
-make migrate   # apply the PostgreSQL foundation migration
-make health    # check PostgreSQL and the DB collector
-make down      # stop the stack
+<p>Run the Heartbeat stack on a local kind cluster, test it, and point the DB
+collector at a throwaway SQL Server.</p>
+<p>First time? Follow the <a href="kind-walkthrough.html">walkthrough</a>: it installs the
+tools, starts everything and shows what each step should look like.</p>
+<p>Prerequisites: Docker, Go 1.27+, and kind, kubectl and Helm at the pinned
+versions (kind v0.33, kubectl within one minor of Kubernetes 1.36, Helm 4.2+).
+<code>make tools-check</code> verifies all of them and says how to fix any mismatch. Run
+<code>make help</code> for the full target list.</p>
+<h2 id="start-the-platform">Start the platform<a href="#start-the-platform" class="anchor" title="Link to this section">#</a></h2>
+<pre><code class="language-bash">make chart-deps    # once, and after Chart.lock changes: fetch the engine charts
+make kind-up       # create the cluster, build and load images, deploy
+make health        # check the collector, Prometheus, Alertmanager and Grafana
+make kind-down     # delete the cluster
 </code></pre>
-<p>The stack runs nine services: PostgreSQL, Redis, Prometheus, Loki,
-Alertmanager, Grafana, OpenTelemetry Collector, the OTel gateway and the DB
-collector. Ports are listed in the
-<a href="../reference/metrics-and-endpoints.html#local-ports-docker-compose">metrics and endpoints reference</a>.</p>
-<p>The default <code>config/integrations.yaml</code> has <strong>no SQL Server targets</strong>, so the
-collector runs but collects nothing. Use the sandbox below, or
+<p><code>make kind-up</code> deploys the same Helm chart CI and production use
+(<a href="../architecture/decisions/0003-helm-on-kind-and-production.html">ADR 0003</a>), with
+<a href="https://github.com/gdpais/Heartbeat/blob/master/infra/helm/values/kind.yaml"><code>kind.yaml</code></a> values. Two profiles:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Profile</th>
+<th>Deploys</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>full</code> (default)</td>
+<td>DB collector, OTel gateway, Prometheus, Alertmanager, Grafana, Loki, OpenTelemetry Collector</td>
+</tr>
+<tr>
+<td><code>minimal</code></td>
+<td>DB collector, Prometheus, Alertmanager, Grafana</td>
+</tr>
+</tbody>
+</table></div>
+<p>Choose one with <code>PROFILE=minimal make kind-up</code> (or <code>make kind-deploy</code>).
+PostgreSQL and Redis are not deployed until a service uses them.</p>
+<p>Services keep the ports Compose used, on 127.0.0.1 only: Grafana
+http://localhost:3000 (<code>admin</code>/<code>admin</code>), Prometheus :9090, Alertmanager :9093,
+collector :8082, gateway :8083, OTLP :4317/:4318. The
+<a href="../reference/metrics-and-endpoints.html#local-ports-kind">metrics and endpoints reference</a>
+lists them.</p>
+<p>The default config has <strong>no SQL Server targets</strong>, so the collector runs but
+collects nothing. Use the sandbox below, or
 <a href="database-targets.html">configure a real target</a>.</p>
+<p>How the chart, images and cluster fit together, and how to debug them:
+<a href="kubernetes-local.html">Kubernetes delivery</a>.</p>
+<h2 id="daily-loop">Daily loop<a href="#daily-loop" class="anchor" title="Link to this section">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>You changed</th>
+<th>Run</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Go code in a service</td>
+<td><code>make kind-images kind-deploy</code></td>
+</tr>
+<tr>
+<td>Chart templates or values</td>
+<td><code>make kind-deploy</code></td>
+</tr>
+<tr>
+<td>Prometheus rules or dashboards (<code>infra/helm/heartbeat/files/</code>)</td>
+<td><code>make kind-deploy</code> (rules reload in place; run <code>make rules-check</code> first)</td>
+</tr>
+</tbody>
+</table></div>
+<p>Images are tagged by content (<code>dev-&lt;image id&gt;</code>), so a code change always rolls
+out a new pod and a stale image cannot hide behind a reused tag.</p>
 <h2 id="sql-server-sandbox">SQL Server sandbox<a href="#sql-server-sandbox" class="anchor" title="Link to this section">#</a></h2>
-<p>A dev-only overlay adds a local SQL Server and points the collector at it,
-without editing the tracked <code>infra/docker-compose.yml</code> or
-<code>config/integrations.yaml</code>. This keeps local credentials and targets out of the
-config that feeds shared and production delivery.</p>
-<pre><code class="language-bash">make sqlserver-dev-init     # create ignored .env.sqlserver-dev and config/integrations.local-dev.yaml
-make sqlserver-dev-config   # validate the overlay without printing secrets
-make sqlserver-dev-up       # start the stack plus SQL Server
-make sqlserver-dev-health   # check SQL Server, collector, Prometheus, Grafana
+<p>A throwaway SQL Server runs as a Docker container on the kind network,
+outside the cluster, and the collector is pointed at it.</p>
+<pre><code class="language-bash">make sqlserver-dev-init     # create the ignored .env.sqlserver-dev (random SA password)
+make sqlserver-dev-up       # start SQL Server, create the credential Secret, deploy
+make health
 curl http://localhost:8082/metrics
-make sqlserver-dev-down
+make sqlserver-dev-down     # remove the container and its data; redeploy without it
 </code></pre>
 <div class="table-wrap"><table>
 <thead>
@@ -152,11 +206,6 @@ make sqlserver-dev-down
 </thead>
 <tbody>
 <tr>
-<td>Compose overlay</td>
-<td><code>infra/docker-compose.sqlserver-dev.yml</code></td>
-<td>yes</td>
-</tr>
-<tr>
 <td>Env template</td>
 <td><code>.env.sqlserver-dev.example</code></td>
 <td>yes</td>
@@ -167,24 +216,20 @@ make sqlserver-dev-down
 <td>no</td>
 </tr>
 <tr>
-<td>Collector config template</td>
-<td><code>config/integrations.local-dev.example.yaml</code></td>
+<td>Values pointing the collector at the container</td>
+<td><code>infra/helm/values/sqlserver-dev.yaml</code></td>
 <td>yes</td>
-</tr>
-<tr>
-<td>Collector config</td>
-<td><code>config/integrations.local-dev.yaml</code></td>
-<td>no</td>
 </tr>
 </tbody>
 </table></div>
-<p>The overlay uses <code>MSSQL_PID=Developer</code>, binds SQL Server to
-<code>127.0.0.1:11433</code> only, runs the AMD64 image (emulated on ARM hosts), and gates
-startup on a SQL health check. It uses <code>sa</code> and trusts the container's
-self-signed certificate
-(<code>HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE=true</code>). Both are
-acceptable only because the container is throwaway; production targets need a
-dedicated login and a trusted certificate
+<p>The container is named <code>heartbeat-sqlserver-dev</code>, uses <code>MSSQL_PID=Developer</code>,
+publishes 1433 only on <code>127.0.0.1:11433</code>, runs the AMD64 image (emulated on
+ARM hosts) and must pass a SQL health check before deploying. Once started,
+later <code>make kind-deploy</code> runs keep the target until <code>make sqlserver-dev-down</code>.
+It uses <code>sa</code> and trusts the container's self-signed certificate
+(<code>dbCollector.sqlserver.trustServerCertificate</code>). Both are acceptable only
+because the container is throwaway; production targets need a dedicated login
+and a trusted certificate
 (<a href="database-targets.html#collector-login-permissions">login permissions</a>).</p>
 <h2 id="run-tests">Run tests<a href="#run-tests" class="anchor" title="Link to this section">#</a></h2>
 <div class="table-wrap"><table>
@@ -192,39 +237,78 @@ dedicated login and a trusted certificate
 <tr>
 <th>Command</th>
 <th>What it runs</th>
-<th>Needs Docker</th>
+<th>Needs</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>make test</code></td>
 <td>All Go unit and repository contract tests</td>
-<td>no</td>
+<td>Go</td>
 </tr>
 <tr>
 <td><code>make test-race</code></td>
 <td>The same suite with the race detector</td>
-<td>no</td>
+<td>Go</td>
 </tr>
 <tr>
 <td><code>make vet</code></td>
 <td>Go static checks</td>
-<td>no</td>
+<td>Go</td>
+</tr>
+<tr>
+<td><code>make rules-check</code></td>
+<td>promtool rule validation and unit tests</td>
+<td>Docker</td>
 </tr>
 <tr>
 <td><code>make test-integration</code></td>
 <td>PostgreSQL migration and index tests (<code>-tags=integration</code>)</td>
-<td>yes (<code>postgres:17</code>)</td>
+<td>Docker (<code>postgres:17</code>)</td>
+</tr>
+<tr>
+<td><code>make test-sqlserver</code></td>
+<td>Every built-in probe against a disposable SQL Server; fails on duplicate series or padded label values (<code>-tags=sqlserver</code>)</td>
+<td>Docker (SQL Server 2022)</td>
+</tr>
+<tr>
+<td><code>make chart-check</code></td>
+<td><code>helm lint</code>, then renders every values profile and checks it (below)</td>
+<td>Helm, <code>make chart-deps</code></td>
+</tr>
+<tr>
+<td><code>make kind-e2e</code></td>
+<td>Acceptance checks on a temporary kind cluster (below)</td>
+<td>Docker, kind, kubectl, Helm, jq</td>
 </tr>
 </tbody>
 </table></div>
-<p>CI (<code>.github/workflows/db-collector-ci.yml</code>) runs Compose validation plus all
-four commands.</p>
+<p>CI (<code>.github/workflows/db-collector-ci.yml</code>) runs all of them, and repeats
+<code>chart-check</code> with Helm 3.</p>
+<p><code>make chart-check</code> renders the chart for each profile (defaults, kind,
+minimal, SQL Server sandbox, production example) and fails if rendering is not
+deterministic, an object is cluster-scoped or a Helm hook, the rendered
+<code>integrations.yaml</code> fails the Go loader, the collector is not a single replica,
+or Prometheus, Alertmanager or Grafana points at a Service the profile does not
+deploy.</p>
+<p><code>make kind-e2e</code> creates its own cluster (<code>heartbeat-e2e-&lt;id&gt;</code>, private
+kubeconfig, no host ports) and SQL Server container, so it runs next to your
+dev cluster without touching it, and removes only what it created. It checks
+the ADR 0003 acceptance criteria: every workload ready; the running collector
+is the image just built; the SQL target's metrics are fresh in Prometheus and
+visible through Grafana; a failed target is isolated; the Watchdog alert reaches
+Alertmanager; a valid ConfigMap change hot-reloads without a restart; an invalid
+one is rejected while collection continues; a SQL Server outage shows as a failed
+target without restarting the collector; a collector update never runs two
+collectors (it prints the rollout time, collection gap and SQL Server session
+count); and Prometheus data and Alertmanager silences survive pod replacement.
+It takes about 10 minutes.</p>
 <h3 id="how-integration-tests-stay-isolated">How integration tests stay isolated<a href="#how-integration-tests-stay-isolated" class="anchor" title="Link to this section">#</a></h3>
 <p>Integration tests never touch your developer stack:</p>
 <ul>
-<li>Each test uses <code>infra/docker-compose.test.yml</code> under a random
-<code>heartbeat-test-&lt;id&gt;</code> project, with no published ports and tmpfs storage.</li>
+<li>Each test uses <code>infra/docker-compose.test.yml</code> (a disposable PostgreSQL
+fixture, not the platform) under a random <code>heartbeat-test-&lt;id&gt;</code> project, with
+no published ports and tmpfs storage.</li>
 <li>Only <code>db/migrations</code> is bind-mounted, read-only.</li>
 <li><code>COMPOSE_*</code> overrides and dotenv files are ignored; your selected Docker
 daemon is kept.</li>
@@ -233,27 +317,29 @@ Tests run concurrently, and separate test processes are isolated too.</li>
 </ul>
 <p>If a test process is killed, find the leftover project with
 <code>docker compose ls</code> and remove only that <code>heartbeat-test-&lt;id&gt;</code> project using the
-test Compose file. Never use <code>make down</code> as test cleanup.</p>
+test Compose file.</p>
 <h2 id="build-images">Build images<a href="#build-images" class="anchor" title="Link to this section">#</a></h2>
-<p>Both Dockerfiles compile for Docker's selected target platform. The build stage
-runs natively and cross-compiles Go, so no CPU emulation is needed.</p>
-<pre><code class="language-bash">docker build --platform linux/arm64 -t heartbeat/db-collector:local -f services/db-collector/Dockerfile .
+<p><code>make kind-images</code> builds both images for the kind node's own architecture and
+loads them. To build by hand: both Dockerfiles compile for Docker's selected
+target platform; the build stage runs natively and cross-compiles Go, so no CPU
+emulation is needed.</p>
+<pre><code class="language-bash">docker build --platform linux/arm64 -t heartbeat/db-collector:dev -f services/db-collector/Dockerfile .
 docker build --platform linux/amd64 -t heartbeat/db-collector:amd64 -f services/db-collector/Dockerfile .
 </code></pre>
 <p>Use <code>services/otel-gateway/Dockerfile</code> and <code>heartbeat/otel-gateway</code> for the
 gateway. BuildKit supplies <code>TARGETOS</code> and <code>TARGETARCH</code>; do not override them
-separately from <code>--platform</code>.</p>
+separately from <code>--platform</code>. <code>.dockerignore</code> keeps everything but Go sources
+out of the build context.</p>
 <h2 id="change-collector-config-without-restarting">Change collector config without restarting<a href="#change-collector-config-without-restarting" class="anchor" title="Link to this section">#</a></h2>
-<p>In Compose, the collector polls its config file every 2s
-(<code>HEARTBEAT_CONFIG_WATCH_INTERVAL</code>), so edits to <code>config/integrations.yaml</code> apply
-automatically. To force a reload:</p>
+<p>Edit the <code>integrations</code> values and run <code>make kind-deploy</code>. The collector is not
+restarted: the ConfigMap reaches the pod within about a minute and the
+collector polls the file every 5s. To apply it sooner:</p>
 <pre><code class="language-bash">curl -X POST -H &quot;Authorization: Bearer local-admin-token&quot; http://localhost:8082/admin/config/reload
 </code></pre>
-<p>Credential environment variables are read at startup; recreate the container
-when they change. See the <a href="../reference/configuration.html">configuration reference</a>.</p>
-<h2 id="local-kubernetes">Local Kubernetes<a href="#local-kubernetes" class="anchor" title="Link to this section">#</a></h2>
-<p>To run the collector on a local cluster instead, see
-<a href="kubernetes-local.html">Kubernetes (local)</a>.</p>
+<p><code>local-admin-token</code> is the kind-only value of the <code>heartbeat-runtime</code> Secret.
+Credential variables are read at startup; restart the collector
+(<code>kubectl -n heartbeat rollout restart statefulset/db-collector</code>) when they
+change. See the <a href="../reference/configuration.html">configuration reference</a>.</p>
 
     </article>
     <footer class="page-footer">
@@ -263,13 +349,13 @@ when they change. See the <a href="../reference/configuration.html">configuratio
   <aside class="toc" aria-label="On this page">
     <h2>On this page</h2>
     <ul>
-      <li class="toc-h2"><a href="#start-the-platform-stack">Start the platform stack</a></li>
+      <li class="toc-h2"><a href="#start-the-platform">Start the platform</a></li>
+      <li class="toc-h2"><a href="#daily-loop">Daily loop</a></li>
       <li class="toc-h2"><a href="#sql-server-sandbox">SQL Server sandbox</a></li>
       <li class="toc-h2"><a href="#run-tests">Run tests</a></li>
       <li class="toc-h3"><a href="#how-integration-tests-stay-isolated">How integration tests stay isolated</a></li>
       <li class="toc-h2"><a href="#build-images">Build images</a></li>
       <li class="toc-h2"><a href="#change-collector-config-without-restarting">Change collector config without restarting</a></li>
-      <li class="toc-h2"><a href="#local-kubernetes">Local Kubernetes</a></li>
     </ul>
   </aside>
 </div>

@@ -78,9 +78,10 @@ phase-by-phase status and [TODO.md](../../TODO.md) for the task list.
 
 | Area | Status |
 | --- | --- |
-| Local platform stack (Compose), shared contracts, PostgreSQL schema | Done |
+| Shared contracts, PostgreSQL schema | Done |
+| Kubernetes delivery: one Helm chart for kind, CI and production; kind workflow and acceptance tests | Done (production values and Argo CD pending) |
 | SQL Server DB collector (probes, hot reload, failure isolation, readiness) | Working; hardening in progress |
-| OTel Collector pipeline, Prometheus/Loki/Grafana/Alertmanager provisioning | Configured; alert delivery not connected |
+| OTel Collector pipeline, Prometheus/Loki/Grafana/Alertmanager provisioning | Configured; alerts reach Alertmanager (with a Watchdog), chat receivers only in the production example |
 | OTel gateway | Partial: normalizes single events, not yet forwarding |
 | API, web UI, session analyzer, reporting | Not started |
 
@@ -97,7 +98,7 @@ phase-by-phase status and [TODO.md](../../TODO.md) for the task list.
 
 ## Open questions
 
-- Which OutSystems versions and deployment models are in phase 1, and which
+- Which OutSystems versions and deployment models are in the first release, and which
   telemetry export paths are available?
 - Which user, session and request identifiers are reliably present in
   OutSystems logs?

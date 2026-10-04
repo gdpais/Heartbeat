@@ -1,0 +1,61 @@
+# kind (local development and CI). Layer over the chart defaults:
+#   helm upgrade --install heartbeat infra/helm/heartbeat -n heartbeat \
+#     -f infra/helm/values/kind.yaml [-f infra/helm/values/minimal.yaml] ...
+# scripts/kind.sh does this and sets the image tags.
+#
+# Services are NodePorts that infra/kind/cluster.yaml maps to the same
+# 127.0.0.1 ports the Compose stack used.
+
+dbCollector:
+  image:
+    # Loaded into the node with `kind load`; never pulled. scripts/kind.sh sets
+    # a content-derived tag, so a stale image cannot hide a code change.
+    pullPolicy: Never
+  service:
+    type: NodePort
+    nodePort: 30082
+
+otelGateway:
+  image:
+    pullPolicy: Never
+  service:
+    type: NodePort
+    nodePort: 30083
+
+prometheus:
+  server:
+    retention: 2d
+    persistentVolume:
+      size: 2Gi
+    service:
+      type: NodePort
+      nodePort: 30090
+  alertmanager:
+    service:
+      type: NodePort
+      nodePort: 30093
+
+grafana:
+  service:
+    type: NodePort
+    nodePort: 30300
+  # Admin login is admin/admin from the grafana-admin Secret scripts/kind.sh
+  # creates. Anonymous viewers are allowed only here, behind loopback ports.
+  grafana.ini:
+    auth.anonymous:
+      enabled: true
+      org_role: Viewer
+
+loki:
+  singleBinary:
+    persistence:
+      size: 2Gi
+
+otelCollector:
+  service:
+    type: NodePort
+  ports:
+    otlp:
+      nodePort: 30317
+    otlp-http:
+      nodePort: 30318

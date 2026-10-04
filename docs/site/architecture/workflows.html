@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="../assets/style.css?v=8486b06a573b">
 <script defer src="../assets/site.js?v=5b67932127bb"></script>
 </head>
-<body data-root="../" data-search-index="assets/search-index.js?v=aa145c824108">
+<body data-root="../" data-search-index="assets/search-index.js?v=f810fed2c733">
 <a class="skip-link" href="#content">Skip to content</a>
 <header class="topbar">
   <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
@@ -51,9 +51,11 @@
       <section class="nav-group">
         <h2>Developers</h2>
         <ul class="nav-list">
+          <li><a href="../guides/kind-walkthrough.html">Walkthrough</a>
+          </li>
           <li><a href="../guides/local-development.html">Local development</a>
           </li>
-          <li><a href="../guides/kubernetes-local.html">Kubernetes (local)</a>
+          <li><a href="../guides/kubernetes-local.html">Kubernetes delivery</a>
           </li>
           <li><a href="data-model.html">Data model</a>
           </li>
@@ -63,6 +65,7 @@
               <li><a href="decisions/0002-runtime-config-in-yaml.html">0002. Runtime integration and collector config come from YAML/Kubernetes</a></li>
               <li><a href="decisions/0003-helm-on-kind-and-production.html">0003. Deliver the platform with Helm on kind and production Kubernetes</a></li>
               <li><a href="decisions/0004-core-technology-choices.html">0004. Core technology choices</a></li>
+              <li><a href="decisions/0005-production-delivery-and-operations-defaults.html">0005. Production delivery and operations defaults</a></li>
             </ul>
           </li>
           <li><a href="../services/db-collector/index.html">DB collector</a>
@@ -238,10 +241,10 @@ alerts. Do not build a second alert engine.</li>
 <li><strong>Grafana links</strong> in alert evidence are generated from YAML URL templates,
 not database tables.</li>
 </ul>
-<p>Planned rendering path: API → <code>infra/prometheus/rules/generated/</code> (loaded by
+<p>Planned rendering path: API → <code>infra/helm/heartbeat/files/prometheus/rules/generated/</code> (loaded by
 Prometheus) and API → Alertmanager routes. Who renders <code>generated/</code> (the API or
 a build step) is an <a href="overview.html#open-questions">open question</a>.</p>
-<p><strong>Current state:</strong> <code>infra/prometheus/rules/heartbeat.rules.yml</code> holds hand-written
+<p><strong>Current state:</strong> <code>infra/helm/heartbeat/files/prometheus/rules/heartbeat.rules.yml</code> holds hand-written
 rules. Prometheus has no <code>alerting</code> block, so alerts do not reach Alertmanager
 yet. Alertmanager routes everything to the gateway's
 <code>POST /v1/heartbeat/alerts</code> endpoint, which only counts deliveries. The SQL

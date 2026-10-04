@@ -1,0 +1,153 @@
+{{- if .Values.dbCollector.enabled }}
+{{- $c := .Values.dbCollector }}
+{{- $sel := dict "root" $ "component" "db-collector" }}
+# A one-replica StatefulSet gives at-most-one collector during node partitions:
+# the replacement pod is not created until the old one is confirmed gone, so
+# the same SQL targets are never polled twice. The replica count is fixed at 1
+# until replicas can share targets safely (ADR 0003).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db-collector
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "heartbeat.componentLabels" $sel | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: db-collector-headless
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "heartbeat.selectorLabels" $sel | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "heartbeat.componentLabels" $sel | nindent 8 }}
+      {{- with $c.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # No config checksum annotation: the collector hot-reloads integrations.yaml,
+      # and a ConfigMap change must not restart it.
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ $c.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: db-collector
+          image: {{ include "heartbeat.image" (dict "root" $ "image" $c.image) | quote }}
+          imagePullPolicy: {{ $c.image.pullPolicy }}
+          env:
+            - name: HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR
+              value: ":8082"
+            - name: HEARTBEAT_INTEGRATIONS_PATH
+              value: /app/config/integrations.yaml
+            - name: HEARTBEAT_CONFIG_WATCH_INTERVAL
+              value: {{ $c.configWatchInterval | quote }}
+            - name: HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE
+              value: {{ $c.sqlserver.trustServerCertificate | quote }}
+            {{- if $c.adminToken.existingSecret }}
+            - name: HEARTBEAT_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $c.adminToken.existingSecret }}
+                  key: {{ $c.adminToken.key }}
+            {{- end }}
+            {{- with $c.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with $c.credentials.existingSecret }}
+          # Credential variables are read at startup: restart the pod after
+          # changing this Secret.
+          envFrom:
+            - secretRef:
+                name: {{ . }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8082
+          # Liveness only checks the process: a monitored database outage must
+          # never restart the collector. Readiness reports whether the
+          # collectors are actually cycling (see /readyz reasons).
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            # A directory mount (not subPath) so ConfigMap updates reach the pod.
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "heartbeat.integrationsConfigMap" . }}
+      {{- with $c.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+# Governing Service for the StatefulSet and Prometheus' scrape target. It
+# publishes the pod while unready, so Prometheus keeps scraping the collector's
+# own failure metrics when no target is healthy.
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-collector-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "heartbeat.componentLabels" $sel | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "heartbeat.selectorLabels" $sel | nindent 4 }}
+  ports:
+    - name: http
+      port: 8082
+      targetPort: http
+---
+# Operator access (health, admin reload). Routes to the pod only when ready.
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-collector
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "heartbeat.componentLabels" $sel | nindent 4 }}
+spec:
+  type: {{ $c.service.type }}
+  selector:
+    {{- include "heartbeat.selectorLabels" $sel | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $c.service.port }}
+      targetPort: http
+      {{- if and (eq $c.service.type "NodePort") $c.service.nodePort }}
+      nodePort: {{ $c.service.nodePort }}
+      {{- end }}
+{{- end }}
