@@ -156,11 +156,16 @@ Current behavior:
 - environment-based credentials use the `HEARTBEAT_CREDENTIAL_<REF>` naming
   pattern ([resolution rules](../../docs/reference/configuration.md#credential-resolution))
 - the DSN enables TLS by default
-- each pool is verified once, when it is created, with
-  `SELECT IS_SRVROLEMEMBER('sysadmin')`; a sysadmin login is logged as a
-  warning and reported through `Manager.Sysadmin`, which `SQLExecutor` exposes
-  to the runner (`SysadminReporter`) for the
+- each pool is verified when it is created with one query that also checks
+  whether the login is sysadmin-equivalent (`IS_SRVROLEMEMBER('sysadmin')` or
+  `HAS_PERMS_BY_NAME(NULL, NULL, 'CONTROL SERVER')`); the check is repeated
+  about every 10 minutes by the one `Open` that claims it, without holding the
+  pool lock. An elevated or undeterminable login is logged as a warning and
+  reported through `Manager.Sysadmin`, which `SQLExecutor` exposes to the
+  runner (`SysadminReporter`) for the
   `heartbeat_collector_target_login_sysadmin` health series
+- connection errors are scrubbed of the login and password before they are
+  wrapped, because go-mssqldb's DSN parse errors quote the whole DSN
 - every batch starts with `connector.SessionSettings`
   (`SET LOCK_TIMEOUT 1000; SET DEADLOCK_PRIORITY LOW;`) in the same round trip;
   why and how operators see it is in the

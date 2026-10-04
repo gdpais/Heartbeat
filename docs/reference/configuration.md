@@ -100,7 +100,10 @@ Built-in probe names: `waits`, `blocking`, `sessions`, `memory_pressure`,
 
 Probe timeout defaults to `min(scrape_interval / 2, 10s)`; `timeout_ms` overrides
 it and is capped at the interval. A `query_template` override runs with the
-same login, so review it with the DBAs; see the
+same login and the same session settings, and must be a single `SELECT`
+query, not a procedure call; review it against the
+[probe review checklist](../architecture/database-observability.md#probe-review-checklist)
+and with the DBAs; see the
 [login permissions](../guides/database-targets.md#collector-login-permissions).
 
 ### Validation and reload behavior

@@ -101,7 +101,7 @@ certificate.
 | `make vet` | Go static checks | Go |
 | `make rules-check` | promtool rule validation and unit tests | Docker |
 | `make test-integration` | PostgreSQL migration and index tests (`-tags=integration`) | Docker (`postgres:17`) |
-| `make test-sqlserver` | Every built-in probe against a disposable SQL Server, as a login with only the documented grants; fails on duplicate series or padded label values; checks the session settings and the sysadmin flag (`-tags=sqlserver`) | Docker (SQL Server 2022) |
+| `make test-sqlserver` | Every built-in probe against a disposable SQL Server, as a login with only the documented grants; fails on duplicate series or padded label values; checks the session settings and the sysadmin-equivalence flag for that login, `sa` and a `CONTROL SERVER` login (`-tags=sqlserver`) | Docker (SQL Server 2022) |
 | `make chart-check` | `helm lint`, then renders every values profile and checks it (below) | Helm, `make chart-deps` |
 | `make kind-e2e` | Acceptance checks on a temporary kind cluster (below) | Docker, kind, kubectl, Helm, jq |
 

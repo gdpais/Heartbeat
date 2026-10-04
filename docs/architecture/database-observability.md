@@ -38,7 +38,8 @@ waits/locks, sessions, storage and regressions. Only
 ## Safety rules
 - Credentials are referenced by `credential_ref` only.
 - The collector logs in with only `VIEW SERVER STATE` and `VIEW ANY DEFINITION`
-  and warns when its login is `sysadmin`
+  and warns when its login is sysadmin-equivalent (`sysadmin` or
+  `CONTROL SERVER`)
   ([login permissions](../guides/database-targets.md#collector-login-permissions)).
 - Production probes must be non-blocking: every probe passes the
   [probe review checklist](#probe-review-checklist), and every collector batch
@@ -61,7 +62,9 @@ also needs the target's DBAs.
 **Read-only and least privilege**
 
 - [ ] One read-only query: `SELECT`, optionally with CTEs. No DML, DDL,
-  `EXEC`, `DBCC`, temporary tables, `BEGIN TRAN` or `USE`.
+  `EXEC`, `DBCC`, temporary tables, `BEGIN TRAN` or `USE`. A bare stored
+  procedure name does not work either: every batch starts with the session
+  settings, so it is no longer sent as a procedure call.
 - [ ] Needs no grant beyond `VIEW SERVER STATE` and `VIEW ANY DEFINITION`.
   `make test-sqlserver` runs every catalog probe as such a login; a view the
   login cannot see often returns no rows instead of an error, so check the
