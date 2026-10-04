@@ -62,8 +62,10 @@ dbCollector:
   networkPolicy:
     enabled: true
     # Prometheus servers other than the bundled one, such as a shared
-    # Prometheus. Give the peer a namespaceSelector when it runs in another
-    # namespace.
+    # Prometheus. When it runs in another namespace, put a namespaceSelector
+    # and a podSelector in the same peer (two separate peers would admit the
+    # whole namespace, or matching pods in this one). Peers that are only an
+    # empty podSelector or namespaceSelector (every pod) are rejected.
     prometheus: []
     # Operator access from outside the cluster or from tooling pods, such as
     # an ipBlock for the VPN or bastion range.

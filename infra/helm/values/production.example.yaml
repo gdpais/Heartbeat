@@ -20,8 +20,12 @@ dbCollector:
   adminToken:
     existingSecret: heartbeat-runtime
   # The bundled Prometheus is allowed automatically, so only operator access
-  # is listed: the operators' VPN range (placeholder). `kubectl port-forward`
-  # needs no entry.
+  # is listed: the operators' VPN range (placeholder). The range must not
+  # overlap the pod or VPC subnets (with the Amazon VPC CNI pods have VPC
+  # addresses, so a VPC-wide range admits every pod), and the client address
+  # must survive any load balancer or proxy on the way (otherwise the source
+  # is the balancer's). When either cannot be guaranteed, list nothing and use
+  # `kubectl port-forward`, which needs no entry.
   networkPolicy:
     operators:
       - ipBlock:

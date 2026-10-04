@@ -3,8 +3,11 @@
 {{- $sel := dict "root" $ "component" "db-collector" }}
 {{- $peers := list }}
 {{- if .Values.prometheus.enabled }}
-{{- /* The bundled Prometheus server, by its Deployment's selector labels. */}}
-{{- $bundled := dict "app.kubernetes.io/name" "prometheus" "app.kubernetes.io/component" "server" "app.kubernetes.io/instance" .Release.Name }}
+{{- /* The bundled Prometheus server, by its Deployment's selector labels
+(the subchart's prometheus.server.matchLabels helper). */}}
+{{- $promName := .Values.prometheus.nameOverride | default "prometheus" | trunc 63 | trimSuffix "-" }}
+{{- $promComponent := .Values.prometheus.server.name | default "server" }}
+{{- $bundled := dict "app.kubernetes.io/name" $promName "app.kubernetes.io/component" $promComponent "app.kubernetes.io/instance" .Release.Name }}
 {{- $peers = append $peers (dict "podSelector" (dict "matchLabels" $bundled)) }}
 {{- end }}
 {{- $peers = concat $peers $np.prometheus $np.operators }}

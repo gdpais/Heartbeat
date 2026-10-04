@@ -32,12 +32,17 @@ type chartProfile struct {
 	values []string
 	// set holds --set overrides applied after the values files.
 	set []string
+	// inline is a values document applied last.
+	inline string
 	// Objects (kind/name) the profile must and must not render.
 	present, absent []string
 	// collectorPeers are the sources the db-collector NetworkPolicy must
 	// admit to port 8082, in peerString form; none means it denies all
 	// ingress. Checked whenever the profile renders the policy.
 	collectorPeers []string
+	// wantError, when set, is part of the error helm must fail with; nothing
+	// else is checked.
+	wantError string
 }
 
 // bundledPrometheusPeer is the bundled Prometheus server as a NetworkPolicy
@@ -96,6 +101,24 @@ var chartProfiles = []chartProfile{
 		present: []string{"StatefulSet/db-collector", "NetworkPolicy/db-collector"},
 	},
 	{
+		// The bundled peer follows the subchart's name, like its selector.
+		name:           "prometheus-name-override",
+		set:            []string{"prometheus.nameOverride=prom"},
+		present:        []string{"Deployment/prometheus", "NetworkPolicy/db-collector"},
+		collectorPeers: []string{"pods{app.kubernetes.io/component=server,app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=prom}"},
+	},
+	{
+		// Only an empty podSelector admits every pod in the namespace.
+		name:      "collector-peer-empty-pod-selector",
+		inline:    "dbCollector: {networkPolicy: {operators: [{podSelector: {}}]}}",
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		name:      "collector-peer-empty-match-labels",
+		inline:    "dbCollector: {networkPolicy: {prometheus: [{namespaceSelector: {matchLabels: {}}}]}}",
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
 		name:    "collector-policy-disabled",
 		set:     []string{"dbCollector.networkPolicy.enabled=false"},
 		present: []string{"StatefulSet/db-collector"},
@@ -126,6 +149,16 @@ func (o object) id() string { return o.Kind + "/" + o.Metadata.Name }
 
 func helmTemplate(t *testing.T, profile chartProfile) []byte {
 	t.Helper()
+	out, stderr, err := runHelmTemplate(t, profile)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, stderr)
+	}
+	return out
+}
+
+// runHelmTemplate renders profile and returns stdout, stderr and the error.
+func runHelmTemplate(t *testing.T, profile chartProfile) ([]byte, string, error) {
+	t.Helper()
 	root := repoRoot(t)
 	helm := os.Getenv("HELM")
 	if helm == "" {
@@ -138,14 +171,21 @@ func helmTemplate(t *testing.T, profile chartProfile) []byte {
 	for _, set := range profile.set {
 		args = append(args, "--set", set)
 	}
+	if profile.inline != "" {
+		path := filepath.Join(t.TempDir(), "inline.yaml")
+		if err := os.WriteFile(path, []byte(profile.inline), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		args = append(args, "-f", path)
+	}
 	var stderr bytes.Buffer
 	cmd := exec.Command(helm, args...)
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("%s %s: %v\n%s", helm, strings.Join(args, " "), err, stderr.String())
+		err = fmt.Errorf("%s %s: %w", helm, strings.Join(args, " "), err)
 	}
-	return out
+	return out, stderr.String(), err
 }
 
 func parseObjects(t *testing.T, rendered []byte) map[string]object {
@@ -178,6 +218,13 @@ func parseObjects(t *testing.T, rendered []byte) map[string]object {
 func TestChartProfiles(t *testing.T) {
 	for _, profile := range chartProfiles {
 		t.Run(profile.name, func(t *testing.T) {
+			if profile.wantError != "" {
+				_, stderr, err := runHelmTemplate(t, profile)
+				if err == nil || !strings.Contains(stderr, profile.wantError) {
+					t.Fatalf("expected helm to fail with %q, got %v\n%s", profile.wantError, err, stderr)
+				}
+				return
+			}
 			first := helmTemplate(t, profile)
 			// Argo CD renders the chart itself on every sync; output must not
 			// change between renders.

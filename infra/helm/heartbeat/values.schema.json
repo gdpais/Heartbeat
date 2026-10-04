@@ -293,7 +293,7 @@
   },
   "$defs": {
     "networkPolicyPeer": {
-      "description": "A Kubernetes NetworkPolicyPeer: a podSelector, a namespaceSelector (or both), or an ipBlock. An empty peer is rejected.",
+      "description": "A Kubernetes NetworkPolicyPeer: a podSelector, a namespaceSelector (or both), or an ipBlock. An empty peer, or one that is only an empty selector (every pod in the namespace or every namespace), is rejected.",
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
@@ -324,6 +324,32 @@
             }
           }
         }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "podSelector"
+            ],
+            "maxProperties": 1,
+            "properties": {
+              "podSelector": {
+                "maxProperties": 0
+              }
+            }
+          },
+          {
+            "required": [
+              "namespaceSelector"
+            ],
+            "maxProperties": 1,
+            "properties": {
+              "namespaceSelector": {
+                "maxProperties": 0
+              }
+            }
+          }
+        ]
       }
     },
     "labelSelector": {
@@ -334,7 +360,8 @@
           "type": "object",
           "additionalProperties": {
             "type": "string"
-          }
+          },
+          "minProperties": 1
         },
         "matchExpressions": {
           "type": "array",
@@ -364,9 +391,11 @@
                 }
               }
             }
-          }
+          },
+          "minItems": 1
         }
-      }
+      },
+      "description": "A label selector. matchLabels and matchExpressions must not be empty when present, so an empty selector is always written {}."
     }
   }
 }
