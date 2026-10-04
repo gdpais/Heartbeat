@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="../assets/style.css?v=8486b06a573b">
 <script defer src="../assets/site.js?v=5b67932127bb"></script>
 </head>
-<body data-root="../" data-search-index="assets/search-index.js?v=f810fed2c733">
+<body data-root="../" data-search-index="assets/search-index.js?v=5087856b5ede">
 <a class="skip-link" href="#content">Skip to content</a>
 <header class="topbar">
   <button class="menu-button" type="button" aria-controls="sidebar" aria-expanded="false">
@@ -225,18 +225,24 @@ readiness that reflects collector state, reload rollback [2.6]</li>
 (<a href="https://github.com/gdpais/Heartbeat/issues/4">#4</a>); every probe runs
 against a real SQL Server in CI [2.3]</li>
 </ul>
-<p>Remaining:</p>
-<ul>
-<li>Export cumulative values as counters and show rates in the dashboard [2.4]</li>
-<li>Per-probe error counters; least-privilege review of all production queries;
-probe review/versioning process [2.2, 2.6]</li>
+<p>Remaining, in order:</p>
+<ol>
 <li>Collector endpoint security: authenticated diagnostics, full redaction,
-constant-time token check, NetworkPolicy, per-target TLS settings [2.7]</li>
-<li>Publish retrievable evidence snapshots (the default sink discards them) [2.4]</li>
-</ul>
+constant-time token check, NetworkPolicy, <code>TrustServerCertificate</code>
+warning [2.7]</li>
+<li>Least privilege and query safety: tests run as a login with only the
+documented grants, a warning when the login is <code>sysadmin</code>, <code>LOCK_TIMEOUT</code>
+and low deadlock priority on every session, a probe review checklist [2.2]</li>
+<li>Metric types and self-metrics: waits and throughput as counters renamed to
+Prometheus conventions, per-probe error counters and durations, Go runtime
+and process metrics [2.4, 2.6]</li>
+<li>Core signals for the first production deploy: CPU, page life expectancy and
+buffer cache hit ratio, file I/O [2.3]</li>
+</ol>
 <p>Exit: live SQL Server → collector → Prometheus → Grafana on kind, including
-reloads and target outages, against a safe non-production target. API-driven
-probe assignments [2.5] join in phase 3 and do not block this phase.</p>
+reloads and target outages, with a least-privilege login. API-driven probe
+assignments [2.5] join in phase 3, probe versioning with them [4.5], and
+evidence publication in phase 7 [12.4]; none of them block this phase.</p>
 <h2 id="phase-2--otel-gateway-outsystems-ingest">Phase 2 — OTel gateway (OutSystems ingest)<a href="#phase-2--otel-gateway-outsystems-ingest" class="anchor" title="Link to this section">#</a></h2>
 <ul>
 <li>OutSystems parsers and normalization (Traditional and Reactive); the gateway
@@ -286,16 +292,17 @@ switch; Discord, then Slack, Teams and WhatsApp receivers</li>
 validated in the target environment.</p>
 <h2 id="phase-6--complete-application-and-database-product-workflows">Phase 6 — Complete application and database product workflows<a href="#phase-6--complete-application-and-database-product-workflows" class="anchor" title="Link to this section">#</a></h2>
 <ul>
-<li>OutSystems and SQL Server onboarding, signal coverage, dashboards and
-drill-down [10, 11]
+<li>OutSystems and SQL Server onboarding, the remaining signal coverage,
+dashboards and drill-down [10, 11]; CPU, cache and I/O arrive in phase 1
 (<a href="../architecture/database-observability.html#sql-server-signal-coverage">SQL Server signal coverage</a>)</li>
 </ul>
 <p>Exit: onboarding in the UI → ingest/collection → Loki/Prometheus → Grafana, with
 field/metric semantics, cardinality and database load checked.</p>
 <h2 id="phase-7--investigations-alerting-and-reporting">Phase 7 — Investigations, alerting and reporting<a href="#phase-7--investigations-alerting-and-reporting" class="anchor" title="Link to this section">#</a></h2>
 <ul>
-<li>Session analyzer and investigation UI [6, 12]; collector evidence must be
-retrievable first [2.4]</li>
+<li>Collector evidence: content, destination and publication, retrievable
+before the analyzer uses it [12.4]</li>
+<li>Session analyzer and investigation UI [6, 12]</li>
 <li>Alert policy rendering to Prometheus and Alertmanager; adaptive baselines [13]</li>
 <li>Report templates, schedules, generation and email delivery [7, 14]</li>
 <li>See <a href="../architecture/workflows.html">operator workflows</a></li>
