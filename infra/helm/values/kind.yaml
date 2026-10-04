@@ -14,6 +14,22 @@ dbCollector:
   service:
     type: NodePort
     nodePort: 30082
+    # Keeps the host's source address on NodePort traffic. With Cluster,
+    # kube-proxy masquerades it to the node's pod-network gateway and kindnet
+    # drops it, which breaks `make health`.
+    externalTrafficPolicy: Local
+  networkPolicy:
+    # Operator access from outside the pod network: on kind that is only the
+    # developer's host through the loopback-bound NodePort (infra/kind/
+    # cluster.yaml). Pods stay limited to Prometheus. The except range is
+    # kind's default pod subnet. The kubelet's probes and the API server's pod
+    # proxy (kind-e2e) come from the pod's own node, which NetworkPolicy does
+    # not filter.
+    operators:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except:
+            - 10.244.0.0/16
 
 otelGateway:
   image:

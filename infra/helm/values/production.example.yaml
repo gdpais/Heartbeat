@@ -19,6 +19,13 @@ dbCollector:
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   adminToken:
     existingSecret: heartbeat-runtime
+  # The bundled Prometheus is allowed automatically, so only operator access
+  # is listed: the operators' VPN range (placeholder). `kubectl port-forward`
+  # needs no entry.
+  networkPolicy:
+    operators:
+      - ipBlock:
+          cidr: 10.100.0.0/16
   # ExternalSecret-managed: HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_<NAME>=<login>:<password>.
   credentials:
     existingSecret: heartbeat-sqlserver-credentials

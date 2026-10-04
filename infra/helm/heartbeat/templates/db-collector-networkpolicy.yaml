@@ -1,0 +1,40 @@
+{{- if and .Values.dbCollector.enabled .Values.dbCollector.networkPolicy.enabled }}
+{{- $np := .Values.dbCollector.networkPolicy }}
+{{- $sel := dict "root" $ "component" "db-collector" }}
+{{- $peers := list }}
+{{- if .Values.prometheus.enabled }}
+{{- /* The bundled Prometheus server, by its Deployment's selector labels. */}}
+{{- $bundled := dict "app.kubernetes.io/name" "prometheus" "app.kubernetes.io/component" "server" "app.kubernetes.io/instance" .Release.Name }}
+{{- $peers = append $peers (dict "podSelector" (dict "matchLabels" $bundled)) }}
+{{- end }}
+{{- $peers = concat $peers $np.prometheus $np.operators }}
+# Only Prometheus and the configured operator peers may reach the collector's
+# port 8082 (metrics, health and the token-protected admin endpoints); all
+# other ingress, including from other pods in the namespace, is dropped.
+# Kubelet probes and `kubectl port-forward` are not subject to NetworkPolicy.
+# With no peers the policy denies all ingress: an empty `from` would allow
+# every source, so it is never rendered.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-collector
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "heartbeat.componentLabels" $sel | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "heartbeat.selectorLabels" $sel | nindent 6 }}
+  policyTypes:
+    - Ingress
+  {{- if $peers }}
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8082
+      from:
+        {{- toYaml $peers | nindent 8 }}
+  {{- else }}
+  ingress: []
+  {{- end }}
+{{- end }}
