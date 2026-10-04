@@ -9,9 +9,10 @@
 //
 // Two implementations are provided:
 //
-//   - [PrometheusExporter] registers a GaugeVec per unique metric name in a
-//     Prometheus registry and updates it on every write.  It is used in
-//     production and is safe for concurrent use.
+//   - [PrometheusExporter] registers one collector per unique metric name in
+//     a Prometheus registry and exposes every series as a gauge or counter,
+//     depending on the sample's [MetricType].  It is used in production and
+//     is safe for concurrent use.
 //
 //   - [InMemoryExporter] stores recorded values in memory.  It is intended
 //     for unit tests.
@@ -23,9 +24,35 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/prometheus/client_golang/prometheus"
 )
+
+// MetricType is the Prometheus type a [Sample] is exposed as.  The zero value
+// is [Gauge], so samples that do not set a type stay gauges.
+type MetricType int
+
+const (
+	// Gauge is a value that can go up and down, exposed as is.
+	Gauge MetricType = iota
+	// Counter is a cumulative value maintained by the source, such as SQL
+	// Server's wait time since startup.  The exporter exposes the value the
+	// source reports instead of incrementing its own counter, so a lower
+	// value after the source restarts or clears its statistics is exported as
+	// is; rate() and increase() treat that drop as a counter reset.  Counter
+	// values must not be negative.
+	Counter
+)
+
+// String returns the Prometheus type name.
+func (t MetricType) String() string {
+	switch t {
+	case Gauge:
+		return "gauge"
+	case Counter:
+		return "counter"
+	default:
+		return fmt.Sprintf("MetricType(%d)", int(t))
+	}
+}
 
 // Sample represents a single metric observation produced by a probe execution.
 type Sample struct {
@@ -35,8 +62,11 @@ type Sample struct {
 	// Help is the human-readable description registered with the metric.
 	// Falls back to Metric when empty.
 	Help string
-	// Value is the numeric gauge value to record.
+	// Value is the numeric value to record, already in the metric's base
+	// unit (seconds, bytes).
 	Value float64
+	// Type selects how the metric is exposed.  The zero value is [Gauge].
+	Type MetricType
 	// Labels is the set of label key-value pairs associated with this
 	// observation (e.g. {"environment": "production", "target": "db01"}).
 	Labels map[string]string
@@ -107,8 +137,10 @@ func newSeriesRef(sample Sample) seriesRef {
 }
 
 // scopeTracker records which series each scope owns and how many scopes own
-// each series.  It is not safe for concurrent use; owners guard it with their
-// own mutex.
+// each series, keyed by [seriesKey].  [InMemoryExporter] uses it;
+// [PrometheusExporter] tracks ownership on its series directly so recording
+// does not allocate.  It is not safe for concurrent use; owners guard it with
+// their own mutex.
 type scopeTracker struct {
 	scopes map[Scope]map[string]seriesRef
 	owners map[string]int
@@ -158,123 +190,11 @@ func (t *scopeTracker) forgetCollector(collectorID string) []seriesRef {
 	return stale
 }
 
-// PrometheusExporter implements [ScopedRecorder] by registering a
-// [prometheus.GaugeVec] for each unique metric name encountered and setting
-// the current value on every call to Record.
-//
-// The label set for a metric is fixed on first registration; subsequent calls
-// with a different label set return an error.
-//
-// PrometheusExporter is safe for concurrent use.
-type PrometheusExporter struct {
-	reg        prometheus.Registerer
-	mu         sync.Mutex
-	gauges     map[string]*prometheus.GaugeVec
-	labelNames map[string][]string
-	scopes     scopeTracker
-}
-
-// NewPrometheusExporter returns an exporter that registers and updates gauges
-// in reg.
-func NewPrometheusExporter(reg prometheus.Registerer) *PrometheusExporter {
-	return &PrometheusExporter{
-		reg:        reg,
-		gauges:     map[string]*prometheus.GaugeVec{},
-		labelNames: map[string][]string{},
-		scopes:     newScopeTracker(),
-	}
-}
-
-// Record implements [Recorder].  For each sample it lazily registers a
-// GaugeVec on first encounter and then sets the gauge to sample.Value.
-// An error is returned if Prometheus rejects the registration or if a
-// subsequent call presents a different label set for an already-registered
-// metric name.  Series written through Record are never deleted; prefer
-// [PrometheusExporter.RecordScope] for probe results.
-func (e *PrometheusExporter) Record(samples []Sample) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, sample := range samples {
-		if err := e.setLocked(sample); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// RecordScope implements [ScopedRecorder].
-func (e *PrometheusExporter) RecordScope(scope Scope, samples []Sample) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	current := make(map[string]seriesRef, len(samples))
-	var errs []error
-	for _, sample := range samples {
-		if err := e.setLocked(sample); err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		key := seriesKey(sample.Metric, sample.Labels)
-		if _, dup := current[key]; dup {
-			errs = append(errs, duplicateSeriesError(sample))
-		}
-		current[key] = newSeriesRef(sample)
-	}
-	e.deleteLocked(e.scopes.replace(scope, current))
-	return errors.Join(errs...)
-}
-
 // duplicateSeriesError reports two samples with identical labels in one
 // scoped batch.  The last value wins, so earlier rows are silently lost; this
 // usually means a probe's label columns do not uniquely identify its rows.
 func duplicateSeriesError(sample Sample) error {
 	return fmt.Errorf("metric %s: duplicate series %v in one batch; only the last value is kept", sample.Metric, sample.Labels)
-}
-
-// ClearScope implements [ScopedRecorder].
-func (e *PrometheusExporter) ClearScope(scope Scope) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.deleteLocked(e.scopes.replace(scope, nil))
-}
-
-// ForgetCollector implements [ScopedRecorder].
-func (e *PrometheusExporter) ForgetCollector(collectorID string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.deleteLocked(e.scopes.forgetCollector(collectorID))
-}
-
-// setLocked registers the gauge for sample on first use, validates the label
-// set, and sets the value.  e.mu must be held.
-func (e *PrometheusExporter) setLocked(sample Sample) error {
-	labelNames := sortedKeys(sample.Labels)
-	gauge, ok := e.gauges[sample.Metric]
-	if !ok {
-		help := sample.Help
-		if help == "" {
-			help = sample.Metric
-		}
-		gauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: sample.Metric, Help: help}, labelNames)
-		if err := e.reg.Register(gauge); err != nil {
-			return fmt.Errorf("register gauge %s: %w", sample.Metric, err)
-		}
-		e.gauges[sample.Metric] = gauge
-		e.labelNames[sample.Metric] = labelNames
-	}
-	if strings.Join(e.labelNames[sample.Metric], ",") != strings.Join(labelNames, ",") {
-		return fmt.Errorf("metric %s label set changed", sample.Metric)
-	}
-	gauge.WithLabelValues(labelValues(sample.Labels, labelNames)...).Set(sample.Value)
-	return nil
-}
-
-// deleteLocked removes the given series from their gauges.  e.mu must be held.
-func (e *PrometheusExporter) deleteLocked(stale []seriesRef) {
-	for _, ref := range stale {
-		if gauge, ok := e.gauges[ref.metric]; ok {
-			gauge.Delete(prometheus.Labels(ref.labels))
-		}
-	}
 }
 
 // InMemoryExporter implements [ScopedRecorder] by storing the most-recently
@@ -285,13 +205,19 @@ func (e *PrometheusExporter) deleteLocked(stale []seriesRef) {
 type InMemoryExporter struct {
 	mu     sync.Mutex
 	values map[string]float64
+	types  map[string]MetricType
 	series map[string]float64
 	scopes scopeTracker
 }
 
 // NewInMemoryExporter returns an empty in-memory exporter.
 func NewInMemoryExporter() *InMemoryExporter {
-	return &InMemoryExporter{values: map[string]float64{}, series: map[string]float64{}, scopes: newScopeTracker()}
+	return &InMemoryExporter{
+		values: map[string]float64{},
+		types:  map[string]MetricType{},
+		series: map[string]float64{},
+		scopes: newScopeTracker(),
+	}
 }
 
 // Record implements [Recorder].  Each sample overwrites any previously stored
@@ -346,9 +272,19 @@ func (e *InMemoryExporter) Value(metric string, labels map[string]string) (float
 	return value, ok
 }
 
+// Type returns the type of the most recently recorded sample of metric, and
+// whether metric was ever recorded.
+func (e *InMemoryExporter) Type(metric string) (MetricType, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	metricType, ok := e.types[metric]
+	return metricType, ok
+}
+
 // setLocked stores sample.  e.mu must be held.
 func (e *InMemoryExporter) setLocked(sample Sample) {
 	e.values[sample.Metric] = sample.Value
+	e.types[sample.Metric] = sample.Type
 	e.series[seriesKey(sample.Metric, sample.Labels)] = sample.Value
 }
 
@@ -377,15 +313,4 @@ func sortedKeys(labels map[string]string) []string {
 	return keys
 }
 
-func labelValues(labels map[string]string, keys []string) []string {
-	values := make([]string, 0, len(keys))
-	for _, key := range keys {
-		values = append(values, labels[key])
-	}
-	return values
-}
-
-var (
-	_ ScopedRecorder = (*PrometheusExporter)(nil)
-	_ ScopedRecorder = (*InMemoryExporter)(nil)
-)
+var _ ScopedRecorder = (*InMemoryExporter)(nil)

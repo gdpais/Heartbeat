@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 const blockedMetric = "heartbeat_sqlserver_blocked_requests"
@@ -62,7 +61,7 @@ func TestRecordScopeDeletesSeriesNoLongerReported(t *testing.T) {
 	if got := exported(t, reg)["core-db"]; len(got) != 1 || got[0] != "58" {
 		t.Fatalf("expected only session 58, got %v", got)
 	}
-	if value := testutil.ToFloat64(exporter.gauges[blockedMetric].WithLabelValues("58", "prod", "core-db")); value != 2 {
+	if value, ok := gathered(t, reg, blockedMetric, map[string]string{"blocking_session_id": "58", "environment": "prod", "target": "core-db"}); !ok || value != 2 {
 		t.Fatalf("unexpected value %v", value)
 	}
 	// Block cleared: the probe returns zero rows.
