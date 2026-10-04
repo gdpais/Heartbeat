@@ -179,13 +179,14 @@
       },
       "targets": [
         {
-          "expr": "sum by (database_name) (heartbeat_sqlserver_database_file_size_bytes{environment=~\"$environment\",target=~\"$target\"})",
-          "legendFormat": "{{database_name}}",
+          "expr": "sum by (environment, target, database_name) (heartbeat_sqlserver_database_file_size_bytes{environment=~\"$environment\",target=~\"$target\"})",
+          "legendFormat": "{{target}} {{database_name}}",
           "refId": "A"
         }
       ],
       "title": "Database File Size",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "Allocated size of each database (data and log files) per target. sys.master_files reports tempdb at its configured startup size, not its current size."
     },
     {
       "datasource": {

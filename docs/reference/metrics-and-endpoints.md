@@ -57,11 +57,11 @@ bytes) and a `_total` suffix on counters only.
 
 | Probe | Source view | Metric | Type | Extra labels | Series per target |
 | --- | --- | --- | --- | --- | --- |
-| `waits` | `sys.dm_os_wait_stats` | `heartbeat_sqlserver_wait_seconds_total` | counter | `wait_type` | one per wait type with non-zero wait time: usually a few hundred, at most the ~1,000 wait types SQL Server defines |
+| `waits` | `sys.dm_os_wait_stats` | `heartbeat_sqlserver_wait_seconds_total` | counter | `wait_type` | one per wait type with non-zero wait time, benign idle waits excluded: usually tens to low hundreds, at most the ~1,000 wait types SQL Server defines |
 | `blocking` | `sys.dm_exec_requests` | `heartbeat_sqlserver_blocked_requests` | gauge | `blocking_session_id` | one per blocking session; none while nothing is blocked |
 | `sessions` | `sys.dm_exec_sessions` | `heartbeat_sqlserver_sessions` | gauge | `status` | one per session status (about 5) |
 | `memory_pressure` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_total_server_memory_bytes` | gauge | none | 1 |
-| `storage` | `sys.master_files` | `heartbeat_sqlserver_database_file_size_bytes` | gauge | `database_name`, `file_name`, `file_type` | one per database file |
+| `storage` | `sys.master_files` | `heartbeat_sqlserver_database_file_size_bytes` | gauge | `database_name`, `file_name`, `file_type` | one per database file; tempdb files report their configured startup size, not their current size |
 | `throughput` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_batch_requests_total` | counter | none | 1 |
 | `throughput` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_transactions_total` | counter | none | 1 (server-wide `_Total`) |
 
@@ -76,6 +76,19 @@ and the reset itself is lost). A failed probe or collector restart leaves a gap
 but no reset: the counter resumes at SQL Server's value. A wait type appears
 when its wait time first becomes non-zero, so its first increase after SQL
 Server starts is not counted.
+
+The `waits` probe leaves out benign idle waits (system tasks sleeping, queues
+waiting for work, timers such as `SLEEP_TASK`, `LAZYWRITER_SLEEP` or
+`XE_TIMER_EVENT`), which grow by about a second per second on an idle server
+and would dominate top-N panels. The list follows Paul Randal's widely used
+wait statistics query and lives in
+[`catalog.go`](../../services/db-collector/internal/probes/sqlserver/catalog.go).
+
+A target, identified by environment and name, may be enabled in only one
+sqlserver collector: configuration that lists it twice is rejected, because
+both collectors would write the same series and double the load on the
+database. The exporter also keeps each counter series to a single writer and
+logs any other write instead of applying it.
 
 Each catalog metric descriptor sets the type and the unit scale applied to the
 query column (milliseconds to seconds, KB or 8 KB pages to bytes). A collector
@@ -98,8 +111,8 @@ Requests panel does, so an unreachable target never reads as 0. The catalog live
 | `heartbeat_collector_target_consecutive_failures` | gauge | `collector`, `environment`, `target` | Failed cycles in a row |
 | `heartbeat_collector_target_last_success_timestamp_seconds` | gauge | `collector`, `environment`, `target` | Unix time of the last successful cycle; use it for freshness alerts |
 | `heartbeat_collector_cycle_duration_seconds` | gauge | `collector` | Duration of the last collection cycle |
-| `heartbeat_collector_probe_duration_seconds` | histogram | `collector`, `environment`, `target`, `probe` | Probe execution time, failed and timed-out executions included; buckets 5ms, 10ms, 50ms, 100ms, 500ms, 1s, 5s, 10s |
-| `heartbeat_collector_probe_errors_total` | counter | `collector`, `environment`, `target`, `probe`, `reason` | Failed probe executions. `reason` is one of `timeout` (probe timeout or cycle deadline reached while running), `error` (connection, login, query or decoding error), `not_started` (cycle deadline passed before the probe could start), `panic` |
+| `heartbeat_collector_probe_duration_seconds` | histogram | `collector`, `environment`, `target`, `probe` | Probe execution time, failed and timed-out executions included; buckets 5ms, 10ms, 50ms, 100ms, 500ms, 1s, 5s, 10s, 30s, 60s |
+| `heartbeat_collector_probe_errors_total` | counter | `collector`, `environment`, `target`, `probe`, `reason` | Failed probe executions. `reason` is one of `timeout` (probe timeout or cycle deadline reached while running), `error` (connection, login, query or decoding error), `not_started` (cycle deadline passed before the probe could start), `panic`. Probes interrupted because the collector is stopping (shutdown or reload) are not counted |
 | `go_*`, `process_*` | | none | Go runtime (goroutines, GC, memory) and process (CPU, resident memory, open file descriptors, start time) metrics of the collector itself |
 
 The probe error counters are created at 0 for every scheduled probe and reason
@@ -113,8 +126,8 @@ resets its error counters to 0 (a counter reset for `rate()`) and drops the
 series of removed targets and probes.
 
 Per target, the self-observability series are 3 target gauges plus, per
-scheduled probe, 11 histogram series (8 buckets, `+Inf`, sum, count) and 4
-error counters: 93 series for a target with the 6 built-in probes. Probe
+scheduled probe, 13 histogram series (10 buckets, `+Inf`, sum, count) and 4
+error counters: 105 series for a target with the 6 built-in probes. Probe
 metric series are listed in the table above.
 
 ### OTel gateway
