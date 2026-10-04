@@ -147,8 +147,13 @@ collector-stage completion prerequisite. Query safety [2.2] and endpoint
 security [2.7] must pass before live validation against a shared target; do not
 defer them to general hardening [15.2].
 
-- [ ] Validate this stage: connector/probe/config/metric tests, safe non-production SQL queries, and live SQL Server → collector → Prometheus → Grafana on kind, including reloads and target outages [16.1–16.2]
-- [ ] Validate evidence publication/retrieval before investigation enrichment; the current default evidence sink is a no-op, so sink wiring alone is not publication
+Remaining work, in order: endpoint security [2.7] → least privilege and query
+safety [2.2] → metric types and self-metrics [2.4, 2.6] → core CPU, cache and
+I/O signals [2.3]. Evidence publication moved to the investigation track [12.4]:
+its consumer and storage design live there, and today's evidence is only a row
+count.
+
+- [ ] Validate this stage: connector/probe/config/metric tests, safe non-production SQL queries, and live SQL Server → collector → Prometheus → Grafana on kind, including reloads and target outages, with the collector logged in as a least-privilege login [16.1–16.2]
 
 ### 2.1 Service bootstrap
 - [x] Create Go service entrypoint `services/db-collector/cmd/db-collector/`
@@ -157,11 +162,13 @@ defer them to general hardening [15.2].
 
 ### 2.2 SQL Server connectivity and safety
 - [x] Implement secure SQL Server connector manager
-- [ ] Enforce least-privilege credentials
+- [ ] Enforce least-privilege credentials: run `make test-sqlserver` and `make kind-e2e` as a login holding only the documented grants (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`), not `sa`
+- [ ] Warn at startup, in the log and a metric, when the collector login is `sysadmin`
+- [ ] Set `LOCK_TIMEOUT` and `DEADLOCK_PRIORITY LOW` on every collector session so a probe never waits on locks or wins a deadlock against the application
 - [x] Enforce query timeout/budget guards
 - [x] Pool SQL Server connections per target
 - [ ] Review all production queries for non-blocking behavior
-- [ ] Define safe probe review/versioning process
+- [ ] Define safe probe review/versioning process: write the probe review checklist now; probe versioning comes with API probe definitions [4.5]
 
 ### 2.3 Probe implementation
 - [x] Implement waits probes
@@ -173,17 +180,15 @@ defer them to general hardening [15.2].
 - [x] Replace generic column-to-metric decoding with explicit per-probe metric descriptors
 - [x] Fix the `throughput` probe's duplicate `Transactions/sec` series and padded `counter_name` labels; check `memory_pressure` for the same padding ([#4](https://github.com/gdpais/Heartbeat/issues/4))
 - [x] Run every built-in probe against a real SQL Server in CI (`make test-sqlserver`): no duplicate series, no padded label values
+- [ ] Add core signals before the first production deploy (after counter support [2.4]): CPU utilisation, page life expectancy and buffer cache hit ratio, file I/O from `sys.dm_io_virtual_file_stats`; dashboard panels for each. The rest of the signal set stays in [11.2]
 
 ### 2.4 Metrics and evidence output
 - [x] Normalize SQL Server outputs into Prometheus-friendly metrics
 - [x] Expose scrape endpoint
 - [x] Produce structured evidence for blocking/session probes
-- [ ] Export cumulative SQL Server values (waits, throughput counters) as counters and show rates in the dashboard
-- [ ] Publish retrievable investigation evidence snapshots (the default `LoggingEvidenceSink` currently discards them)
-- [ ] Define the evidence destination, schema, target/probe identity, timestamps, retention, redaction and bounded delivery/failure behavior; keep raw evidence out of PostgreSQL
-- [ ] Test a blocking/session snapshot through publication and subsequent investigation retrieval, separately from Prometheus metric tests
+- [ ] Export cumulative SQL Server values (waits, throughput counters) as counters that tolerate SQL Server restarts, renamed to Prometheus conventions (`_total` suffix, seconds rather than ms, e.g. `heartbeat_sqlserver_wait_seconds_total`); update rules, rule tests and dashboards to rates in the same change
 - [x] Keep DB collector metric output stateless and Prometheus-scraped instead of persisted in PostgreSQL
-- [ ] Add collector self-observability
+- [ ] Add collector self-observability: per-probe duration histogram, and Go runtime and process metrics on the collector's registry
 
 ### 2.5 Runtime config model
 - [x] Read desired runtime collector config from `config/integrations.yaml`
@@ -210,7 +215,7 @@ Replica ownership and outage testing are section 19. Design details:
 - [ ] Redaction: mask notification channel `config` values in `Redacted()`, strip userinfo from endpoint URLs, and reject credentials embedded in `loki`/`alertmanager` URLs at validation
 - [ ] Admin token: compare in constant time
 - [ ] Network exposure: add a NetworkPolicy limiting port 8082 to Prometheus and operator access
-- [ ] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; consider per-target TLS settings instead of a process-wide flag
+- [ ] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; per-target TLS settings wait until a real target needs them
 
 ---
 
@@ -578,6 +583,15 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [ ] event timeline
 - [ ] anomaly windows
 - [ ] links to Grafana/Loki
+
+### 12.4 Collector evidence
+
+Moved from the collector stage: the destination depends on the investigation
+design, and nothing consumes evidence before the session analyzer [6].
+
+- [ ] Define the evidence content (today only a row count), destination, schema, target/probe identity, timestamps, retention, redaction and bounded delivery/failure behavior; keep raw evidence out of PostgreSQL
+- [ ] Publish retrievable investigation evidence snapshots (the default `LoggingEvidenceSink` currently discards them)
+- [ ] Test a blocking/session snapshot through publication and subsequent investigation retrieval, separately from Prometheus metric tests; sink wiring alone is not publication
 
 ---
 

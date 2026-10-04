@@ -21,9 +21,9 @@ emits today. Metric names and labels are listed in the
 | Database size / file size | Collected | `storage` → `heartbeat_sqlserver_database_file_size_mb` |
 | Throughput counters (batch requests, transactions) | Collected | `throughput` → `heartbeat_sqlserver_throughput` |
 | Instance availability | Partial | `heartbeat_collector_target_up` (collector reachability) |
-| CPU pressure | Planned | — |
-| Buffer/cache hit ratio | Planned | — |
-| Physical and logical reads/writes per second, I/O, IOPS | Planned | — |
+| CPU pressure | Planned (phase 1) | — |
+| Buffer/cache hit ratio | Planned (phase 1, with page life expectancy) | — |
+| Physical and logical reads/writes per second, I/O, IOPS | Planned (phase 1: file I/O) | — |
 | Query latency | Planned | — |
 | Rollbacks, user transactions | Planned | — |
 | Free space and growth trends | Planned | — |
