@@ -180,7 +180,6 @@ env_value() {
 # the sa password never leaves the env file and the container.
 cmd_sqlserver_up() {
 	[ -f "$SQLSERVER_ENV_FILE" ] || die "$SQLSERVER_ENV_FILE is missing; run make sqlserver-dev-init"
-	cmd_cluster
 	password=$(env_value MSSQL_SA_PASSWORD)
 	credential=$(env_value HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV)
 	[ -n "$password" ] && [ -n "$credential" ] || die "$SQLSERVER_ENV_FILE must set MSSQL_SA_PASSWORD and HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV"
@@ -189,6 +188,7 @@ cmd_sqlserver_up() {
 		[ "$(printf '%s' "$collector_login" | tr 'A-Z' 'a-z')" = sa ]; then
 		die "HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV in $SQLSERVER_ENV_FILE must be <login>:<password> for a dedicated login, not sa; run make sqlserver-dev-init to add one"
 	fi
+	cmd_cluster
 	if [ -z "$(docker ps -aq --filter "name=^${SQLSERVER_CONTAINER}\$")" ]; then
 		log "starting $SQLSERVER_CONTAINER"
 		set --
