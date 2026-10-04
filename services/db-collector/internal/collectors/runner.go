@@ -722,9 +722,9 @@ func normalizeValue(value any) any {
 
 // decodeRows maps the SQL result set into Prometheus samples.
 //
-// The probe catalog defines which column carries the numeric value and which
-// columns become labels. Rows that do not contain the configured value column
-// are ignored.
+// The probe catalog defines which column carries the numeric value, its
+// metric type and unit scale, and which columns become labels. Rows that do
+// not contain the configured value column, or hold NULL in it, are ignored.
 func decodeRows(item collectormetadata.ScheduledProbe, probe catalogsqlserver.Probe, rows []map[string]any) []collectorexport.Sample {
 	var samples []collectorexport.Sample
 	for _, row := range rows {
@@ -749,7 +749,8 @@ func decodeRows(item collectormetadata.ScheduledProbe, probe catalogsqlserver.Pr
 			samples = append(samples, collectorexport.Sample{
 				Metric: metric.Name,
 				Help:   metric.Help,
-				Value:  metricValue,
+				Value:  metric.Convert(metricValue),
+				Type:   metric.Type,
 				Labels: labels,
 			})
 		}

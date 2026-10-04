@@ -52,18 +52,35 @@ Reload can also be triggered with `SIGHUP` or file polling.
 ### SQL Server probe metrics
 
 Every probe metric carries `environment` and `target` labels, plus the probe's
-own label columns. All are exported as gauges. `waits` values are cumulative
-counters from SQL Server but are exported as gauges; see
-[known gaps](#known-gaps).
+own label columns. Names follow Prometheus conventions: base units (seconds,
+bytes) and a `_total` suffix on counters only.
 
-| Probe | Source view | Metric | Extra labels |
-| --- | --- | --- | --- |
-| `waits` | `sys.dm_os_wait_stats` | `heartbeat_sqlserver_wait_time_ms` | `wait_type` |
-| `blocking` | `sys.dm_exec_requests` | `heartbeat_sqlserver_blocked_requests` | `blocking_session_id` |
-| `sessions` | `sys.dm_exec_sessions` | `heartbeat_sqlserver_sessions` | `status` |
-| `memory_pressure` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_memory_kb` | `metric` |
-| `storage` | `sys.master_files` | `heartbeat_sqlserver_database_file_size_mb` | `database_name`, `file_name`, `file_type` |
-| `throughput` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_throughput` | `counter_name` (server-wide `Batch Requests/sec` and `Transactions/sec`) |
+| Probe | Source view | Metric | Type | Extra labels | Series per target |
+| --- | --- | --- | --- | --- | --- |
+| `waits` | `sys.dm_os_wait_stats` | `heartbeat_sqlserver_wait_seconds_total` | counter | `wait_type` | one per wait type with non-zero wait time: usually a few hundred, at most the ~1,000 wait types SQL Server defines |
+| `blocking` | `sys.dm_exec_requests` | `heartbeat_sqlserver_blocked_requests` | gauge | `blocking_session_id` | one per blocking session; none while nothing is blocked |
+| `sessions` | `sys.dm_exec_sessions` | `heartbeat_sqlserver_sessions` | gauge | `status` | one per session status (about 5) |
+| `memory_pressure` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_total_server_memory_bytes` | gauge | none | 1 |
+| `storage` | `sys.master_files` | `heartbeat_sqlserver_database_file_size_bytes` | gauge | `database_name`, `file_name`, `file_type` | one per database file |
+| `throughput` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_batch_requests_total` | counter | none | 1 |
+| `throughput` | `sys.dm_os_performance_counters` | `heartbeat_sqlserver_transactions_total` | counter | none | 1 (server-wide `_Total`) |
+
+**Counters.** Waits and throughput are cumulative in SQL Server (the
+`Batch Requests/sec` and `Transactions/sec` performance counters are totals
+despite their names), so they are exported as counters with the value SQL
+Server reports. Query them with `rate()` or `increase()`, never raw. A SQL
+Server restart, a failover, or `DBCC SQLPERF('sys.dm_os_wait_stats', CLEAR)`
+lowers the value; `rate()` and `increase()` treat that drop as a counter reset,
+so rates stay correct (the increase between the last scrape before the reset
+and the reset itself is lost). A failed probe or collector restart leaves a gap
+but no reset: the counter resumes at SQL Server's value. A wait type appears
+when its wait time first becomes non-zero, so its first increase after SQL
+Server starts is not counted.
+
+Each catalog metric descriptor sets the type and the unit scale applied to the
+query column (milliseconds to seconds, KB or 8 KB pages to bytes). A collector
+that overrides a probe's `query_template` must return the same columns in the
+same units.
 
 A failed probe clears its series instead of exporting stale values, and a
 removed collector's series are deleted. A probe that returns no rows exports no
@@ -75,12 +92,30 @@ Requests panel does, so an unreachable target never reads as 0. The catalog live
 
 ### Collector self-observability
 
-| Metric | Labels | Meaning |
-| --- | --- | --- |
-| `heartbeat_collector_target_up` | `collector`, `environment`, `target` | 1 if the last cycle for the target succeeded |
-| `heartbeat_collector_target_consecutive_failures` | `collector`, `environment`, `target` | Failed cycles in a row |
-| `heartbeat_collector_target_last_success_timestamp_seconds` | `collector`, `environment`, `target` | Unix time of the last successful cycle; use it for freshness alerts |
-| `heartbeat_collector_cycle_duration_seconds` | `collector` | Duration of the last collection cycle |
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `heartbeat_collector_target_up` | gauge | `collector`, `environment`, `target` | 1 if the last cycle for the target succeeded |
+| `heartbeat_collector_target_consecutive_failures` | gauge | `collector`, `environment`, `target` | Failed cycles in a row |
+| `heartbeat_collector_target_last_success_timestamp_seconds` | gauge | `collector`, `environment`, `target` | Unix time of the last successful cycle; use it for freshness alerts |
+| `heartbeat_collector_cycle_duration_seconds` | gauge | `collector` | Duration of the last collection cycle |
+| `heartbeat_collector_probe_duration_seconds` | histogram | `collector`, `environment`, `target`, `probe` | Probe execution time, failed and timed-out executions included; buckets 5ms, 10ms, 50ms, 100ms, 500ms, 1s, 5s, 10s |
+| `heartbeat_collector_probe_errors_total` | counter | `collector`, `environment`, `target`, `probe`, `reason` | Failed probe executions. `reason` is one of `timeout` (probe timeout or cycle deadline reached while running), `error` (connection, login, query or decoding error), `not_started` (cycle deadline passed before the probe could start), `panic` |
+| `go_*`, `process_*` | | none | Go runtime (goroutines, GC, memory) and process (CPU, resident memory, open file descriptors, start time) metrics of the collector itself |
+
+The probe error counters are created at 0 for every scheduled probe and reason
+when a collector starts, so `rate()` and `increase()` see the first error.
+Targets skipped during backoff run no probes, so they add neither errors nor
+durations; `heartbeat_collector_target_up` and
+`heartbeat_collector_target_consecutive_failures` cover them. Error text is
+logged, never used as a label. The probe series of a collector are deleted when
+it stops and recreated when it starts, so a reload that changes a collector
+resets its error counters to 0 (a counter reset for `rate()`) and drops the
+series of removed targets and probes.
+
+Per target, the self-observability series are 3 target gauges plus, per
+scheduled probe, 11 histogram series (8 buckets, `+Inf`, sum, count) and 4
+error counters: 93 series for a target with the 6 built-in probes. Probe
+metric series are listed in the table above.
 
 ### OTel gateway
 
@@ -104,7 +139,7 @@ Rules ([`heartbeat.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules
 | Rule | Type |
 | --- | --- |
 | `heartbeat:up:count`, `heartbeat:service_up:ratio` | Recording |
-| `heartbeat:sqlserver_wait_seconds:rate5m` | Recording: wait seconds per second by `wait_type`, from `heartbeat_sqlserver_wait_time_ms` |
+| `heartbeat:sqlserver_wait_seconds:rate5m` | Recording: wait seconds per second by `wait_type`, `rate()` of `heartbeat_sqlserver_wait_seconds_total` |
 | `heartbeat:sqlserver_blocked_requests:sum` | Recording: blocked requests per target; 0 when the target's last cycle succeeded and nothing is blocked |
 | `heartbeat:sqlserver_sessions:sum` | Recording: sessions per target, all statuses |
 | `heartbeat:outsystems_events:rate5m` | Recording |
@@ -114,19 +149,13 @@ Rules ([`heartbeat.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules
 `files/prometheus/rules/generated/` (in the chart) is loaded but empty; it is
 reserved for rules rendered from alert policies. The chart ships all rule files
 in the `heartbeat-prometheus-rules` ConfigMap. `make rules-check` validates the
-rules and runs their promtool unit tests (`files/prometheus/rules/tests/`), and a Go test
-fails if a rule or dashboard references a SQL Server metric the probe catalog
-does not emit.
+rules and runs their promtool unit tests (`files/prometheus/rules/tests/`). A Go
+test fails if a rule, rule test, dashboard, script or metrics doc names a SQL
+Server metric the probe catalog does not emit, or if a rule or dashboard reads
+a counter without `rate()` or `increase()`.
 
 ## Known gaps
 
-- **Counter semantics.** Cumulative SQL Server values are exported as gauges:
-  `heartbeat_sqlserver_wait_time_ms`, and the `Batch Requests/sec` and
-  `Transactions/sec` values of `heartbeat_sqlserver_throughput` (cumulative
-  despite their names). `rate()` still handles SQL Server restarts as counter
-  resets, and the wait recording rule relies on that, but the metric type is
-  wrong for tooling. The dashboard's Top Wait Types and Throughput panels show
-  raw cumulative values rather than rates. Tracked in TODO §2.4.
 - **Alert delivery stops at the gateway.** Alerts reach Alertmanager, but the
   default receiver is the OTel gateway webhook, which only counts them. Chat
   and WhatsApp receivers exist only in
