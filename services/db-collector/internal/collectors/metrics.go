@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -149,12 +150,31 @@ func (m *ProbeMetrics) forgetCollector(collectorID string) {
 	m.errors.DeletePartialMatch(labels)
 }
 
-// failureReason classifies a failed probe execution.  probeCtx is the
-// probe's own context, derived from the cycle context, so it also expires at
-// the cycle deadline.
-func failureReason(probeCtx context.Context) string {
-	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+// failedUnlessStopping counts a failed probe unless its context ended
+// because the poller is stopping (see failedUnlessCanceled).  end was taken
+// when the probe ended, so a probe that failed or timed out on its own is
+// counted even when the poller started stopping afterwards.
+func (m *ProbeMetrics) failedUnlessStopping(end probeEnd, item collectormetadata.ScheduledProbe, reason string) {
+	if end == probeCanceled {
+		return
+	}
+	m.failed(item, reason)
+}
+
+// failureReason classifies a failed probe execution that returned err.  end
+// is why the probe's context ended, if it did.  A probe that reached its own
+// timeout or the cycle deadline timed out, and so did one whose driver gave
+// up on a network read or write, such as a socket deadline on a server that
+// stopped answering.
+func failureReason(end probeEnd, err error) string {
+	if end == probeTimedOut || end == probeCycleDeadline || isNetTimeout(err) {
 		return ReasonTimeout
 	}
 	return ReasonError
+}
+
+// isNetTimeout reports whether err is, or wraps, a network timeout.
+func isNetTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }

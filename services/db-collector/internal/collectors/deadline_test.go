@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"os"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -375,5 +378,165 @@ func TestReturnedCallIsUnregisteredBeforeTheNextProbeStarts(t *testing.T) {
 	}
 	if !held.Load() {
 		t.Fatal("the hook never held a call")
+	}
+}
+
+// A probe that reached its own timeout stays a timeout when the poller starts
+// stopping during the abandon grace: why the probe ended is taken when its
+// context ended, not when the Runner stops waiting.
+func TestProbeTimeoutKeepsItsCauseWhenTheCycleIsCanceledDuringTheGrace(t *testing.T) {
+	tests := []struct {
+		name string
+		// returns makes the executor return once the cycle is canceled
+		// instead of ignoring its context until released.
+		returns bool
+		want    string
+	}{
+		{"abandoned", false, "probe p1 timed out after 20ms and did not stop within 30ms: abandoned while still running"},
+		{"returned", true, "probe p1 timed out after 20ms: query probe: context deadline exceeded"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			metrics, reg := newTestProbeMetrics(t)
+			ctx, cancelCycle := context.WithCancel(context.Background())
+			defer cancelCycle()
+			release := make(chan struct{})
+			executor := funcExecutor(func(probeCtx context.Context, _ collectormetadata.ScheduledProbe) ([]collectorexport.Sample, []collectormetadata.Evidence, error) {
+				<-probeCtx.Done()
+				// The poller stops while the Runner is still waiting.
+				cancelCycle()
+				if !tt.returns {
+					<-release
+				}
+				return nil, nil, fmt.Errorf("query probe: %w", probeCtx.Err())
+			})
+			runner := stuckRunner(executor, collectorexport.NewInMemoryExporter(), nil, slog.New(slog.DiscardHandler), metrics)
+			t.Cleanup(func() {
+				close(release)
+				waitFor(t, "the probe call to return", func() bool { return callsInFlight(runner) == 0 })
+			})
+			target := testTarget("core-db", "p1")
+			target.Probes[0].TimeoutMS = 20
+
+			_, err := runner.RunOnce(ctx, testCollector(time.Minute, target))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want it to contain %q", err, tt.want)
+			}
+			want := []string{"sql-prod/core-db/p1/timeout=1"}
+			if got := nonZero(probeSeries(t, reg, MetricProbeErrors)); fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Fatalf("probe errors:\n got %v\nwant %v", got, want)
+			}
+		})
+	}
+}
+
+// A driver that gives up on a silent socket reports a network timeout, not a
+// context error; it is still a timeout.
+func TestNetworkTimeoutIsCountedAsTimeout(t *testing.T) {
+	metrics, reg := newTestProbeMetrics(t)
+	readTimeout := &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	executor := funcExecutor(func(_ context.Context, item collectormetadata.ScheduledProbe) ([]collectorexport.Sample, []collectormetadata.Evidence, error) {
+		if item.Definition.Name == "slow" {
+			return nil, nil, fmt.Errorf("query probe: %w", readTimeout)
+		}
+		return nil, nil, errors.New("login failed")
+	})
+	runner := NewRunner(executor, collectorexport.NewInMemoryExporter(), nil).WithLogger(slog.New(slog.DiscardHandler)).WithProbeMetrics(metrics)
+	if _, err := runner.RunOnce(context.Background(), testCollector(time.Minute, testTarget("a", "slow"), testTarget("b", "broken"))); err == nil {
+		t.Fatal("expected the probes to fail")
+	}
+	want := []string{"sql-prod/a/slow/timeout=1", "sql-prod/b/broken/error=1"}
+	if got := nonZero(probeSeries(t, reg, MetricProbeErrors)); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("probe errors:\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestFailureReason(t *testing.T) {
+	netTimeout := fmt.Errorf("query probe: %w", &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded})
+	netRefused := fmt.Errorf("query probe: %w", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")})
+	tests := []struct {
+		name string
+		end  probeEnd
+		err  error
+		want string
+	}{
+		{"own timeout", probeTimedOut, context.DeadlineExceeded, ReasonTimeout},
+		{"cycle deadline", probeCycleDeadline, context.DeadlineExceeded, ReasonTimeout},
+		{"network timeout before the deadline", probeRunning, netTimeout, ReasonTimeout},
+		{"other network error", probeRunning, netRefused, ReasonError},
+		{"query error", probeRunning, errors.New("invalid object name"), ReasonError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := failureReason(tt.end, tt.err); got != tt.want {
+				t.Fatalf("failureReason(%d, %v) = %s, want %s", tt.end, tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProbeEndOf(t *testing.T) {
+	newProbeCtx := func(parent context.Context, timeout time.Duration) context.Context {
+		ctx, cancel := context.WithTimeoutCause(parent, timeout, errProbeTimedOut)
+		t.Cleanup(cancel)
+		return ctx
+	}
+	if got := probeEndOf(newProbeCtx(context.Background(), time.Minute)); got != probeRunning {
+		t.Fatalf("running probe: got %d", got)
+	}
+	own := newProbeCtx(context.Background(), time.Nanosecond)
+	<-own.Done()
+	if got := probeEndOf(own); got != probeTimedOut {
+		t.Fatalf("own timeout: got %d", got)
+	}
+	cycle, cancelCycle := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancelCycle()
+	atDeadline := newProbeCtx(cycle, time.Minute)
+	<-atDeadline.Done()
+	if got := probeEndOf(atDeadline); got != probeCycleDeadline {
+		t.Fatalf("cycle deadline: got %d", got)
+	}
+	stopping, stop := context.WithCancel(context.Background())
+	canceled := newProbeCtx(stopping, time.Minute)
+	stop()
+	if got := probeEndOf(canceled); got != probeCanceled {
+		t.Fatalf("canceled: got %d", got)
+	}
+	// Once ended, a probe keeps its cause when its cycle ends later.
+	later, cancelLater := context.WithCancel(context.Background())
+	first := newProbeCtx(later, time.Nanosecond)
+	<-first.Done()
+	cancelLater()
+	if got := probeEndOf(first); got != probeTimedOut {
+		t.Fatalf("own timeout then cancel: got %d", got)
+	}
+}
+
+// An executor that ends its goroutine with runtime.Goexit, as t.FailNow
+// does, must not leave its call registered: the target would never run
+// again.
+func TestExecutorGoexitUnregistersTheCall(t *testing.T) {
+	var calls atomic.Int32
+	executor := funcExecutor(func(_ context.Context, item collectormetadata.ScheduledProbe) ([]collectorexport.Sample, []collectormetadata.Evidence, error) {
+		if calls.Add(1) == 1 {
+			runtime.Goexit()
+		}
+		return sampleFor(item), nil, nil
+	})
+	exporter := collectorexport.NewInMemoryExporter()
+	runner := NewRunner(executor, exporter, nil).WithLogger(slog.New(slog.DiscardHandler))
+	collector := testCollector(time.Minute, testTarget("core-db", "p1"))
+
+	if _, err := runner.RunOnce(context.Background(), collector); !errors.Is(err, errExecutorExited) {
+		t.Fatalf("expected the exited call reported, got %v", err)
+	}
+	if n := callsInFlight(runner); n != 0 {
+		t.Fatalf("exited call still registered: %d calls in flight", n)
+	}
+	if _, err := runner.RunOnce(context.Background(), collector); err != nil {
+		t.Fatalf("target did not run again after the exited call: %v", err)
+	}
+	if _, ok := exporter.Value(testMetric, sampleLabels("core-db", "p1")); !ok {
+		t.Fatal("missing sample after the exited call")
 	}
 }

@@ -113,6 +113,14 @@ var (
 // errProbeAbandoned marks a probe the Runner stopped waiting for.
 var errProbeAbandoned = errors.New("abandoned while still running")
 
+// errProbeTimedOut is the cause of a probe context ended by the probe's own
+// timeout, which tells it apart from the cycle deadline.
+var errProbeTimedOut = errors.New("probe timeout")
+
+// errExecutorExited reports an executor call that ended without returning,
+// through runtime.Goexit.
+var errExecutorExited = errors.New("executor exited without returning")
+
 // ProbeExecutor executes a single scheduled probe against a live database and
 // returns the decoded metric samples along with any structured evidence.
 type ProbeExecutor interface {
@@ -439,13 +447,13 @@ func (r Runner) executeProbe(ctx context.Context, item collectormetadata.Schedul
 		return nil, nil, busyError(name, *busy)
 	}
 	timeout := probeTimeout(item.Definition.TimeoutMS, interval)
-	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	probeCtx, cancel := context.WithTimeoutCause(ctx, timeout, errProbeTimedOut)
 	defer cancel()
 	out := r.callExecutor(probeCtx, item, call)
 	r.metrics.observe(item, out.elapsed)
 	if out.abandoned {
-		r.metrics.failedUnlessCanceled(ctx, item, ReasonTimeout)
-		return nil, nil, abandonedError(ctx, name, timeout, r.grace())
+		r.metrics.failedUnlessStopping(out.end, item, ReasonTimeout)
+		return nil, nil, abandonedError(out.end, name, timeout, r.grace())
 	}
 	if out.panicErr != nil {
 		r.metrics.failed(item, ReasonPanic)
@@ -454,11 +462,44 @@ func (r Runner) executeProbe(ctx context.Context, item collectormetadata.Schedul
 	if out.err == nil {
 		return out.samples, out.evidence, nil
 	}
-	r.metrics.failedUnlessCanceled(ctx, item, failureReason(probeCtx))
-	if ctx.Err() == nil && errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+	r.metrics.failedUnlessStopping(out.end, item, failureReason(out.end, out.err))
+	if out.end == probeTimedOut {
 		return nil, nil, fmt.Errorf("probe %s timed out after %s: %w", name, timeout, out.err)
 	}
 	return nil, nil, fmt.Errorf("probe %s: %w", name, out.err)
+}
+
+// probeEnd is why a probe's context ended, if it did.
+type probeEnd int
+
+const (
+	// probeRunning is a probe whose context had not ended.
+	probeRunning probeEnd = iota
+	// probeTimedOut is a probe that reached its own timeout.
+	probeTimedOut
+	// probeCycleDeadline is a probe that reached the cycle deadline.
+	probeCycleDeadline
+	// probeCanceled is a probe whose cycle was canceled because the poller
+	// is stopping.
+	probeCanceled
+)
+
+// probeEndOf reports why probeCtx, created by executeProbe, ended.  A
+// context's cause is fixed the moment it is done, so the answer reflects what
+// ended the probe first, however much later it is asked: a probe that timed
+// out on its own stays timed out when the cycle is canceled during the
+// abandon grace.
+func probeEndOf(probeCtx context.Context) probeEnd {
+	switch {
+	case probeCtx.Err() == nil:
+		return probeRunning
+	case errors.Is(context.Cause(probeCtx), errProbeTimedOut):
+		return probeTimedOut
+	case errors.Is(probeCtx.Err(), context.DeadlineExceeded):
+		return probeCycleDeadline
+	default:
+		return probeCanceled
+	}
 }
 
 // probeOutcome is the result of one executor call as seen by executeProbe.
@@ -469,6 +510,9 @@ type probeOutcome struct {
 	panicErr error
 	// elapsed is the call's duration, or the time until it was abandoned.
 	elapsed time.Duration
+	// end is why the probe's context ended, taken when the executor
+	// returned or, for an abandoned call, when the Runner stopped waiting.
+	end probeEnd
 	// abandoned reports that the call outlived its hard deadline; the other
 	// fields except elapsed are then unset.
 	abandoned bool
@@ -486,31 +530,43 @@ func (r Runner) callExecutor(probeCtx context.Context, item collectormetadata.Sc
 	results := make(chan probeOutcome, 1)
 	go func() {
 		var out probeOutcome
+		returned := false
+		// Deferred so the call is unregistered and the waiter answered even
+		// when the executor ends its goroutine with runtime.Goexit.
+		defer func() {
+			if !returned {
+				out = probeOutcome{err: errExecutorExited, end: probeEndOf(probeCtx)}
+			}
+			out.elapsed = time.Since(call.started)
+			// Unregister before sending: a waiter that receives the result
+			// goes on to start the target's next probe, which must not find
+			// this call still in flight.  A call abandon finds finished sends
+			// right after.
+			abandoned := calls.finish(item, call)
+			results <- out
+			if r.testHookCallSent != nil {
+				r.testHookCallSent()
+			}
+			if abandoned {
+				args := append(attrs, "running", out.elapsed.Round(time.Millisecond).String())
+				if out.err != nil {
+					args = append(args, "error", out.err)
+				}
+				r.log().Info("abandoned probe returned; result discarded", args...)
+			}
+		}()
 		out.panicErr = r.protect("probe "+item.Definition.Name, attrs, func() {
 			out.samples, out.evidence, out.err = r.executor.RunProbe(probeCtx, item)
 		})
-		out.elapsed = time.Since(call.started)
-		// Unregister before sending: a waiter that receives the result goes
-		// on to start the target's next probe, which must not find this call
-		// still in flight.  A call abandon finds finished sends right after.
-		abandoned := calls.finish(item, call)
-		results <- out
-		if r.testHookCallSent != nil {
-			r.testHookCallSent()
-		}
-		if abandoned {
-			args := append(attrs, "running", out.elapsed.Round(time.Millisecond).String())
-			if out.err != nil {
-				args = append(args, "error", out.err)
-			}
-			r.log().Info("abandoned probe returned; result discarded", args...)
-		}
+		out.end = probeEndOf(probeCtx)
+		returned = true
 	}()
 	select {
 	case out := <-results:
 		return out
 	case <-probeCtx.Done():
 	}
+	end := probeEndOf(probeCtx)
 	grace := time.NewTimer(r.grace())
 	defer grace.Stop()
 	select {
@@ -523,7 +579,7 @@ func (r Runner) callExecutor(probeCtx context.Context, item collectormetadata.Sc
 		// sent.
 		return <-results
 	}
-	return probeOutcome{abandoned: true, elapsed: time.Since(call.started)}
+	return probeOutcome{abandoned: true, end: end, elapsed: time.Since(call.started)}
 }
 
 // busyError explains why a probe was not started while another call for its
@@ -538,14 +594,14 @@ func busyError(probe string, busy probeCall) error {
 	return fmt.Errorf("probe %s not started: probe %s of the target is still in flight after %s", probe, busy.probe, running)
 }
 
-// abandonedError explains why a probe was abandoned.  ctx is the cycle
-// context the probe ran under.
-func abandonedError(ctx context.Context, probe string, timeout, grace time.Duration) error {
+// abandonedError explains why a probe was abandoned.  end is why its
+// context ended.
+func abandonedError(end probeEnd, probe string, timeout, grace time.Duration) error {
 	cause := "timed out after " + timeout.String()
-	switch {
-	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+	switch end {
+	case probeCycleDeadline:
 		cause = "reached the cycle deadline"
-	case ctx.Err() != nil:
+	case probeCanceled:
 		cause = "was canceled"
 	}
 	return fmt.Errorf("probe %s %s and did not stop within %s: %w", probe, cause, grace, errProbeAbandoned)
