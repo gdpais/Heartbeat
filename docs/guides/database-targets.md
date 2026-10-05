@@ -42,7 +42,8 @@ holding `CONTROL SERVER`), the collector logs a warning (with the target and
 It checks when it first connects to the target and about every 10 minutes
 after, so a change to the login's rights shows up within that time. If SQL
 Server cannot tell, the collector logs that once per check and exports no
-value.
+value. The `HeartbeatCollectorLoginElevated` alert fires when the metric has
+been `1` for 15 minutes.
 
 Connections use `encrypt=true` and verify the server certificate, so the target
 needs a certificate the collector trusts.

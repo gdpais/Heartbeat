@@ -80,7 +80,7 @@ phase-by-phase status and [TODO.md](../../TODO.md) for the task list.
 | --- | --- |
 | Shared contracts, PostgreSQL schema | Done |
 | Kubernetes delivery: one Helm chart for kind, CI and production; kind workflow and acceptance tests | Done (production values and Argo CD pending) |
-| SQL Server DB collector (probes, hot reload, failure isolation, readiness) | Working; hardening in progress |
+| SQL Server DB collector (probes, hot reload, failure isolation, readiness) | Done for phase 1: secured endpoints, least-privilege login, counters and self-metrics, CPU, buffer cache and file I/O signals |
 | OTel Collector pipeline, Prometheus/Loki/Grafana/Alertmanager provisioning | Configured; alerts reach Alertmanager (with a Watchdog), chat receivers only in the production example |
 | OTel gateway | Partial: normalizes single events, not yet forwarding |
 | API, web UI, session analyzer, reporting | Not started |

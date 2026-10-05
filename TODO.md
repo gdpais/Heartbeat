@@ -153,7 +153,7 @@ I/O signals [2.3]. Evidence publication moved to the investigation track [12.4]:
 its consumer and storage design live there, and today's evidence is only a row
 count.
 
-- [ ] Validate this stage: connector/probe/config/metric tests, safe non-production SQL queries, and live SQL Server → collector → Prometheus → Grafana on kind, including reloads and target outages, with the collector logged in as a least-privilege login [16.1–16.2]
+- [x] Validate this stage: connector/probe/config/metric tests, safe non-production SQL queries, and live SQL Server → collector → Prometheus → Grafana on kind, including reloads and target outages, with the collector logged in as a least-privilege login [16.1–16.2]
 
 ### 2.1 Service bootstrap
 - [x] Create Go service entrypoint `services/db-collector/cmd/db-collector/`
