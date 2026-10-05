@@ -75,10 +75,11 @@ Trunk-based development and tagged releases ([ADR 0006](docs/architecture/decisi
 the rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - [x] Decide the branching, versioning, release and changelog model; add `CONTRIBUTING.md` and `CHANGELOG.md`
-- [ ] Retire the `db-collectors` phase branch: delete the branch and its ruleset (its CI push trigger is already removed)
-- [ ] Protect `v*` tags with a tag ruleset: no updates or deletions
-- [ ] Release workflow: release-please on `master` keeps a release pull request (version, `CHANGELOG.md`, chart `version`/`appVersion`); when a release is created, build multi-arch images of both services, push them to GHCR tagged with the version, and add their digests to the release notes
-- [ ] First release, `v0.1.0` (phase 1): seed release-please at the current `master` so the hand-written `Unreleased` section becomes the `0.1.0` entry
+- [x] Retire the `db-collectors` phase branch, its ruleset and its CI push trigger
+- [x] Release workflows: release-please keeps a release pull request (`CHANGELOG.md`, `version.txt`, chart `version`/`appVersion`); a `vX.Y.Z` tag on `master` that passed CI publishes multi-arch images and the chart to GHCR and lists their digests in the GitHub release
+- [ ] Create the release GitHub App; set `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY` ([setup](CONTRIBUTING.md#releases))
+- [ ] Tag ruleset on `v*`: only the release app creates tags; no updates or deletions
+- [ ] First release, `v0.1.0`: tag the phase 1 merge commit `64ac1b6`, run the `release` workflow by hand for it, check the release notes list three digests, and make the GHCR packages public
 
 ---
 

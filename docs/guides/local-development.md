@@ -163,6 +163,9 @@ gateway. BuildKit supplies `TARGETOS` and `TARGETARCH`; do not override them
 separately from `--platform`. `.dockerignore` keeps everything but Go sources
 out of the build context.
 
+Released images are built by CI, not by hand: see
+[releases](../../CONTRIBUTING.md#releases).
+
 ## Change collector config without restarting
 
 Edit the `integrations` values and run `make kind-deploy`. The collector is not

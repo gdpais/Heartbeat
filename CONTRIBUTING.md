@@ -120,14 +120,47 @@ branches as `gone`, ready for `git branch -d`.
 
 ## Releases
 
-A release is a `vX.Y.Z` tag on `master` with [Semantic Versioning](https://semver.org/).
-release-please keeps an open release pull request with the next version and its
-[CHANGELOG.md](CHANGELOG.md) entries. Merging it tags `master`, publishes the
-GitHub release and builds the images for that version. Production runs a
-release by its image digest, promoted through Argo CD
-([ADR 0005](docs/architecture/decisions/0005-production-delivery-and-operations-defaults.md)).
-Tags are never moved or deleted; a bad release is fixed by the next patch
-release.
+A release is a `vX.Y.Z` tag on `master` with [Semantic Versioning](https://semver.org/);
+one version covers both images and the chart. The rules and reasons are in
+[ADR 0006](docs/architecture/decisions/0006-trunk-based-development-and-tagged-releases.md).
 
-The release workflow is not built yet ([TODO 0.5](TODO.md)); until it is,
-there are no tags and no published images.
+**Cutting a release.** Google's [release-please](https://github.com/googleapis/release-please)
+(`.github/workflows/release-please.yml`) keeps a pull request named
+`chore: release X.Y.Z` open on `master`. It updates `CHANGELOG.md`,
+`version.txt` and the chart version from the Conventional Commits merged since
+the last release; only `feat`, `fix` and breaking changes make one. Review the
+entries, edit them in that pull request if needed, and merge it when you want
+to release. release-please then tags the merge commit and creates the GitHub
+release, and the tag starts `.github/workflows/release.yml`, which:
+
+1. checks the tag is on `master`, matches the chart version and passed the
+   required CI checks;
+2. builds `ghcr.io/gdpais/heartbeat/db-collector` and
+   `ghcr.io/gdpais/heartbeat/otel-gateway` for `linux/amd64` and `linux/arm64`,
+   and pushes the chart to `oci://ghcr.io/gdpais/charts/heartbeat`;
+3. lists every artifact with its digest in the GitHub release.
+
+A published version is never rebuilt. If a run fails after the tag exists, run
+the `release` workflow by hand (Actions → release → Run workflow) with the tag;
+it skips what is already published.
+
+**Deploying.** Production runs a release by its image digests, promoted
+through Argo CD ([ADR 0005](docs/architecture/decisions/0005-production-delivery-and-operations-defaults.md)).
+There are no `latest` or `stable` tags.
+
+**Tags** are created only by the release app and are never moved or deleted;
+a bad release is fixed by the next patch release.
+
+**One-time setup** ([TODO 0.5](TODO.md)):
+
+1. Create a GitHub App (Settings → Developer settings → GitHub Apps → New):
+   webhook off; repository permissions *Contents*, *Pull requests* and
+   *Issues*: read and write. Install it on this repository only.
+2. In the repository's Settings → Secrets and variables → Actions, add the
+   variable `RELEASE_APP_CLIENT_ID` (the app's client ID) and the secret
+   `RELEASE_APP_PRIVATE_KEY` (a private key generated on the app's page).
+3. Add a tag ruleset (Settings → Rules → Rulesets → New tag ruleset) targeting
+   `v*`, with *Restrict creations*, *Restrict updates* and *Restrict
+   deletions*, and the release app in the bypass list.
+4. After the first release, make each package public (your profile →
+   Packages → package → Package settings → Change visibility).
