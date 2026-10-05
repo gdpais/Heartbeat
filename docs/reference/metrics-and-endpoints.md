@@ -141,6 +141,7 @@ Requests panel does, so an unreachable target never reads as 0. The catalog live
 | `heartbeat_collector_target_consecutive_failures` | gauge | `collector`, `environment`, `target` | Failed cycles in a row |
 | `heartbeat_collector_target_last_success_timestamp_seconds` | gauge | `collector`, `environment`, `target` | Unix time of the last successful cycle; use it for freshness alerts |
 | `heartbeat_collector_cycle_duration_seconds` | gauge | `collector` | Duration of the last collection cycle |
+| `heartbeat_collector_target_login_sysadmin` | gauge | `collector`, `environment`, `target` | 1 if the collector's login for the target is sysadmin-equivalent: a member of `sysadmin`, or holding `CONTROL SERVER` (it should be 0; see [login permissions](../guides/database-targets.md#collector-login-permissions)). Checked when the collector first connects to the target and about every 10 minutes after; absent until the first check, and while SQL Server cannot tell |
 | `heartbeat_collector_probe_duration_seconds` | histogram | `collector`, `environment`, `target`, `probe` | Probe execution time, failed and timed-out executions included; buckets 5ms, 10ms, 50ms, 100ms, 500ms, 1s, 5s, 10s, 30s, 60s |
 | `heartbeat_collector_probe_errors_total` | counter | `collector`, `environment`, `target`, `probe`, `reason` | Failed probe executions. `reason` is one of `timeout` (probe timeout or cycle deadline reached while running), `error` (connection, login, query or decoding error), `not_started` (cycle deadline passed before the probe could start), `panic`. Probes interrupted because the collector is stopping (shutdown or reload) are not counted |
 | `go_*`, `process_*` | | none | Go runtime (goroutines, GC, memory) and process (CPU, resident memory, open file descriptors, start time) metrics of the collector itself |
@@ -155,9 +156,9 @@ it stops and recreated when it starts, so a reload that changes a collector
 resets its error counters to 0 (a counter reset for `rate()`) and drops the
 series of removed targets and probes.
 
-Per target, the self-observability series are 3 target gauges plus, per
+Per target, the self-observability series are 4 target gauges plus, per
 scheduled probe, 13 histogram series (10 buckets, `+Inf`, sum, count) and 4
-error counters: 105 series for a target with the 6 built-in probes. Probe
+error counters: 106 series for a target with the 6 built-in probes. Probe
 metric series are listed in the table above.
 
 ### OTel gateway

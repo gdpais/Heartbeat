@@ -75,8 +75,8 @@ targets.
 ## 4. Add a SQL Server target
 
 ```bash
-make sqlserver-dev-init   # once: writes .env.sqlserver-dev with a random SA password
-make sqlserver-dev-up     # starts SQL Server in Docker, creates the credential Secret, redeploys
+make sqlserver-dev-init   # once: writes .env.sqlserver-dev with random SA and collector passwords
+make sqlserver-dev-up     # starts SQL Server in Docker, creates the collector login and its Secret, redeploys
 ```
 
 The first run pulls the SQL Server image (about 1.5 GB). The container,

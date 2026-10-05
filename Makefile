@@ -39,7 +39,7 @@ help:
 		'  make kind-status         Show pods and services in the kind cluster' \
 		'  make kind-down           Delete the kind cluster' \
 		'  make health              Check the collector, Prometheus, Alertmanager and Grafana on their local ports' \
-		'  make sqlserver-dev-init  Create the ignored .env.sqlserver-dev with a random SA password' \
+		'  make sqlserver-dev-init  Create the ignored .env.sqlserver-dev with random SA and collector passwords' \
 		'  make sqlserver-dev-up    Start a dev-only SQL Server container and point the collector at it' \
 		'  make sqlserver-dev-down  Remove the dev SQL Server container and its data; redeploy without it' \
 		'  make kind-e2e            Run the acceptance checks on a separate, temporary kind cluster' \
@@ -82,14 +82,34 @@ health:
 	$(CURL_CHECK) http://localhost:9093/-/ready
 	$(CURL_CHECK) http://localhost:3000/api/health
 
-# Generates a random SA password per machine instead of copying a shared one.
-# The "Dev-" prefix plus hex digits satisfies SQL Server password complexity.
+# Generates random per-machine passwords instead of copying shared ones: sa
+# for container setup, and the collector's least-privilege login
+# (scripts/sqlserver-login.sh). A file from before the dedicated login, whose
+# collector credential is sa (or missing), gets one added; the SA password is
+# kept. The file must hold plain KEY=value lines, which is how scripts/kind.sh
+# reads it: no `export`, no quotes. The "Dev-" prefix plus hex digits
+# satisfies SQL Server password complexity.
 sqlserver-dev-init:
-	@set -eu; if [ ! -f $(SQLSERVER_DEV_ENV_FILE) ]; then \
-		umask 077; \
-		password="Dev-$$(openssl rand -hex 16)"; \
-		printf 'MSSQL_SA_PASSWORD=%s\nHEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV=sa:%s\n' "$$password" "$$password" > $(SQLSERVER_DEV_ENV_FILE); \
-		echo "Created $(SQLSERVER_DEV_ENV_FILE) with a random SA password"; \
+	@set -eu; umask 077; file=$(SQLSERVER_DEV_ENV_FILE); key=HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV; \
+	unreadable() { echo "error: cannot read $$file" >&2; exit 2; }; \
+	if [ ! -f "$$file" ]; then \
+		printf 'MSSQL_SA_PASSWORD=Dev-%s\n' "$$(openssl rand -hex 16)" > "$$file"; \
+		echo "Created $$file with a random SA password"; \
+	fi; \
+	status=0; grep -Eq "^[[:space:]]*export[[:space:]]|^[A-Za-z_][A-Za-z0-9_]*=[\"']" "$$file" || status=$$?; \
+	case $$status in \
+	0) echo "error: $$file must hold plain KEY=value lines (no export, no quotes)" >&2; exit 1 ;; \
+	1) ;; \
+	*) unreadable ;; \
+	esac; \
+	current=$$(grep "^$$key=" "$$file") || [ $$? -eq 1 ] || unreadable; \
+	user=$$(printf '%s\n' "$$current" | head -n 1 | cut -d= -f2- | cut -s -d: -f1 | tr 'A-Z' 'a-z'); \
+	if [ -z "$$user" ] || [ "$$user" = sa ]; then \
+		rest=$$(grep -v "^$$key=" "$$file") || [ $$? -eq 1 ] || unreadable; \
+		{ if [ -n "$$rest" ]; then printf '%s\n' "$$rest"; fi; \
+			printf '%s=heartbeat_collector:Dev-%s\n' "$$key" "$$(openssl rand -hex 16)"; } > "$$file.tmp"; \
+		mv "$$file.tmp" "$$file"; \
+		echo "Added a least-privilege collector login to $$file"; \
 	fi
 	chmod 600 $(SQLSERVER_DEV_ENV_FILE)
 
