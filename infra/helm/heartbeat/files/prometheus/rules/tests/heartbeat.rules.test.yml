@@ -8,15 +8,23 @@ tests:
   - name: SQL Server wait rate survives a SQL Server restart
     interval: 1m
     input_series:
-      # +60000 ms per minute, then the counter resets (restart) and resumes.
-      - series: 'heartbeat_sqlserver_wait_time_ms{collector="c",environment="dev",target="db1",wait_type="LCK_M_S"}'
-        values: '0 60000 120000 180000 240000 300000 0 60000 120000 180000 240000 300000'
+      # +60 s of waits per minute, then the counter resets (restart) and resumes.
+      - series: 'heartbeat_sqlserver_wait_seconds_total{collector="c",environment="dev",target="db1",wait_type="LCK_M_S"}'
+        values: '0 60 120 180 240 300 0 60 120 180 240 300'
     promql_expr_test:
       - expr: heartbeat:sqlserver_wait_seconds:rate5m
         eval_time: 5m
         exp_samples:
           - labels: 'heartbeat:sqlserver_wait_seconds:rate5m{environment="dev",target="db1",wait_type="LCK_M_S"}'
             value: 1
+      # A window spanning the restart (4m..8m: 240 300 0 60 120) counts the
+      # drop as a reset, not as -300: 180 s of waits seen over 240 s,
+      # extrapolated to the 5m window, is 0.75 and never negative.
+      - expr: heartbeat:sqlserver_wait_seconds:rate5m
+        eval_time: 8m
+        exp_samples:
+          - labels: 'heartbeat:sqlserver_wait_seconds:rate5m{environment="dev",target="db1",wait_type="LCK_M_S"}'
+            value: 0.75
       - expr: heartbeat:sqlserver_wait_seconds:rate5m
         eval_time: 11m
         exp_samples:
@@ -70,3 +78,26 @@ tests:
             exp_annotations:
               summary: "Heartbeat alerting pipeline is alive"
               description: "Always firing. If the dead-man's switch stops receiving it, Heartbeat alerting is down."
+
+  - name: Elevated collector login fires after 15 minutes, a least-privilege one never
+    interval: 1m
+    input_series:
+      - series: 'heartbeat_collector_target_login_sysadmin{collector="c",environment="dev",target="db1"}'
+        values: '1x30'
+      - series: 'heartbeat_collector_target_login_sysadmin{collector="c",environment="dev",target="db2"}'
+        values: '0x30'
+    alert_rule_test:
+      - alertname: HeartbeatCollectorLoginElevated
+        eval_time: 10m
+        exp_alerts: []
+      - alertname: HeartbeatCollectorLoginElevated
+        eval_time: 20m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              collector: c
+              environment: dev
+              target: db1
+            exp_annotations:
+              summary: "db-collector logs in to dev/db1 as a sysadmin-equivalent login"
+              description: "The collector login for db1 is a member of sysadmin or holds CONTROL SERVER. Give it only VIEW SERVER STATE and VIEW ANY DEFINITION."

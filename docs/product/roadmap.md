@@ -9,7 +9,7 @@ shared validation inventory [16] throughout rather than as a final stage.
 | Phase | Theme | Status |
 | --- | --- | --- |
 | 0 | Foundations, including kind + Helm delivery | Done |
-| 1 | DB collector (SQL Server) | In progress |
+| 1 | DB collector (SQL Server) | Done |
 | 2 | OTel gateway (OutSystems ingest) | Not started (gateway scaffold done) |
 | 3 | API / control plane | Not started |
 | 4 | Web UI | Not started |
@@ -37,39 +37,35 @@ shared validation inventory [16] throughout rather than as a final stage.
 Open housekeeping: install the Renovate app and agree the local loop's time and
 resource budget [0.4].
 
-## Phase 1 — DB collector (in progress)
+## Phase 1 — DB collector (done)
 
 Runtime collection is configured in YAML and needs no API or UI.
 
-Done:
+- Probe catalog: waits, blocking, sessions, memory, storage, throughput, CPU,
+  page life expectancy and buffer cache hit ratio, file I/O; per-target
+  connection pooling and timeouts [2.1–2.3]
+- Endpoint security: admin token on diagnostics and reload (constant-time
+  check), status-only `/readyz`, full redaction and credential-free URLs,
+  NetworkPolicy, `TrustServerCertificate` warning [2.7]
+- Least privilege and query safety: every probe runs with `LOCK_TIMEOUT` and
+  low deadlock priority; a sysadmin-equivalent login is logged, exported and
+  alerted on; tests and the sandbox run as a login with only the documented
+  grants; probe review checklist [2.2]
+- Metrics: cumulative values as counters in base units, per-probe durations
+  and error counters, Go runtime and process metrics [2.4, 2.6]
+- Reliability: failure isolation, bounded backoff, freshness metrics,
+  stale-series cleanup, readiness that reflects collector state, reload
+  rollback, and a hard deadline so a probe the driver cannot cancel never
+  stalls the collector [2.6]
+- SQL Server overview dashboard and local SQL Server sandbox; every probe runs
+  against a real SQL Server in CI, and `make kind-e2e` covers live SQL Server →
+  collector → Prometheus → Grafana on kind, reloads and target outages with a
+  least-privilege login
 
-- Probe catalog (waits, blocking, sessions, memory, storage, throughput),
-  per-target connection pooling and timeouts [2.1–2.3]
-- Failure isolation, bounded backoff, freshness metrics, stale-series cleanup,
-  readiness that reflects collector state, reload rollback [2.6]
-- SQL Server overview dashboard; local SQL Server sandbox
-- Server-wide, unpadded throughput series
-  ([#4](https://github.com/gdpais/Heartbeat/issues/4)); every probe runs
-  against a real SQL Server in CI [2.3]
-
-Remaining, in order:
-
-1. Collector endpoint security: authenticated diagnostics, full redaction,
-   constant-time token check, NetworkPolicy, `TrustServerCertificate`
-   warning [2.7]
-2. Least privilege and query safety: tests run as a login with only the
-   documented grants, a warning when the login is `sysadmin`, `LOCK_TIMEOUT`
-   and low deadlock priority on every session, a probe review checklist [2.2]
-3. Metric types and self-metrics: waits and throughput as counters renamed to
-   Prometheus conventions, per-probe error counters and durations, Go runtime
-   and process metrics [2.4, 2.6]
-4. Core signals for the first production deploy: CPU, page life expectancy and
-   buffer cache hit ratio, file I/O [2.3]
-
-Exit: live SQL Server → collector → Prometheus → Grafana on kind, including
-reloads and target outages, with a least-privilege login. API-driven probe
-assignments [2.5] join in phase 3, probe versioning with them [4.5], and
-evidence publication in phase 7 [12.4]; none of them block this phase.
+Not in this phase: API-driven probe assignments [2.5] join in phase 3, probe
+versioning with them [4.5], and evidence publication in phase 7 [12.4]. One
+failing probe still fails its whole target for that cycle; per-probe failure
+isolation is a follow-up.
 
 ## Phase 2 — OTel gateway (OutSystems ingest)
 

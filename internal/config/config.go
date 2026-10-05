@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"sort"
@@ -103,6 +104,12 @@ type TargetRuntimeConfig struct {
 	Probes          []ProbeRuntimeConfig
 }
 
+// MaxProbeTimeout is the longest a single probe execution may run.  A probe's
+// timeout_ms above it is rejected, and collectors cap every probe timeout at
+// it.  Database connectors size their socket read deadlines from it, so a
+// probe still within its timeout is never cut off by the driver.
+const MaxProbeTimeout = 25 * time.Second
+
 // ProbeRuntimeConfig describes a single probe to execute against a target.
 type ProbeRuntimeConfig struct {
 	Name          string
@@ -169,23 +176,34 @@ func (c RuntimeConfig) EnabledCollectors(kind string) []CollectorRuntimeConfig {
 	return out
 }
 
+// redactedValue replaces secret values in diagnostics.
+const redactedValue = "<redacted>"
+
 // Redacted returns a copy suitable for diagnostics. Secret references remain
-// visible, but their concrete values are masked.
+// visible, but their concrete values are masked. Notification channel config
+// values are masked too, since channel settings such as SMTP or webhook
+// options can carry secrets, and userinfo (user:password@) is stripped from
+// every URL-bearing field.
 func (c RuntimeConfig) Redacted() RuntimeConfig {
 	out := c
-	out.Grafana = cloneEndpoint(c.Grafana)
-	out.Loki = cloneEndpoint(c.Loki)
-	out.Alertmanager = cloneEndpoint(c.Alertmanager)
-	out.OpenTelemetry = cloneEndpoint(c.OpenTelemetry)
+	out.Grafana = redactEndpoint(c.Grafana)
+	out.Loki = redactEndpoint(c.Loki)
+	out.Alertmanager = redactEndpoint(c.Alertmanager)
+	out.OpenTelemetry = redactEndpoint(c.OpenTelemetry)
 	out.Collectors = cloneCollectors(c.Collectors)
 	out.NotificationChannels = cloneNotificationChannels(c.NotificationChannels)
 	out.CredentialRefs = map[string]string{}
 	for key := range c.CredentialRefs {
-		out.CredentialRefs[key] = "<redacted>"
+		out.CredentialRefs[key] = redactedValue
 	}
 	for i := range out.NotificationChannels {
-		if out.NotificationChannels[i].CredentialRef != "" {
-			out.NotificationChannels[i].CredentialRef = redactRef(out.NotificationChannels[i].CredentialRef)
+		channel := &out.NotificationChannels[i]
+		if channel.CredentialRef != "" {
+			channel.CredentialRef = redactRef(channel.CredentialRef)
+		}
+		channel.TargetRef = redactTargetRef(channel.TargetRef)
+		for key := range channel.Config {
+			channel.Config[key] = redactedValue
 		}
 	}
 	for i := range out.Collectors {
@@ -193,6 +211,21 @@ func (c RuntimeConfig) Redacted() RuntimeConfig {
 		for j := range out.Collectors[i].Targets {
 			out.Collectors[i].Targets[j].CredentialRef = redactRef(out.Collectors[i].Targets[j].CredentialRef)
 		}
+	}
+	return out
+}
+
+// redactEndpoint returns a copy of in with userinfo stripped from its URLs
+// and URL templates.
+func redactEndpoint(in Endpoint) Endpoint {
+	out := cloneEndpoint(in)
+	out.BaseURL = stripUserinfo(out.BaseURL)
+	out.Endpoint = stripUserinfo(out.Endpoint)
+	for key, value := range out.DashboardTemplates {
+		out.DashboardTemplates[key] = stripUserinfo(value)
+	}
+	for key, value := range out.DeepLinkTemplates {
+		out.DeepLinkTemplates[key] = stripUserinfo(value)
 	}
 	return out
 }
@@ -301,6 +334,9 @@ func normalizeProbes(docs []probeDocument) []ProbeRuntimeConfig {
 }
 
 func validate(cfg RuntimeConfig) error {
+	if err := validateEndpointCredentials(cfg); err != nil {
+		return err
+	}
 	if err := validateURL("grafana.base_url", cfg.Grafana.BaseURL, true); err != nil {
 		return err
 	}
@@ -346,6 +382,9 @@ func validate(cfg RuntimeConfig) error {
 			return err
 		}
 	}
+	if err := validateUniqueSQLServerTargets(cfg.Collectors); err != nil {
+		return err
+	}
 	notificationIDs := map[string]struct{}{}
 	for _, channel := range cfg.NotificationChannels {
 		if channel.ID == "" {
@@ -357,6 +396,9 @@ func validate(cfg RuntimeConfig) error {
 		notificationIDs[channel.ID] = struct{}{}
 		if channel.ChannelType == "" || channel.TargetRef == "" {
 			return fmt.Errorf("notification channel %s requires channel_type and target_ref", channel.ID)
+		}
+		if targetRefCredentials(channel.TargetRef) {
+			return fmt.Errorf("notification channel %s target_ref %s", channel.ID, embeddedCredentialsHint)
 		}
 		if channel.CredentialRef != "" && !validSecretRef(channel.CredentialRef) {
 			return fmt.Errorf("notification channel %s credential_ref must be a secret reference", channel.ID)
@@ -378,6 +420,9 @@ func validateTargets(collector CollectorRuntimeConfig) error {
 		if target.Host == "" {
 			return fmt.Errorf("collector %s target %s host is required", collector.ID, target.Name)
 		}
+		if !validHost(target.Host) {
+			return fmt.Errorf("collector %s target %s host must be a host name, an IPv4 address or a bare IPv6 address, with no port, brackets, credentials or path; set the port in port", collector.ID, target.Name)
+		}
 		if target.Port < 1 || target.Port > 65535 {
 			return fmt.Errorf("collector %s target %s port must be between 1 and 65535", collector.ID, target.Name)
 		}
@@ -388,11 +433,44 @@ func validateTargets(collector CollectorRuntimeConfig) error {
 			if probe.TimeoutMS < 0 {
 				return fmt.Errorf("collector %s target %s probe %s timeout_ms cannot be negative", collector.ID, target.Name, probe.Name)
 			}
+			if maxMS := MaxProbeTimeout.Milliseconds(); int64(probe.TimeoutMS) > maxMS {
+				return fmt.Errorf("collector %s target %s probe %s timeout_ms %d exceeds the maximum of %d", collector.ID, target.Name, probe.Name, probe.TimeoutMS, maxMS)
+			}
 		}
 	}
 	for _, selected := range collector.TargetNames {
 		if _, exists := targets[selected]; !exists && len(targets) > 0 {
 			return fmt.Errorf("collector %s target_names references unknown target %q", collector.ID, selected)
+		}
+	}
+	return nil
+}
+
+// validateUniqueSQLServerTargets rejects a target, identified by environment
+// and name, that more than one enabled sqlserver collector scrapes.  Probe
+// series carry only environment and target labels, so two collectors would
+// write the same series: counters would jump between their readings, which
+// rate() reads as resets, and the database would be polled twice.
+func validateUniqueSQLServerTargets(collectors []CollectorRuntimeConfig) error {
+	type targetKey struct{ environment, name string }
+	owners := map[targetKey]string{}
+	for _, collector := range collectors {
+		if !collector.Enabled || collector.Kind != "sqlserver" {
+			continue
+		}
+		selected := map[string]bool{}
+		for _, name := range collector.TargetNames {
+			selected[name] = true
+		}
+		for _, target := range collector.Targets {
+			if len(selected) > 0 && !selected[target.Name] {
+				continue
+			}
+			key := targetKey{environment: target.EnvironmentSlug, name: target.Name}
+			if owner, exists := owners[key]; exists {
+				return fmt.Errorf("target %q in environment %q is scraped by collectors %s and %s; enable it in one collector only", target.Name, target.EnvironmentSlug, owner, collector.ID)
+			}
+			owners[key] = collector.ID
 		}
 	}
 	return nil
@@ -410,6 +488,208 @@ func validateURL(name, raw string, required bool) error {
 		return fmt.Errorf("%s must be an absolute URL", name)
 	}
 	return nil
+}
+
+// embeddedCredentialsHint ends validation errors for URLs with userinfo. The
+// URL itself is never echoed, since it contains the credential.
+const embeddedCredentialsHint = "must not embed credentials (user:password@); use a credential reference"
+
+// validateEndpointCredentials rejects userinfo in every URL-bearing endpoint
+// field: base_url, endpoint and the dashboard and deep-link templates of
+// grafana, loki, alertmanager and opentelemetry. Credentials belong in secret
+// references; a URL is copied into logs, diagnostics, browser links and
+// error messages.
+func validateEndpointCredentials(cfg RuntimeConfig) error {
+	for _, section := range []struct {
+		name     string
+		endpoint Endpoint
+	}{
+		{"grafana", cfg.Grafana},
+		{"loki", cfg.Loki},
+		{"alertmanager", cfg.Alertmanager},
+		{"opentelemetry", cfg.OpenTelemetry},
+	} {
+		if hasUserinfo(section.endpoint.BaseURL) {
+			return fmt.Errorf("%s.base_url %s", section.name, embeddedCredentialsHint)
+		}
+		if hasUserinfo(section.endpoint.Endpoint) {
+			return fmt.Errorf("%s.endpoint %s", section.name, embeddedCredentialsHint)
+		}
+		for _, templates := range []struct {
+			field  string
+			values map[string]string
+		}{
+			{"dashboard_templates", section.endpoint.DashboardTemplates},
+			{"deep_link_templates", section.endpoint.DeepLinkTemplates},
+		} {
+			for key, value := range templates.values {
+				if hasUserinfo(value) {
+					return fmt.Errorf("%s.%s.%s %s", section.name, templates.field, key, embeddedCredentialsHint)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// specialSchemes are the WHATWG "special" schemes. Browsers parse an
+// authority after them even with backslashes, one slash or none
+// ("http:\\user:pass@host", "http:user:pass@host").
+var specialSchemes = map[string]bool{"http": true, "https": true, "ws": true, "wss": true, "ftp": true, "file": true}
+
+// userinfoSpan returns the byte range [start, end) of the userinfo in raw,
+// including its trailing '@', and whether raw has userinfo at all.
+//
+// It works on the text rather than on url.Parse, so it also covers values
+// url.Parse rejects (templates with ${placeholders} in the host) and the
+// lenient forms browsers accept for special schemes. As in net/url, the
+// authority ends at the first '/', '?' or '#' (and, for special schemes as in
+// browsers, '\'), and userinfo ends at the last '@' in it.
+func userinfoSpan(raw string) (start, end int, ok bool) {
+	isSlash := func(c byte) bool { return c == '/' || c == '\\' }
+	// Browsers strip leading C0 controls and spaces before parsing.
+	i := len(raw) - len(strings.TrimLeftFunc(raw, func(r rune) bool { return r <= ' ' }))
+	delimiters := "/?#"
+	if colon := schemeEnd(raw[i:]); colon > 0 {
+		scheme := strings.ToLower(raw[i : i+colon])
+		i += colon + 1
+		if specialSchemes[scheme] {
+			delimiters = "/\\?#"
+		} else if !strings.HasPrefix(raw[i:], "//") {
+			return 0, 0, false // opaque, such as mailto:ops@example.com
+		}
+	} else if len(raw)-i < 2 || !isSlash(raw[i]) || !isSlash(raw[i+1]) {
+		return 0, 0, false // a path, query or fragment: no authority
+	}
+	for i < len(raw) && isSlash(raw[i]) {
+		i++
+	}
+	authority := raw[i:]
+	if stop := strings.IndexAny(authority, delimiters); stop >= 0 {
+		authority = authority[:stop]
+	}
+	at := strings.LastIndexByte(authority, '@')
+	if at < 0 {
+		return 0, 0, false
+	}
+	return i, i + at + 1, true
+}
+
+// schemeEnd returns the index of the ':' that ends raw's URL scheme, or -1
+// when raw does not start with a scheme.
+func schemeEnd(raw string) int {
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z':
+		case '0' <= c && c <= '9', c == '+', c == '-', c == '.':
+			if i == 0 {
+				return -1
+			}
+		case c == ':':
+			if i == 0 {
+				return -1
+			}
+			return i
+		default:
+			return -1
+		}
+	}
+	return -1
+}
+
+// hasUserinfo reports whether raw is a URL or URL template with userinfo.
+func hasUserinfo(raw string) bool {
+	_, _, ok := userinfoSpan(removeTabsAndNewlines(raw))
+	return ok
+}
+
+// stripUserinfo removes userinfo from raw and leaves everything else,
+// including template placeholders and encoding, unchanged apart from the
+// tabs and newlines browsers ignore.
+func stripUserinfo(raw string) string {
+	raw = removeTabsAndNewlines(raw)
+	start, end, ok := userinfoSpan(raw)
+	if !ok {
+		return raw
+	}
+	return raw[:start] + raw[end:]
+}
+
+// removeTabsAndNewlines drops ASCII tab, CR and LF anywhere in raw, as the
+// WHATWG URL parser does before parsing, so "ht\ttp://u:p@h" is scanned as
+// the browser sees it.
+func removeTabsAndNewlines(raw string) string {
+	if !strings.ContainsAny(raw, "\t\r\n") {
+		return raw
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\r' || r == '\n' {
+			return -1
+		}
+		return r
+	}, raw)
+}
+
+// bareUserinfoEnd returns the index just past the '@' of a scheme-less
+// "user:password@host" value, or -1. Such a value is not a URL with an
+// authority, but tools like curl read it as credentials for http://host.
+// "mailto:" is the one opaque scheme a target_ref legitimately uses with an
+// '@', so it is exempt; a bare address such as ops@example.com has no ':' and
+// never matches.
+func bareUserinfoEnd(raw string) int {
+	raw = removeTabsAndNewlines(raw)
+	head := strings.TrimLeftFunc(raw, func(r rune) bool { return r <= ' ' })
+	offset := len(raw) - len(head)
+	if stop := strings.IndexAny(head, "/\\?#"); stop >= 0 {
+		head = head[:stop]
+	}
+	at := strings.LastIndexByte(head, '@')
+	if at < 0 {
+		return -1
+	}
+	user, _, hasColon := strings.Cut(head[:at], ":")
+	if !hasColon || strings.EqualFold(user, "mailto") {
+		return -1
+	}
+	return offset + at + 1
+}
+
+// targetRefCredentials reports whether a notification channel target_ref
+// carries credentials, as URL userinfo or as a bare user:password@host.
+func targetRefCredentials(ref string) bool {
+	return hasUserinfo(ref) || bareUserinfoEnd(ref) >= 0
+}
+
+// redactTargetRef strips credentials from a notification channel target_ref.
+func redactTargetRef(ref string) string {
+	ref = stripUserinfo(ref) // also drops tabs and newlines
+	if end := bareUserinfoEnd(ref); end >= 0 {
+		return ref[end:]
+	}
+	return ref
+}
+
+// validHost reports whether host is safe to join with a port into the
+// connection URL: a DNS name or IPv4 address made of letters, digits, '.',
+// '-' and '_', or a bare IPv6 literal (net.JoinHostPort adds the brackets, so
+// a bracketed value would be double-bracketed). Anything else, such as
+// "db:1433", "user@db", "db/instance", "db\instance", whitespace or control
+// characters, makes the driver fail to parse the connection URL, and its
+// parse error would quote the URL, password included.
+func validHost(host string) bool {
+	if strings.Contains(host, ":") {
+		ip := net.ParseIP(host)
+		return ip != nil && ip.To4() == nil
+	}
+	for _, c := range []byte(host) {
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9', c == '.', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func validSecretRef(ref string) bool {

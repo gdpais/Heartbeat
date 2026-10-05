@@ -17,6 +17,20 @@
 //     backoff state, reports every cycle through its Report callback, and
 //     keeps running until the context is cancelled, whatever the probes do.
 //
+// Every probe has a hard deadline: when the executor has not returned
+// [DefaultAbandonGrace] after the probe's context is done (its timeout, the
+// cycle deadline, or cancellation), the Runner stops waiting, reports the probe
+// as timed out, and leaves the call to finish in the background.  A database
+// driver that cannot cancel a query on a dead connection therefore never stalls
+// the cycle, the other targets, or a Poller stopping.  An abandoned call's late
+// result is discarded, and while it is still running no other probe of its
+// target starts in that collector, so each collector holds at most one stuck
+// call, and one connection, per target name.  The bound is per collector and
+// target name, not per database: see [probeCalls].
+//
+// With [Runner.WithProbeMetrics], every probe execution is also timed and
+// every probe failure counted by reason (see [ProbeMetrics]).
+//
 // Every probe failure, recovered panic, backoff transition, recovery, and
 // exporter or sink error is logged synchronously through the Runner's
 // [slog.Logger] from the goroutine that observed it, so no error is lost to
@@ -52,6 +66,12 @@ import (
 // it.
 const DefaultMaxConcurrentTargets = 8
 
+// DefaultAbandonGrace is how long the Runner keeps waiting for a probe after
+// its context is done before abandoning it.  Cancelling a healthy query takes
+// one round trip, so the grace only expires when the executor ignores its
+// context, typically on a connection whose peer froze or vanished.
+const DefaultAbandonGrace = 2 * time.Second
+
 const (
 	// maxBackoff caps the delay before a failing target is retried.
 	maxBackoff = 5 * time.Minute
@@ -83,16 +103,48 @@ const (
 	// MetricCycleDuration is the wall time of the collector's last cycle.
 	// Labels: collector.
 	MetricCycleDuration = "heartbeat_collector_cycle_duration_seconds"
+	// MetricTargetLoginSysadmin is 1 when the collector's login for the target
+	// is sysadmin-equivalent (a member of the sysadmin server role, or holding
+	// CONTROL SERVER) and 0 when it is not, as of the last check, which runs
+	// when the target's connection pool is created and about every 10
+	// minutes after.  Absent while unknown, or when the executor is not a
+	// [SysadminReporter].  Labels: collector, environment, target.
+	MetricTargetLoginSysadmin = "heartbeat_collector_target_login_sysadmin"
 )
 
-// fallbackSinkMu serialises evidence publishing for Runners that were not
-// built with [NewRunner].
-var fallbackSinkMu sync.Mutex
+// fallbackSinkMu serialises evidence publishing, and fallbackProbeCalls
+// tracks probe calls, for Runners that were not built with [NewRunner].
+var (
+	fallbackSinkMu     sync.Mutex
+	fallbackProbeCalls = newProbeCalls()
+)
+
+// errProbeAbandoned marks a probe the Runner stopped waiting for.
+var errProbeAbandoned = errors.New("abandoned while still running")
+
+// errProbeTimedOut is the cause of a probe context ended by the probe's own
+// timeout, which tells it apart from the cycle deadline.
+var errProbeTimedOut = errors.New("probe timeout")
+
+// errExecutorExited reports an executor call that ended without returning,
+// through runtime.Goexit.
+var errExecutorExited = errors.New("executor exited without returning")
 
 // ProbeExecutor executes a single scheduled probe against a live database and
 // returns the decoded metric samples along with any structured evidence.
 type ProbeExecutor interface {
 	RunProbe(context.Context, collectormetadata.ScheduledProbe) ([]collectorexport.Sample, []collectormetadata.Evidence, error)
+}
+
+// SysadminReporter is an optional extension of [ProbeExecutor].  When the
+// Runner's executor implements it, the Runner exports
+// [MetricTargetLoginSysadmin] with each target's health series.
+type SysadminReporter interface {
+	// TargetSysadmin reports whether the login used for target is
+	// sysadmin-equivalent (a member of sysadmin, or holding CONTROL SERVER).
+	// ok is false while that is unknown, for example before the first
+	// connection to the target.  It must not block.
+	TargetSysadmin(target collectormetadata.DatabaseTarget) (sysadmin, ok bool)
 }
 
 // EvidenceSink receives structured evidence produced by probes in categories
@@ -105,24 +157,42 @@ type EvidenceSink interface {
 // all scheduled targets, records the resulting metric samples, and forwards
 // evidence to the configured sink.
 //
-// Runner is a value type that may be shared by many Pollers; it carries no
-// per-collector state.
+// Runner is a value type that may be shared by many Pollers; its only
+// per-collector state is the set of probe calls in flight, which every copy
+// shares so a Poller replaced by a reload sees the calls its predecessor
+// abandoned.
 type Runner struct {
 	executor      ProbeExecutor
 	exporter      collectorexport.Recorder
 	sink          EvidenceSink
 	logger        *slog.Logger
+	metrics       *ProbeMetrics
 	maxConcurrent int
+	// abandonGrace overrides DefaultAbandonGrace when positive (tests).
+	abandonGrace time.Duration
+	// testHookCallSent, when set, runs in the executor goroutine right after
+	// a call's result is sent (tests).
+	testHookCallSent func()
 	// sinkMu serialises Publish calls because EvidenceSink implementations
 	// need not be safe for concurrent use.  It is shared by every copy of
 	// the Runner.
 	sinkMu *sync.Mutex
+	// calls tracks executor calls in flight, abandoned ones included.  It is
+	// shared by every copy of the Runner.
+	calls *probeCalls
 }
 
 // WithLogger returns a copy of r that logs through logger.  A nil logger
 // falls back to [slog.Default].
 func (r Runner) WithLogger(logger *slog.Logger) Runner {
 	r.logger = logger
+	return r
+}
+
+// WithProbeMetrics returns a copy of r that records probe durations and
+// errors in metrics.  A nil metrics records nothing.
+func (r Runner) WithProbeMetrics(metrics *ProbeMetrics) Runner {
+	r.metrics = metrics
 	return r
 }
 
@@ -139,7 +209,7 @@ func (r Runner) WithMaxConcurrentTargets(n int) Runner {
 // When exporter implements [collectorexport.ScopedRecorder], stale series are
 // deleted per probe scope.
 func NewRunner(executor ProbeExecutor, exporter collectorexport.Recorder, sink EvidenceSink) Runner {
-	return Runner{executor: executor, exporter: exporter, sink: sink, sinkMu: &sync.Mutex{}}
+	return Runner{executor: executor, exporter: exporter, sink: sink, sinkMu: &sync.Mutex{}, calls: newProbeCalls()}
 }
 
 // RunOnce executes one scrape cycle for collector and returns its result.
@@ -380,31 +450,181 @@ func (r Runner) runScopedProbe(ctx context.Context, collector collectorconfig.Co
 }
 
 // executeProbe runs item under its probe timeout.  Probes that cannot start
-// before the cycle deadline and probes that panic are reported as errors.
+// before the cycle deadline, probes whose target still has an abandoned call
+// running, and probes that panic are reported as errors.  A probe that does
+// not return within the abandon grace after its context is done is abandoned
+// and reported as timed out.  Executions are timed and failures counted
+// through the Runner's [ProbeMetrics].
 func (r Runner) executeProbe(ctx context.Context, item collectormetadata.ScheduledProbe, interval time.Duration) ([]collectorexport.Sample, []collectormetadata.Evidence, error) {
 	name := item.Definition.Name
 	if err := ctx.Err(); err != nil {
+		r.metrics.failedUnlessCanceled(ctx, item, ReasonNotStarted)
 		return nil, nil, notStartedError(name, err)
 	}
+	call, busy := r.probeCalls().start(item, time.Now())
+	if busy != nil {
+		r.metrics.failedUnlessCanceled(ctx, item, ReasonNotStarted)
+		return nil, nil, busyError(name, *busy)
+	}
 	timeout := probeTimeout(item.Definition.TimeoutMS, interval)
-	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	probeCtx, cancel := context.WithTimeoutCause(ctx, timeout, errProbeTimedOut)
 	defer cancel()
-	var samples []collectorexport.Sample
-	var evidence []collectormetadata.Evidence
-	var err error
-	attrs := []any{"collector", item.CollectorID, "target", item.Target.Name, "probe", name}
-	if panicErr := r.protect("probe "+name, attrs, func() {
-		samples, evidence, err = r.executor.RunProbe(probeCtx, item)
-	}); panicErr != nil {
-		return nil, nil, panicErr
+	out := r.callExecutor(probeCtx, item, call)
+	r.metrics.observe(item, out.elapsed)
+	if out.abandoned {
+		r.metrics.failedUnlessStopping(out.end, item, ReasonTimeout)
+		return nil, nil, abandonedError(out.end, name, timeout, r.grace())
 	}
-	if err == nil {
-		return samples, evidence, nil
+	if out.panicErr != nil {
+		r.metrics.failed(item, ReasonPanic)
+		return nil, nil, out.panicErr
 	}
-	if ctx.Err() == nil && errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
-		return nil, nil, fmt.Errorf("probe %s timed out after %s: %w", name, timeout, err)
+	if out.err == nil {
+		return out.samples, out.evidence, nil
 	}
-	return nil, nil, fmt.Errorf("probe %s: %w", name, err)
+	r.metrics.failedUnlessStopping(out.end, item, failureReason(out.end, out.err))
+	if out.end == probeTimedOut {
+		return nil, nil, fmt.Errorf("probe %s timed out after %s: %w", name, timeout, out.err)
+	}
+	return nil, nil, fmt.Errorf("probe %s: %w", name, out.err)
+}
+
+// probeEnd is why a probe's context ended, if it did.
+type probeEnd int
+
+const (
+	// probeRunning is a probe whose context had not ended.
+	probeRunning probeEnd = iota
+	// probeTimedOut is a probe that reached its own timeout.
+	probeTimedOut
+	// probeCycleDeadline is a probe that reached the cycle deadline.
+	probeCycleDeadline
+	// probeCanceled is a probe whose cycle was canceled because the poller
+	// is stopping.
+	probeCanceled
+)
+
+// probeEndOf reports why probeCtx, created by executeProbe, ended.  A
+// context's cause is fixed the moment it is done, so the answer reflects what
+// ended the probe first, however much later it is asked: a probe that timed
+// out on its own stays timed out when the cycle is canceled during the
+// abandon grace.
+func probeEndOf(probeCtx context.Context) probeEnd {
+	switch {
+	case probeCtx.Err() == nil:
+		return probeRunning
+	case errors.Is(context.Cause(probeCtx), errProbeTimedOut):
+		return probeTimedOut
+	case errors.Is(probeCtx.Err(), context.DeadlineExceeded):
+		return probeCycleDeadline
+	default:
+		return probeCanceled
+	}
+}
+
+// probeOutcome is the result of one executor call as seen by executeProbe.
+type probeOutcome struct {
+	samples  []collectorexport.Sample
+	evidence []collectormetadata.Evidence
+	err      error
+	panicErr error
+	// elapsed is the call's duration, or the time until it was abandoned.
+	elapsed time.Duration
+	// end is why the probe's context ended, taken when the executor
+	// returned or, for an abandoned call, when the Runner stopped waiting.
+	end probeEnd
+	// abandoned reports that the call outlived its hard deadline; the other
+	// fields except elapsed are then unset.
+	abandoned bool
+}
+
+// callExecutor runs the executor for item in its own goroutine and waits for
+// it until the abandon grace after probeCtx is done.  call must have been
+// registered for item; it is finished when the executor returns, whether or
+// not the Runner still waits.  The result of an abandoned call is discarded:
+// it is never recorded, published, or counted.
+func (r Runner) callExecutor(probeCtx context.Context, item collectormetadata.ScheduledProbe, call *probeCall) probeOutcome {
+	calls := r.probeCalls()
+	attrs := []any{"collector", item.CollectorID, "target", item.Target.Name, "probe", item.Definition.Name}
+	// Buffered so an abandoned call never blocks on the send.
+	results := make(chan probeOutcome, 1)
+	go func() {
+		var out probeOutcome
+		returned := false
+		// Deferred so the call is unregistered and the waiter answered even
+		// when the executor ends its goroutine with runtime.Goexit.
+		defer func() {
+			if !returned {
+				out = probeOutcome{err: errExecutorExited, end: probeEndOf(probeCtx)}
+			}
+			out.elapsed = time.Since(call.started)
+			// Unregister before sending: a waiter that receives the result
+			// goes on to start the target's next probe, which must not find
+			// this call still in flight.  A call abandon finds finished sends
+			// right after.
+			abandoned := calls.finish(item, call)
+			results <- out
+			if r.testHookCallSent != nil {
+				r.testHookCallSent()
+			}
+			if abandoned {
+				args := append(attrs, "running", out.elapsed.Round(time.Millisecond).String())
+				if out.err != nil {
+					args = append(args, "error", out.err)
+				}
+				r.log().Info("abandoned probe returned; result discarded", args...)
+			}
+		}()
+		out.panicErr = r.protect("probe "+item.Definition.Name, attrs, func() {
+			out.samples, out.evidence, out.err = r.executor.RunProbe(probeCtx, item)
+		})
+		out.end = probeEndOf(probeCtx)
+		returned = true
+	}()
+	select {
+	case out := <-results:
+		return out
+	case <-probeCtx.Done():
+	}
+	end := probeEndOf(probeCtx)
+	grace := time.NewTimer(r.grace())
+	defer grace.Stop()
+	select {
+	case out := <-results:
+		return out
+	case <-grace.C:
+	}
+	if !calls.abandon(call) {
+		// The call finished while the grace expired; its result is being
+		// sent.
+		return <-results
+	}
+	return probeOutcome{abandoned: true, end: end, elapsed: time.Since(call.started)}
+}
+
+// busyError explains why a probe was not started while another call for its
+// target is in flight.  Probes of one target run serially, so busy is almost
+// always an abandoned call; one merely in flight means two cycles of the same
+// collector overlapped, as with concurrent RunOnce calls.
+func busyError(probe string, busy probeCall) error {
+	running := time.Since(busy.started).Round(time.Millisecond)
+	if busy.abandoned {
+		return fmt.Errorf("probe %s not started: probe %s of the target was abandoned and is still running after %s", probe, busy.probe, running)
+	}
+	return fmt.Errorf("probe %s not started: probe %s of the target is still in flight after %s", probe, busy.probe, running)
+}
+
+// abandonedError explains why a probe was abandoned.  end is why its
+// context ended.
+func abandonedError(end probeEnd, probe string, timeout, grace time.Duration) error {
+	cause := "timed out after " + timeout.String()
+	switch end {
+	case probeCycleDeadline:
+		cause = "reached the cycle deadline"
+	case probeCanceled:
+		cause = "was canceled"
+	}
+	return fmt.Errorf("probe %s %s and did not stop within %s: %w", probe, cause, grace, errProbeAbandoned)
 }
 
 // notStartedError explains why a probe was never started.
@@ -413,6 +633,83 @@ func notStartedError(probe string, cause error) error {
 		return fmt.Errorf("probe %s not started before cycle deadline: %w", probe, cause)
 	}
 	return fmt.Errorf("probe %s not started: %w", probe, cause)
+}
+
+// probeCalls tracks the executor calls in flight, at most one per target of
+// a collector, including calls the Runner abandoned.  Probes of one target run
+// serially, so a second call for a target can only be requested while an
+// abandoned one is still running; start refuses it.  This bounds each
+// collector and target name to one stuck goroutine and connection however
+// long the outage lasts.  It does not bound a database: the same database
+// reached under another target name or by another collector, or a target
+// renamed by a reload, can hold one more stuck call each, and stuck calls
+// occupy connections of the connector's shared pool, whose size is small.
+// probeCalls is safe for concurrent use.
+type probeCalls struct {
+	mu    sync.Mutex
+	calls map[probeCallKey]*probeCall
+}
+
+// probeCallKey identifies a target of a collector.
+type probeCallKey struct {
+	collector string
+	target    string
+}
+
+// probeCall is one executor call.  probe and started never change.
+type probeCall struct {
+	probe   string
+	started time.Time
+	// abandoned and finished are guarded by probeCalls.mu.
+	abandoned bool
+	finished  bool
+}
+
+func newProbeCalls() *probeCalls {
+	return &probeCalls{calls: map[probeCallKey]*probeCall{}}
+}
+
+func callKey(item collectormetadata.ScheduledProbe) probeCallKey {
+	return probeCallKey{collector: item.CollectorID, target: item.Target.Name}
+}
+
+// start registers a call of item's probe starting at now.  When a call for
+// item's target is still in flight it registers nothing and returns a copy of
+// that call, taken under the lock, as busy instead.
+func (c *probeCalls) start(item collectormetadata.ScheduledProbe, now time.Time) (call, busy *probeCall) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := callKey(item)
+	if existing := c.calls[key]; existing != nil {
+		snapshot := *existing
+		return nil, &snapshot
+	}
+	call = &probeCall{probe: item.Definition.Name, started: now}
+	c.calls[key] = call
+	return call, nil
+}
+
+// abandon marks call as abandoned and reports whether it was still running.
+func (c *probeCalls) abandon(call *probeCall) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if call.finished {
+		return false
+	}
+	call.abandoned = true
+	return true
+}
+
+// finish unregisters call once its executor returned and reports whether it
+// had been abandoned.
+func (c *probeCalls) finish(item collectormetadata.ScheduledProbe, call *probeCall) (abandoned bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	call.finished = true
+	if key := callKey(item); c.calls[key] == call {
+		delete(c.calls, key)
+	}
+	return call.abandoned
 }
 
 // finishTarget updates the backoff state of a target after its probes ran,
@@ -470,7 +767,32 @@ func (r Runner) recordHealth(collectorID string, group targetGroup, result Targe
 			Labels: labels(),
 		})
 	}
+	if sysadmin, ok := r.targetSysadmin(group); ok {
+		samples = append(samples, collectorexport.Sample{
+			Metric: MetricTargetLoginSysadmin,
+			Help:   "Whether the collector's login for the target is sysadmin-equivalent, a member of sysadmin or holding CONTROL SERVER (1), or not (0); checked when the target's connection pool is created and about every 10 minutes after.",
+			Value:  sysadmin,
+			Labels: labels(),
+		})
+	}
 	r.recordScope(collectorexport.Scope{Collector: collectorID, Target: group.name, Probe: healthScopeProbe}, samples)
+}
+
+// targetSysadmin returns 1 or 0 for whether the login of group's target is
+// sysadmin-equivalent, and false when the executor cannot tell.
+func (r Runner) targetSysadmin(group targetGroup) (float64, bool) {
+	reporter, ok := r.executor.(SysadminReporter)
+	if !ok || len(group.items) == 0 {
+		return 0, false
+	}
+	sysadmin, ok := reporter.TargetSysadmin(group.items[0].Target)
+	if !ok {
+		return 0, false
+	}
+	if sysadmin {
+		return 1, true
+	}
+	return 0, true
 }
 
 // recordCycle exports the duration of one collector cycle.
@@ -512,14 +834,16 @@ func (r Runner) clearScope(scope collectorexport.Scope) {
 	_ = r.protect("clear samples", scopeAttrs(scope), func() { scoped.ClearScope(scope) })
 }
 
-// forgetCollector deletes every series of collectorID when the exporter
-// supports scopes.
+// forgetCollector deletes every probe metric series of collectorID, and
+// every exported series of it when the exporter supports scopes.
 func (r Runner) forgetCollector(collectorID string) {
+	attrs := []any{"collector", collectorID}
+	_ = r.protect("forget probe metrics", attrs, func() { r.metrics.forgetCollector(collectorID) })
 	scoped, ok := r.exporter.(collectorexport.ScopedRecorder)
 	if !ok {
 		return
 	}
-	_ = r.protect("forget collector", []any{"collector", collectorID}, func() { scoped.ForgetCollector(collectorID) })
+	_ = r.protect("forget collector", attrs, func() { scoped.ForgetCollector(collectorID) })
 }
 
 // publish forwards evidence of one target to the sink, serialising calls.
@@ -579,6 +903,22 @@ func (r Runner) concurrency() int {
 	return r.maxConcurrent
 }
 
+// grace returns the effective abandon grace.
+func (r Runner) grace() time.Duration {
+	if r.abandonGrace > 0 {
+		return r.abandonGrace
+	}
+	return DefaultAbandonGrace
+}
+
+// probeCalls returns the shared probe call registry.
+func (r Runner) probeCalls() *probeCalls {
+	if r.calls == nil {
+		return fallbackProbeCalls
+	}
+	return r.calls
+}
+
 // LoggingEvidenceSink is a no-op [EvidenceSink] used in the default wiring.
 type LoggingEvidenceSink struct{}
 
@@ -613,13 +953,9 @@ func (e SQLExecutor) RunProbe(ctx context.Context, item collectormetadata.Schedu
 	if !ok {
 		return nil, nil, fmt.Errorf("unknown probe %s", item.Definition.Name)
 	}
-	query := item.Definition.QueryTemplate
-	if query == "" {
-		query = probe.QueryTemplate
-	}
 	probeCtx, cancel := context.WithTimeout(ctx, timeoutFor(item))
 	defer cancel()
-	rows, err := db.QueryContext(probeCtx, query)
+	rows, err := db.QueryContext(probeCtx, probeQuery(item, probe))
 	if err != nil {
 		return nil, nil, fmt.Errorf("query probe: %w", err)
 	}
@@ -631,6 +967,23 @@ func (e SQLExecutor) RunProbe(ctx context.Context, item collectormetadata.Schedu
 	return decodeRows(item, probe, maps), buildEvidence(item, probe, maps), nil
 }
 
+// TargetSysadmin implements [SysadminReporter] from the Manager's last login
+// check for target's connection pool.
+func (e SQLExecutor) TargetSysadmin(target collectormetadata.DatabaseTarget) (sysadmin, ok bool) {
+	return e.Manager.Sysadmin(target)
+}
+
+// probeQuery returns the batch to run for item: its query_template override,
+// or the catalog query, prefixed with the collector session settings so the
+// probe never waits long on a lock or wins a deadlock.
+func probeQuery(item collectormetadata.ScheduledProbe, probe catalogsqlserver.Probe) string {
+	query := item.Definition.QueryTemplate
+	if query == "" {
+		query = probe.QueryTemplate
+	}
+	return connector.WithSessionSettings(query)
+}
+
 // timeoutFor returns the effective timeout for one probe execution based on
 // the probe's own override and its assignment interval.  See [probeTimeout].
 func timeoutFor(item collectormetadata.ScheduledProbe) time.Duration {
@@ -640,13 +993,15 @@ func timeoutFor(item collectormetadata.ScheduledProbe) time.Duration {
 // probeTimeout returns the effective timeout for one probe execution.
 //
 // A probe-specific timeout wins but is capped at the scrape interval, so a
-// single probe can never outlive its cycle.  Without an override the default
-// is half the interval, capped at maxDefaultProbeTimeout, leaving room for the
-// target's other probes.  fallbackProbeTimeout applies when no interval is
-// known.
+// single probe can never outlive its cycle, and at
+// [collectorconfig.MaxProbeTimeout], which connectors' socket deadlines are
+// sized to outlast; probe definitions loaded from the metadata store are not
+// validated against it.  Without an override the default is half the
+// interval, capped at maxDefaultProbeTimeout, leaving room for the target's
+// other probes.  fallbackProbeTimeout applies when no interval is known.
 func probeTimeout(timeoutMS int, interval time.Duration) time.Duration {
 	if timeoutMS > 0 {
-		timeout := time.Duration(timeoutMS) * time.Millisecond
+		timeout := min(time.Duration(timeoutMS)*time.Millisecond, collectorconfig.MaxProbeTimeout)
 		if interval > 0 && timeout > interval {
 			return interval
 		}
@@ -701,9 +1056,9 @@ func normalizeValue(value any) any {
 
 // decodeRows maps the SQL result set into Prometheus samples.
 //
-// The probe catalog defines which column carries the numeric value and which
-// columns become labels. Rows that do not contain the configured value column
-// are ignored.
+// The probe catalog defines which column carries the numeric value, its
+// metric type and unit scale, and which columns become labels. Rows that do
+// not contain the configured value column, or hold NULL in it, are ignored.
 func decodeRows(item collectormetadata.ScheduledProbe, probe catalogsqlserver.Probe, rows []map[string]any) []collectorexport.Sample {
 	var samples []collectorexport.Sample
 	for _, row := range rows {
@@ -728,7 +1083,8 @@ func decodeRows(item collectormetadata.ScheduledProbe, probe catalogsqlserver.Pr
 			samples = append(samples, collectorexport.Sample{
 				Metric: metric.Name,
 				Help:   metric.Help,
-				Value:  metricValue,
+				Value:  metric.Convert(metricValue),
+				Type:   metric.Type,
 				Labels: labels,
 			})
 		}
@@ -838,9 +1194,9 @@ func contains(values []string, needle string) bool {
 // Start runs an initial scrape immediately and then ticks at
 // Collector.ScrapeInterval until ctx is cancelled.  Probe errors and panics
 // never stop the poller: they are logged, reported, and handled by per-target
-// backoff.  Start returns ctx.Err() once ctx is cancelled, after deleting
-// every series the collector exported, and an error only if the scrape
-// interval is not positive.
+// backoff.  Start creates the collector's probe error counters at 0, returns
+// ctx.Err() once ctx is cancelled, after deleting every series the collector
+// exported, and an error only if the scrape interval is not positive.
 func (p Poller) Start(ctx context.Context) error {
 	interval := p.Collector.ScrapeInterval
 	if interval <= 0 {
@@ -848,6 +1204,7 @@ func (p Poller) Start(ctx context.Context) error {
 	}
 	tracker := newTargetTracker()
 	defer p.Runner.forgetCollector(p.Collector.ID)
+	_ = p.Runner.protect("init probe metrics", []any{"collector", p.Collector.ID}, func() { p.Runner.metrics.initCollector(p.Collector) })
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {

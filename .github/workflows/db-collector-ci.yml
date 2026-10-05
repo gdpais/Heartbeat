@@ -2,7 +2,7 @@ name: db-collector-ci
 
 on:
   push:
-    branches: [master, db-collectors, otel-integrations]
+    branches: [master, db-collectors]
   pull_request:
 
 jobs:

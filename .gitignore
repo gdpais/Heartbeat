@@ -19,3 +19,10 @@ docs/site/
 
 # Chart dependencies: fetched by `make chart-deps` from the versions in Chart.lock
 infra/helm/heartbeat/charts/
+
+# Claude Code: per-session worktrees and personal settings
+.claude/worktrees/
+.claude/settings.local.json
+
+# Personal local-dev config variants; the shared dev values live in infra/helm/values/
+config/*.local-dev.yaml

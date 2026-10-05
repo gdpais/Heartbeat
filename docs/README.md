@@ -27,6 +27,8 @@ which is not committed.
 - [Kubernetes delivery](guides/kubernetes-local.md): the Helm chart, values,
   images and the kind cluster
 - [Data model](architecture/data-model.md): PostgreSQL schema and ownership rules
+- [Probe review checklist](architecture/database-observability.md#probe-review-checklist):
+  before adding a SQL Server probe or approving a `query_template` override
 - [Architecture decisions](architecture/decisions/README.md): why things are the
   way they are
 - Service internals: [DB collector](../services/db-collector/README.md),

@@ -153,7 +153,7 @@ I/O signals [2.3]. Evidence publication moved to the investigation track [12.4]:
 its consumer and storage design live there, and today's evidence is only a row
 count.
 
-- [ ] Validate this stage: connector/probe/config/metric tests, safe non-production SQL queries, and live SQL Server → collector → Prometheus → Grafana on kind, including reloads and target outages, with the collector logged in as a least-privilege login [16.1–16.2]
+- [x] Validate this stage: connector/probe/config/metric tests, safe non-production SQL queries, and live SQL Server → collector → Prometheus → Grafana on kind, including reloads and target outages, with the collector logged in as a least-privilege login [16.1–16.2]
 
 ### 2.1 Service bootstrap
 - [x] Create Go service entrypoint `services/db-collector/cmd/db-collector/`
@@ -162,13 +162,13 @@ count.
 
 ### 2.2 SQL Server connectivity and safety
 - [x] Implement secure SQL Server connector manager
-- [ ] Enforce least-privilege credentials: run `make test-sqlserver` and `make kind-e2e` as a login holding only the documented grants (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`), not `sa`
-- [ ] Warn at startup, in the log and a metric, when the collector login is `sysadmin`
-- [ ] Set `LOCK_TIMEOUT` and `DEADLOCK_PRIORITY LOW` on every collector session so a probe never waits on locks or wins a deadlock against the application
+- [x] Enforce least-privilege credentials: run `make test-sqlserver` and `make kind-e2e` as a login holding only the documented grants (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`), not `sa`
+- [x] Warn at startup, in the log and a metric, when the collector login is `sysadmin`
+- [x] Set `LOCK_TIMEOUT` and `DEADLOCK_PRIORITY LOW` on every collector session so a probe never waits on locks or wins a deadlock against the application
 - [x] Enforce query timeout/budget guards
 - [x] Pool SQL Server connections per target
-- [ ] Review all production queries for non-blocking behavior
-- [ ] Define safe probe review/versioning process: write the probe review checklist now; probe versioning comes with API probe definitions [4.5]
+- [x] Review all production queries for non-blocking behavior
+- [x] Define safe probe review/versioning process: write the probe review checklist now; probe versioning comes with API probe definitions [4.5]
 
 ### 2.3 Probe implementation
 - [x] Implement waits probes
@@ -180,15 +180,15 @@ count.
 - [x] Replace generic column-to-metric decoding with explicit per-probe metric descriptors
 - [x] Fix the `throughput` probe's duplicate `Transactions/sec` series and padded `counter_name` labels; check `memory_pressure` for the same padding ([#4](https://github.com/gdpais/Heartbeat/issues/4))
 - [x] Run every built-in probe against a real SQL Server in CI (`make test-sqlserver`): no duplicate series, no padded label values
-- [ ] Add core signals before the first production deploy (after counter support [2.4]): CPU utilisation, page life expectancy and buffer cache hit ratio, file I/O from `sys.dm_io_virtual_file_stats`; dashboard panels for each. The rest of the signal set stays in [11.2]
+- [x] Add core signals before the first production deploy (after counter support [2.4]): CPU utilisation, page life expectancy and buffer cache hit ratio, file I/O from `sys.dm_io_virtual_file_stats`; dashboard panels for each. The rest of the signal set stays in [11.2]
 
 ### 2.4 Metrics and evidence output
 - [x] Normalize SQL Server outputs into Prometheus-friendly metrics
 - [x] Expose scrape endpoint
 - [x] Produce structured evidence for blocking/session probes
-- [ ] Export cumulative SQL Server values (waits, throughput counters) as counters that tolerate SQL Server restarts, renamed to Prometheus conventions (`_total` suffix, seconds rather than ms, e.g. `heartbeat_sqlserver_wait_seconds_total`); update rules, rule tests and dashboards to rates in the same change
+- [x] Export cumulative SQL Server values (waits, throughput counters) as counters that tolerate SQL Server restarts, renamed to Prometheus conventions (`_total` suffix, seconds rather than ms, e.g. `heartbeat_sqlserver_wait_seconds_total`); update rules, rule tests and dashboards to rates in the same change
 - [x] Keep DB collector metric output stateless and Prometheus-scraped instead of persisted in PostgreSQL
-- [ ] Add collector self-observability: per-probe duration histogram, and Go runtime and process metrics on the collector's registry
+- [x] Add collector self-observability: per-probe duration histogram, and Go runtime and process metrics on the collector's registry
 
 ### 2.5 Runtime config model
 - [x] Read desired runtime collector config from `config/integrations.yaml`
@@ -206,16 +206,17 @@ Replica ownership and outage testing are section 19. Design details:
 - [x] Isolate probe/target failures so one failed target cannot stop unrelated collection
 - [x] Retry transient collection failures with bounded exponential backoff and jitter; expose persistent failures without retry storms
 - [x] Expose per-target success, consecutive failures, last-success time, and freshness; expire stale/removed metric series
-- [ ] Add per-probe cumulative error counters
+- [x] Add per-probe cumulative error counters
 - [x] Make readiness reflect expected collector state and add deployment health probes and restart/recovery policies
 - [x] Validate safe reloads, including partial reconciliation failure (rollback) and replacement-poller startup failure (unit-tested)
+- [x] Bound every probe with a hard deadline so a probe the driver cannot cancel never stalls the collector cycle; keep at most one abandoned call per target and bound dead connections with a driver socket timeout
 
 ### 2.7 Collector endpoint security
-- [ ] Diagnostics: require the admin token for `GET /admin/config`; keep `/readyz` to status only and move raw driver errors (host, port, login) behind auth
-- [ ] Redaction: mask notification channel `config` values in `Redacted()`, strip userinfo from endpoint URLs, and reject credentials embedded in `loki`/`alertmanager` URLs at validation
-- [ ] Admin token: compare in constant time
-- [ ] Network exposure: add a NetworkPolicy limiting port 8082 to Prometheus and operator access
-- [ ] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; per-target TLS settings wait until a real target needs them
+- [x] Diagnostics: require the admin token for `GET /admin/config`; keep `/readyz` to status only and move raw driver errors (host, port, login) behind auth
+- [x] Redaction: mask notification channel `config` values in `Redacted()`, strip userinfo from endpoint URLs, and reject credentials embedded in `loki`/`alertmanager` URLs at validation
+- [x] Admin token: compare in constant time
+- [x] Network exposure: add a NetworkPolicy limiting port 8082 to Prometheus and operator access
+- [x] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; per-target TLS settings wait until a real target needs them
 
 ---
 
@@ -557,6 +558,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [ ] storage pressure
 - [ ] throughput/latency
 - [ ] error events where available
+- [ ] page life expectancy per NUMA node (`Buffer Node` counters); the `buffer_cache` probe reports only the server-wide `Buffer Manager` value
 
 ### 11.3 Dashboards
 - [ ] SQL Server overview dashboard

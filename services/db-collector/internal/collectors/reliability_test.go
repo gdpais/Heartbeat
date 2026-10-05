@@ -347,8 +347,10 @@ func TestProbeTimeout(t *testing.T) {
 		{"default capped at ten seconds", 0, 30 * time.Second, 10 * time.Second},
 		{"fallback without interval", 0, 0, 5 * time.Second},
 		{"override wins", 2000, 30 * time.Second, 2 * time.Second},
-		{"override capped at interval", 60_000, 30 * time.Second, 30 * time.Second},
-		{"override without interval", 60_000, 0, time.Minute},
+		{"override capped at interval", 20_000, 10 * time.Second, 10 * time.Second},
+		{"override without interval", 20_000, 0, 20 * time.Second},
+		{"override capped at the maximum", 60_000, 2 * time.Minute, collectorconfig.MaxProbeTimeout},
+		{"override without interval capped at the maximum", 60_000, 0, collectorconfig.MaxProbeTimeout},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -358,11 +360,11 @@ func TestProbeTimeout(t *testing.T) {
 		})
 	}
 	item := collectormetadata.ScheduledProbe{
-		Definition: collectormetadata.ProbeDefinition{TimeoutMS: 120_000},
-		Assignment: collectormetadata.ProbeAssignment{IntervalSeconds: 30},
+		Definition: collectormetadata.ProbeDefinition{TimeoutMS: 20_000},
+		Assignment: collectormetadata.ProbeAssignment{IntervalSeconds: 10},
 	}
-	if got := timeoutFor(item); got != 30*time.Second {
-		t.Fatalf("timeoutFor capped override = %s, want 30s", got)
+	if got := timeoutFor(item); got != 10*time.Second {
+		t.Fatalf("timeoutFor capped override = %s, want 10s", got)
 	}
 }
 

@@ -43,7 +43,7 @@ replacing them. The focus is on gaps those tools leave:
 | Capability | MVP outcome |
 | --- | --- |
 | Application observability | OutSystems first (Traditional and Reactive): normalized logs in Loki, derived metrics in Prometheus, health/errors/latency dashboards, compatibility with default OutSystems log fields |
-| Database observability | SQL Server: waits, blocking, sessions, memory, storage and throughput metrics, collector self-observability, dashboards ([signal coverage](../architecture/database-observability.md#sql-server-signal-coverage)) |
+| Database observability | SQL Server: waits, blocking, sessions, memory, storage, throughput, CPU, buffer cache and file I/O metrics, collector self-observability, dashboards ([signal coverage](../architecture/database-observability.md#sql-server-signal-coverage)) |
 | Telemetry ingestion | OTLP metrics and logs through the OpenTelemetry Collector |
 | Session investigation | Query by application + user/IP/session/request + time range; timeline, anomaly windows and evidence links into Grafana/Loki |
 | Alerting | Static rules plus adaptive baselines, rendered to Prometheus and routed by Alertmanager |
@@ -80,7 +80,7 @@ phase-by-phase status and [TODO.md](../../TODO.md) for the task list.
 | --- | --- |
 | Shared contracts, PostgreSQL schema | Done |
 | Kubernetes delivery: one Helm chart for kind, CI and production; kind workflow and acceptance tests | Done (production values and Argo CD pending) |
-| SQL Server DB collector (probes, hot reload, failure isolation, readiness) | Working; hardening in progress |
+| SQL Server DB collector (probes, hot reload, failure isolation, readiness) | Done for phase 1: secured endpoints, least-privilege login, counters and self-metrics, CPU, buffer cache and file I/O signals |
 | OTel Collector pipeline, Prometheus/Loki/Grafana/Alertmanager provisioning | Configured; alerts reach Alertmanager (with a Watchdog), chat receivers only in the production example |
 | OTel gateway | Partial: normalizes single events, not yet forwarding |
 | API, web UI, session analyzer, reporting | Not started |

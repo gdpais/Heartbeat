@@ -64,7 +64,7 @@ func TestEvaluateReadiness(t *testing.T) {
 	}
 }
 
-func TestReadyzReportsTargetFailuresWithoutErrorTextOrUnreadiness(t *testing.T) {
+func TestReadyzServesOnlyStatusAndDiagnosticsNeedTheToken(t *testing.T) {
 	pollers := newFakePollers()
 	pollers.set("sql-a", healthyPoller("sql-a", collectors.TargetFailed))
 	_, handler, _ := newReloadFixture(t, pollers, testCollector{id: "sql-a", env: "prod"})
@@ -73,21 +73,25 @@ func TestReadyzReportsTargetFailuresWithoutErrorTextOrUnreadiness(t *testing.T) 
 	eventually(t, time.Second, func() bool {
 		rec = serve(handler, http.MethodGet, "/readyz", "")
 		return rec.Code == http.StatusOK
-	}, "target failures made the pod unready: %s", rec.Body.String())
-	body := rec.Body.String()
-	for _, secret := range []string{"login failed", "heartbeat_svc", "sql.example.internal", "1433"} {
-		if strings.Contains(body, secret) {
-			t.Fatalf("/readyz leaked %q: %s", secret, body)
-		}
+	}, "target failures made the pod unready: %s", lazy(func() any { return rec.Body.String() }))
+	if body := strings.TrimSpace(rec.Body.String()); body != `{"status":"ready"}` {
+		t.Fatalf("/readyz must serve only its status, got %s", body)
 	}
-	var report readinessReport
-	decode(t, rec, &report)
-	if len(report.Collectors) != 1 {
-		t.Fatalf("unexpected collectors: %+v", report.Collectors)
+
+	// The same details, with the raw driver error, need the admin token.
+	if rec := serve(handler, http.MethodGet, "/admin/config", ""); rec.Code != http.StatusUnauthorized || strings.Contains(rec.Body.String(), "login failed") {
+		t.Fatalf("diagnostics without the token: %d %s", rec.Code, rec.Body.String())
 	}
-	c := report.Collectors[0]
+	code, diag := adminConfig(t, handler)
+	if code != http.StatusOK || diag.Readiness.Status != statusReady || len(diag.Readiness.Collectors) != 1 {
+		t.Fatalf("unexpected diagnostics: %d %+v", code, diag.Readiness)
+	}
+	c := diag.Readiness.Collectors[0]
 	if c.TargetsTotal != 1 || c.TargetsFailed != 1 || c.Targets[0].State != "failed" || c.Targets[0].ConsecutiveFailures != 3 || c.Targets[0].NextAttempt == nil {
 		t.Fatalf("target details missing: %+v", c)
+	}
+	if !strings.Contains(c.Targets[0].Error, "login failed for user 'heartbeat_svc' on sql.example.internal:1433") {
+		t.Fatalf("raw driver error missing from authenticated diagnostics: %q", c.Targets[0].Error)
 	}
 	if c.LastCycleFinished == nil || c.CycleAgeSeconds == nil || !c.Ready || c.Phase != phaseRunning {
 		t.Fatalf("cycle details missing: %+v", c)
@@ -105,15 +109,42 @@ func TestReadyzUnreadyUntilFirstCycleThenStaleAfterDeadline(t *testing.T) {
 		return ctx.Err()
 	})
 	svc, handler, _ := newReloadFixture(t, pollers, testCollector{id: "sql-a", env: "prod"})
-	if rec := serve(handler, http.MethodGet, "/readyz", ""); rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "first cycle") {
-		t.Fatalf("expected 503 before first cycle: %d %s", rec.Code, rec.Body.String())
+	// reasons returns the readiness reasons from the authenticated diagnostics.
+	reasons := func() string {
+		_, diag := adminConfig(t, handler)
+		return strings.Join(diag.Readiness.Reasons, "; ")
+	}
+	if rec := serve(handler, http.MethodGet, "/readyz", ""); rec.Code != http.StatusServiceUnavailable || strings.TrimSpace(rec.Body.String()) != `{"status":"not_ready"}` {
+		t.Fatalf("expected a bare 503 before first cycle: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := reasons(); !strings.Contains(got, "first cycle") {
+		t.Fatalf("expected first-cycle reason, got %q", got)
 	}
 	close(firstCycle)
 	eventually(t, time.Second, func() bool { return serve(handler, http.MethodGet, "/readyz", "").Code == http.StatusOK }, "not ready after first cycle")
 
 	svc.now = func() time.Time { return time.Now().Add(time.Minute) } // 2x1s + 10s grace exceeded
-	rec := serve(handler, http.MethodGet, "/readyz", "")
-	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "is stale") {
+	if rec := serve(handler, http.MethodGet, "/readyz", ""); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected stale 503: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := reasons(); !strings.Contains(got, "is stale") {
+		t.Fatalf("expected stale reason, got %q", got)
+	}
+}
+
+func TestEvaluateReadinessAddsErrorTextOnlyWhenAsked(t *testing.T) {
+	now := time.Now()
+	state := collectorState{
+		Collector: collectorConfig("sql-a", "prod"), Phase: phaseRunning, Started: now, HasCycle: true,
+		LastCycle: collectors.CycleResult{CollectorID: "sql-a", Finished: now, Targets: []collectors.TargetResult{
+			{Target: "core-db", State: collectors.TargetFailed, Err: errors.New("login failed for user 'heartbeat_svc'")},
+		}},
+	}
+	for _, withErrors := range []bool{false, true} {
+		report, _ := evaluateReadiness(readinessInput{initialized: true, warm: true, collectors: []collectorState{state}, grace: time.Second, now: now, withErrors: withErrors})
+		got := report.Collectors[0].Targets[0].Error
+		if (got != "") != withErrors {
+			t.Fatalf("withErrors=%t: error text %q", withErrors, got)
+		}
 	}
 }
