@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -15,7 +16,8 @@ import (
 // Per-probe self-observability metrics, maintained by [ProbeMetrics].
 const (
 	// MetricProbeDuration is a histogram of probe execution time, failed and
-	// timed-out executions included.  Probes that never started are not
+	// timed-out executions included.  An abandoned execution is observed with
+	// the time until it was abandoned.  Probes that never started are not
 	// observed.  Labels: collector, environment, target, probe.
 	MetricProbeDuration = "heartbeat_collector_probe_duration_seconds"
 	// MetricProbeErrors counts failed probe executions by reason (see
@@ -28,14 +30,16 @@ const (
 // the label stays bounded; error text never becomes a label value.
 const (
 	// ReasonTimeout is a probe that exceeded its own timeout or the cycle
-	// deadline while running.
+	// deadline while running, including one the Runner abandoned because it
+	// did not stop after its context ended.
 	ReasonTimeout = "timeout"
 	// ReasonError is any other probe failure: connection, login, query, or
 	// result decoding errors.  Probes interrupted because the poller is
 	// stopping (shutdown or reload) are not counted.
 	ReasonError = "error"
 	// ReasonNotStarted is a probe that could not start before the cycle
-	// deadline because earlier probes of its target used the time.
+	// deadline because earlier probes of its target used the time, or
+	// because an abandoned probe of its target is still running.
 	ReasonNotStarted = "not_started"
 	// ReasonPanic is a probe whose executor panicked.
 	ReasonPanic = "panic"
@@ -146,12 +150,31 @@ func (m *ProbeMetrics) forgetCollector(collectorID string) {
 	m.errors.DeletePartialMatch(labels)
 }
 
-// failureReason classifies a failed probe execution.  probeCtx is the
-// probe's own context, derived from the cycle context, so it also expires at
-// the cycle deadline.
-func failureReason(probeCtx context.Context) string {
-	if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+// failedUnlessStopping counts a failed probe unless its context ended
+// because the poller is stopping (see failedUnlessCanceled).  end was taken
+// when the probe ended, so a probe that failed or timed out on its own is
+// counted even when the poller started stopping afterwards.
+func (m *ProbeMetrics) failedUnlessStopping(end probeEnd, item collectormetadata.ScheduledProbe, reason string) {
+	if end == probeCanceled {
+		return
+	}
+	m.failed(item, reason)
+}
+
+// failureReason classifies a failed probe execution that returned err.  end
+// is why the probe's context ended, if it did.  A probe that reached its own
+// timeout or the cycle deadline timed out, and so did one whose driver gave
+// up on a network read or write, such as a socket deadline on a server that
+// stopped answering.
+func failureReason(end probeEnd, err error) string {
+	if end == probeTimedOut || end == probeCycleDeadline || isNetTimeout(err) {
 		return ReasonTimeout
 	}
 	return ReasonError
+}
+
+// isNetTimeout reports whether err is, or wraps, a network timeout.
+func isNetTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }

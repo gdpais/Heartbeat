@@ -113,7 +113,7 @@
       "properties": {
         "name": {"type": "string"},
         "query_template": {"type": "string"},
-        "timeout_ms": {"type": "integer", "minimum": 1}
+        "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 25000}
       }
     },
     "target": {
