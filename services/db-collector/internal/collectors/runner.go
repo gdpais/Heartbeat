@@ -142,6 +142,9 @@ type Runner struct {
 	maxConcurrent int
 	// abandonGrace overrides DefaultAbandonGrace when positive (tests).
 	abandonGrace time.Duration
+	// testHookCallSent, when set, runs in the executor goroutine right after
+	// a call's result is sent (tests).
+	testHookCallSent func()
 	// sinkMu serialises Publish calls because EvidenceSink implementations
 	// need not be safe for concurrent use.  It is shared by every copy of
 	// the Runner.
@@ -433,8 +436,7 @@ func (r Runner) executeProbe(ctx context.Context, item collectormetadata.Schedul
 	call, busy := r.probeCalls().start(item, time.Now())
 	if busy != nil {
 		r.metrics.failedUnlessCanceled(ctx, item, ReasonNotStarted)
-		return nil, nil, fmt.Errorf("probe %s not started: probe %s of the target was abandoned and is still running after %s",
-			name, busy.probe, time.Since(busy.started).Round(time.Millisecond))
+		return nil, nil, busyError(name, *busy)
 	}
 	timeout := probeTimeout(item.Definition.TimeoutMS, interval)
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -488,9 +490,15 @@ func (r Runner) callExecutor(probeCtx context.Context, item collectormetadata.Sc
 			out.samples, out.evidence, out.err = r.executor.RunProbe(probeCtx, item)
 		})
 		out.elapsed = time.Since(call.started)
-		// Send before finishing, so a call that finishes is always readable.
+		// Unregister before sending: a waiter that receives the result goes
+		// on to start the target's next probe, which must not find this call
+		// still in flight.  A call abandon finds finished sends right after.
+		abandoned := calls.finish(item, call)
 		results <- out
-		if calls.finish(item, call) {
+		if r.testHookCallSent != nil {
+			r.testHookCallSent()
+		}
+		if abandoned {
 			args := append(attrs, "running", out.elapsed.Round(time.Millisecond).String())
 			if out.err != nil {
 				args = append(args, "error", out.err)
@@ -511,10 +519,23 @@ func (r Runner) callExecutor(probeCtx context.Context, item collectormetadata.Sc
 	case <-grace.C:
 	}
 	if !calls.abandon(call) {
-		// The call returned while the grace expired.
+		// The call finished while the grace expired; its result is being
+		// sent.
 		return <-results
 	}
 	return probeOutcome{abandoned: true, elapsed: time.Since(call.started)}
+}
+
+// busyError explains why a probe was not started while another call for its
+// target is in flight.  Probes of one target run serially, so busy is almost
+// always an abandoned call; one merely in flight means two cycles of the same
+// collector overlapped, as with concurrent RunOnce calls.
+func busyError(probe string, busy probeCall) error {
+	running := time.Since(busy.started).Round(time.Millisecond)
+	if busy.abandoned {
+		return fmt.Errorf("probe %s not started: probe %s of the target was abandoned and is still running after %s", probe, busy.probe, running)
+	}
+	return fmt.Errorf("probe %s not started: probe %s of the target is still in flight after %s", probe, busy.probe, running)
 }
 
 // abandonedError explains why a probe was abandoned.  ctx is the cycle
@@ -573,14 +594,15 @@ func callKey(item collectormetadata.ScheduledProbe) probeCallKey {
 }
 
 // start registers a call of item's probe starting at now.  When a call for
-// item's target is still in flight it registers nothing and returns that call
-// as busy instead.
+// item's target is still in flight it registers nothing and returns a copy of
+// that call, taken under the lock, as busy instead.
 func (c *probeCalls) start(item collectormetadata.ScheduledProbe, now time.Time) (call, busy *probeCall) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	key := callKey(item)
-	if busy := c.calls[key]; busy != nil {
-		return nil, busy
+	if existing := c.calls[key]; existing != nil {
+		snapshot := *existing
+		return nil, &snapshot
 	}
 	call = &probeCall{probe: item.Definition.Name, started: now}
 	c.calls[key] = call

@@ -319,8 +319,11 @@ func TestProbeCalls(t *testing.T) {
 	if first == nil || busy != nil {
 		t.Fatalf("first start: call=%v busy=%v", first, busy)
 	}
-	if _, busy := calls.start(item("db", "p2"), now); busy != first {
-		t.Fatalf("second start on the same target: busy=%v, want the first call", busy)
+	if call, busy := calls.start(item("db", "p2"), now); call != nil || busy == nil || busy.probe != "p1" || busy.abandoned {
+		t.Fatalf("second start on the same target: call=%v busy=%+v, want p1 in flight", call, busy)
+	}
+	if err := busyError("p2", probeCall{probe: "p1", started: now}); !strings.Contains(err.Error(), "probe p1 of the target is still in flight") {
+		t.Fatalf("busy error for a call in flight: %v", err)
 	}
 	other := item("db", "p1")
 	other.CollectorID = "sql-other"
@@ -329,6 +332,9 @@ func TestProbeCalls(t *testing.T) {
 	}
 	if !calls.abandon(first) {
 		t.Fatal("abandon of a running call reported it finished")
+	}
+	if _, busy := calls.start(item("db", "p2"), now); busy == nil || !busy.abandoned {
+		t.Fatalf("start after abandon: busy=%+v, want the abandoned call", busy)
 	}
 	if abandoned := calls.finish(item("db", "p1"), first); !abandoned {
 		t.Fatal("finish did not report the abandonment")
@@ -342,5 +348,32 @@ func TestProbeCalls(t *testing.T) {
 	}
 	if abandoned := calls.finish(item("db", "p2"), next); abandoned {
 		t.Fatal("finish reported a call that was never abandoned")
+	}
+}
+
+// Regression: the executor goroutine used to send the result before
+// unregistering the call, so the target's next probe could find the call
+// still in flight and be refused, at random.  The hook holds the goroutine
+// after the send, which made that deterministic.
+func TestReturnedCallIsUnregisteredBeforeTheNextProbeStarts(t *testing.T) {
+	release := make(chan struct{})
+	var held atomic.Bool
+	runner := NewRunner(funcExecutor(func(_ context.Context, item collectormetadata.ScheduledProbe) ([]collectorexport.Sample, []collectormetadata.Evidence, error) {
+		return sampleFor(item), nil, nil
+	}), collectorexport.NewInMemoryExporter(), nil).WithLogger(slog.New(slog.DiscardHandler))
+	runner.testHookCallSent = func() {
+		if held.CompareAndSwap(false, true) {
+			<-release
+		}
+	}
+	t.Cleanup(func() {
+		close(release)
+		waitFor(t, "held call to finish", func() bool { return callsInFlight(runner) == 0 })
+	})
+	if _, err := runner.RunOnce(context.Background(), testCollector(time.Minute, testTarget("core-db", "p1", "p2", "p3"))); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if !held.Load() {
+		t.Fatal("the hook never held a call")
 	}
 }
