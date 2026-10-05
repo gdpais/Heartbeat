@@ -149,7 +149,10 @@ scripts/kind.sh images
 
 password="E2e-$(openssl rand -hex 16)"
 umask 077
-printf 'MSSQL_SA_PASSWORD=%s\nHEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV=sa:%s\n' "$password" "$password" >"$SQLSERVER_ENV_FILE"
+# sa is for setup and the session sampler below; the collector logs in as a
+# least-privilege login that kind.sh sqlserver-up creates.
+printf 'MSSQL_SA_PASSWORD=%s\nHEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV=heartbeat_collector:%s\n' \
+	"$password" "E2e-$(openssl rand -hex 16)" >"$SQLSERVER_ENV_FILE"
 umask 022
 # Points the collector at this run's container, plus a second target that can
 # never connect, to show that one failed target does not stop the others.
@@ -187,6 +190,9 @@ wait_for 60 "fresh last success" target_fresh sqlserver-dev
 sessions=$(prom_value "sum(heartbeat_sqlserver_sessions{target=\"sqlserver-dev\"})")
 [ -n "$sessions" ] || fail "no heartbeat_sqlserver_sessions for sqlserver-dev"
 pass "probe metrics present (sessions=$sessions)"
+sysadmin=$(prom_value "heartbeat_collector_target_login_sysadmin{target=\"sqlserver-dev\"}")
+[ "$sysadmin" = 0 ] || fail "heartbeat_collector_target_login_sysadmin for sqlserver-dev is '$sysadmin', expected 0"
+pass "the collector logs in without sysadmin (least-privilege login)"
 # Exact, unpadded label values; one server-wide series each (issue #4).
 counters=$(prom "heartbeat_sqlserver_throughput{target=\"sqlserver-dev\"}" |
 	jq -r '[.data.result[].metric.counter_name] | sort | join(",")')
@@ -305,7 +311,7 @@ sample_concurrency() {
 	while [ ! -f "$WORK/stop-sampling" ]; do
 		pods=$(k -n "$NAMESPACE" get pods -l app.kubernetes.io/name=db-collector -o json |
 			jq '[.items[] | select(.status.containerStatuses[0].state.running != null)] | length')
-		sql=$(docker exec -e SQLCMDPASSWORD="$password" "$SQL_CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
+		sql=$(SQLCMDPASSWORD=$password docker exec -e SQLCMDPASSWORD "$SQL_CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
 			-S localhost -U sa -C -h -1 -W -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE program_name = 'HeartbeatDBCollector'" 2>/dev/null | tr -dc '0-9')
 		[ "${pods:-0}" -gt "$max_pods" ] && max_pods=$pods
 		[ "${sql:-0}" -gt "$max_sql" ] && max_sql=$sql

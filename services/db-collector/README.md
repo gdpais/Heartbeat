@@ -77,7 +77,8 @@ succeeds.
   removed collector's series are deleted.
 - Self-observability series: `heartbeat_collector_target_up`,
   `heartbeat_collector_target_consecutive_failures`,
-  `heartbeat_collector_target_last_success_timestamp_seconds`, and
+  `heartbeat_collector_target_last_success_timestamp_seconds`,
+  `heartbeat_collector_target_login_sysadmin`, and
   `heartbeat_collector_cycle_duration_seconds`.
 - A crashed poller is restarted with backoff (1s doubling to 1m).
 - `/healthz` is liveness only. `/readyz` returns 503 before every collector
@@ -161,7 +162,20 @@ Current behavior:
 - environment-based credentials use the `HEARTBEAT_CREDENTIAL_<REF>` naming
   pattern ([resolution rules](../../docs/reference/configuration.md#credential-resolution))
 - the DSN enables TLS by default
-- each connection is pinged before probe execution begins
+- each pool is verified when it is created with one query that also checks
+  whether the login is sysadmin-equivalent (`IS_SRVROLEMEMBER('sysadmin')` or
+  `HAS_PERMS_BY_NAME(NULL, NULL, 'CONTROL SERVER')`); the check is repeated
+  about every 10 minutes by the one `Open` that claims it, without holding the
+  pool lock. An elevated or undeterminable login is logged as a warning and
+  reported through `Manager.Sysadmin`, which `SQLExecutor` exposes to the
+  runner (`SysadminReporter`) for the
+  `heartbeat_collector_target_login_sysadmin` health series
+- connection errors are scrubbed of the login and password before they are
+  wrapped, because go-mssqldb's DSN parse errors quote the whole DSN
+- every batch starts with `connector.SessionSettings`
+  (`SET LOCK_TIMEOUT 1000; SET DEADLOCK_PRIORITY LOW;`) in the same round trip;
+  why and how operators see it is in the
+  [onboarding guide](../../docs/guides/database-targets.md#what-the-collector-runs-on-the-server)
 - probe execution uses a per-probe timeout
 
 ## Configuration and Endpoints
@@ -183,6 +197,9 @@ To add a new SQL Server probe:
    columns.
 4. Add or update tests in `internal/probes/sqlserver/catalog_test.go` and
    `internal/collectors/runner_test.go`.
+5. Check the probe against the
+   [probe review checklist](../../docs/architecture/database-observability.md#probe-review-checklist)
+   and run `make test-sqlserver`.
 
 To add a new collector:
 

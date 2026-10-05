@@ -83,6 +83,13 @@ const (
 	// MetricCycleDuration is the wall time of the collector's last cycle.
 	// Labels: collector.
 	MetricCycleDuration = "heartbeat_collector_cycle_duration_seconds"
+	// MetricTargetLoginSysadmin is 1 when the collector's login for the target
+	// is sysadmin-equivalent (a member of the sysadmin server role, or holding
+	// CONTROL SERVER) and 0 when it is not, as of the last check, which runs
+	// when the target's connection pool is created and about every 10
+	// minutes after.  Absent while unknown, or when the executor is not a
+	// [SysadminReporter].  Labels: collector, environment, target.
+	MetricTargetLoginSysadmin = "heartbeat_collector_target_login_sysadmin"
 )
 
 // fallbackSinkMu serialises evidence publishing for Runners that were not
@@ -93,6 +100,17 @@ var fallbackSinkMu sync.Mutex
 // returns the decoded metric samples along with any structured evidence.
 type ProbeExecutor interface {
 	RunProbe(context.Context, collectormetadata.ScheduledProbe) ([]collectorexport.Sample, []collectormetadata.Evidence, error)
+}
+
+// SysadminReporter is an optional extension of [ProbeExecutor].  When the
+// Runner's executor implements it, the Runner exports
+// [MetricTargetLoginSysadmin] with each target's health series.
+type SysadminReporter interface {
+	// TargetSysadmin reports whether the login used for target is
+	// sysadmin-equivalent (a member of sysadmin, or holding CONTROL SERVER).
+	// ok is false while that is unknown, for example before the first
+	// connection to the target.  It must not block.
+	TargetSysadmin(target collectormetadata.DatabaseTarget) (sysadmin, ok bool)
 }
 
 // EvidenceSink receives structured evidence produced by probes in categories
@@ -470,7 +488,32 @@ func (r Runner) recordHealth(collectorID string, group targetGroup, result Targe
 			Labels: labels(),
 		})
 	}
+	if sysadmin, ok := r.targetSysadmin(group); ok {
+		samples = append(samples, collectorexport.Sample{
+			Metric: MetricTargetLoginSysadmin,
+			Help:   "Whether the collector's login for the target is sysadmin-equivalent, a member of sysadmin or holding CONTROL SERVER (1), or not (0); checked when the target's connection pool is created and about every 10 minutes after.",
+			Value:  sysadmin,
+			Labels: labels(),
+		})
+	}
 	r.recordScope(collectorexport.Scope{Collector: collectorID, Target: group.name, Probe: healthScopeProbe}, samples)
+}
+
+// targetSysadmin returns 1 or 0 for whether the login of group's target is
+// sysadmin-equivalent, and false when the executor cannot tell.
+func (r Runner) targetSysadmin(group targetGroup) (float64, bool) {
+	reporter, ok := r.executor.(SysadminReporter)
+	if !ok || len(group.items) == 0 {
+		return 0, false
+	}
+	sysadmin, ok := reporter.TargetSysadmin(group.items[0].Target)
+	if !ok {
+		return 0, false
+	}
+	if sysadmin {
+		return 1, true
+	}
+	return 0, true
 }
 
 // recordCycle exports the duration of one collector cycle.
@@ -613,13 +656,9 @@ func (e SQLExecutor) RunProbe(ctx context.Context, item collectormetadata.Schedu
 	if !ok {
 		return nil, nil, fmt.Errorf("unknown probe %s", item.Definition.Name)
 	}
-	query := item.Definition.QueryTemplate
-	if query == "" {
-		query = probe.QueryTemplate
-	}
 	probeCtx, cancel := context.WithTimeout(ctx, timeoutFor(item))
 	defer cancel()
-	rows, err := db.QueryContext(probeCtx, query)
+	rows, err := db.QueryContext(probeCtx, probeQuery(item, probe))
 	if err != nil {
 		return nil, nil, fmt.Errorf("query probe: %w", err)
 	}
@@ -629,6 +668,23 @@ func (e SQLExecutor) RunProbe(ctx context.Context, item collectormetadata.Schedu
 		return nil, nil, err
 	}
 	return decodeRows(item, probe, maps), buildEvidence(item, probe, maps), nil
+}
+
+// TargetSysadmin implements [SysadminReporter] from the Manager's last login
+// check for target's connection pool.
+func (e SQLExecutor) TargetSysadmin(target collectormetadata.DatabaseTarget) (sysadmin, ok bool) {
+	return e.Manager.Sysadmin(target)
+}
+
+// probeQuery returns the batch to run for item: its query_template override,
+// or the catalog query, prefixed with the collector session settings so the
+// probe never waits long on a lock or wins a deadlock.
+func probeQuery(item collectormetadata.ScheduledProbe, probe catalogsqlserver.Probe) string {
+	query := item.Definition.QueryTemplate
+	if query == "" {
+		query = probe.QueryTemplate
+	}
+	return connector.WithSessionSettings(query)
 }
 
 // timeoutFor returns the effective timeout for one probe execution based on

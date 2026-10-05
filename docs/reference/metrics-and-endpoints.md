@@ -111,6 +111,7 @@ Requests panel does, so an unreachable target never reads as 0. The catalog live
 | `heartbeat_collector_target_consecutive_failures` | `collector`, `environment`, `target` | Failed cycles in a row |
 | `heartbeat_collector_target_last_success_timestamp_seconds` | `collector`, `environment`, `target` | Unix time of the last successful cycle; use it for freshness alerts |
 | `heartbeat_collector_cycle_duration_seconds` | `collector` | Duration of the last collection cycle |
+| `heartbeat_collector_target_login_sysadmin` | `collector`, `environment`, `target` | 1 if the collector's login for the target is sysadmin-equivalent: a member of `sysadmin`, or holding `CONTROL SERVER` (it should be 0; see [login permissions](../guides/database-targets.md#collector-login-permissions)). Checked when the collector first connects to the target and about every 10 minutes after; absent until the first check, and while SQL Server cannot tell |
 
 ### OTel gateway
 
