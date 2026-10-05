@@ -91,8 +91,14 @@ succeeds.
   has completed its first cycle, when a collector is failed or crash-looping,
   when a collector has not completed a cycle within 2x its interval + 10s, or
   when the runtime diverged after a failed rollback. A monitored database
-  being down does not make the pod unready; it shows as a failed target in the
-  `/readyz` body and metrics. The body never includes raw error text.
+  being down does not make the pod unready; it shows as a failed target in
+  metrics and in the authenticated `GET /admin/config`, which also carries the
+  raw driver error. The `/readyz` body is only the status.
+- The admin endpoints (`GET /admin/config`, `POST /admin/config/reload`) need
+  `HEARTBEAT_ADMIN_TOKEN` as a bearer token, compared in constant time, and are
+  disabled without it. Startup warns when certificate verification is off
+  (`HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE`). Details:
+  [endpoints](../../docs/reference/metrics-and-endpoints.md#db-collector-8082).
 - SQL Server connections are pooled per target (max 2 open, 10m lifetime);
   idle pools are closed after 15m.
 - Shutdown is bounded: HTTP drain 10s, poller stop 20s, then pooled
@@ -208,8 +214,8 @@ To add a new collector:
    `config/integrations.yaml` when running the binary directly).
 2. Ensure the collector kind is `sqlserver`.
 3. Provide target credentials through the configured credential reference.
-4. Confirm the collector appears in `/readyz` and exports metrics on
-   `/metrics`.
+4. Confirm the collector appears under `readiness.collectors` in
+   `GET /admin/config` and exports metrics on `/metrics`.
 
 ## Related Code
 

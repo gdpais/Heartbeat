@@ -11,6 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -27,35 +30,99 @@ import (
 type chartProfile struct {
 	name   string
 	values []string
+	// set holds --set overrides applied after the values files.
+	set []string
+	// inline is a values document applied last.
+	inline string
 	// Objects (kind/name) the profile must and must not render.
 	present, absent []string
+	// collectorPeers are the sources the db-collector NetworkPolicy must
+	// admit to port 8082, in peerString form; none means it denies all
+	// ingress. Checked whenever the profile renders the policy.
+	collectorPeers []string
+	// wantError, when set, is part of the error helm must fail with; nothing
+	// else is checked.
+	wantError string
 }
+
+// bundledPrometheusPeer is the bundled Prometheus server as a NetworkPolicy
+// peer of the release "heartbeat".
+const bundledPrometheusPeer = "pods{app.kubernetes.io/component=server,app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=prometheus}"
 
 var chartProfiles = []chartProfile{
 	{
-		name:    "defaults",
-		present: []string{"StatefulSet/db-collector", "Deployment/otel-gateway", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "StatefulSet/loki", "Deployment/otel-collector"},
+		name:           "defaults",
+		present:        []string{"StatefulSet/db-collector", "Deployment/otel-gateway", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "StatefulSet/loki", "Deployment/otel-collector", "NetworkPolicy/db-collector"},
+		collectorPeers: []string{bundledPrometheusPeer},
 	},
 	{
 		name:    "kind",
 		values:  []string{"kind.yaml"},
-		present: []string{"StatefulSet/db-collector", "Deployment/otel-gateway", "StatefulSet/loki", "Deployment/otel-collector"},
+		present: []string{"StatefulSet/db-collector", "Deployment/otel-gateway", "StatefulSet/loki", "Deployment/otel-collector", "NetworkPolicy/db-collector"},
+		// The host through the loopback NodePort; pods stay limited to Prometheus.
+		collectorPeers: []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
 	},
 	{
-		name:    "kind-minimal",
-		values:  []string{"kind.yaml", "minimal.yaml"},
-		present: []string{"StatefulSet/db-collector", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana"},
-		absent:  []string{"Deployment/otel-gateway", "StatefulSet/loki", "Deployment/otel-collector"},
+		name:           "kind-minimal",
+		values:         []string{"kind.yaml", "minimal.yaml"},
+		present:        []string{"StatefulSet/db-collector", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "NetworkPolicy/db-collector"},
+		absent:         []string{"Deployment/otel-gateway", "StatefulSet/loki", "Deployment/otel-collector"},
+		collectorPeers: []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
 	},
 	{
-		name:    "kind-sqlserver-dev",
-		values:  []string{"kind.yaml", "sqlserver-dev.yaml"},
+		name:           "kind-sqlserver-dev",
+		values:         []string{"kind.yaml", "sqlserver-dev.yaml"},
+		present:        []string{"StatefulSet/db-collector", "NetworkPolicy/db-collector"},
+		collectorPeers: []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
+	},
+	{
+		name:           "production-example",
+		values:         []string{"production.example.yaml"},
+		present:        []string{"StatefulSet/db-collector", "Ingress/grafana", "NetworkPolicy/db-collector"},
+		collectorPeers: []string{bundledPrometheusPeer, "ip 10.100.0.0/16"},
+	},
+	{
+		// A shared Prometheus in another namespace replaces the bundled one.
+		name: "external-prometheus",
+		set: []string{
+			"prometheus.enabled=false", "grafana.enabled=false",
+			`dbCollector.networkPolicy.prometheus[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=monitoring`,
+			`dbCollector.networkPolicy.prometheus[0].podSelector.matchLabels.app\.kubernetes\.io/name=prometheus`,
+		},
+		present:        []string{"StatefulSet/db-collector", "NetworkPolicy/db-collector"},
+		absent:         []string{"Deployment/prometheus", "Deployment/grafana"},
+		collectorPeers: []string{"ns{kubernetes.io/metadata.name=monitoring} pods{app.kubernetes.io/name=prometheus}"},
+	},
+	{
+		// No peer at all must deny all ingress, never render an empty `from`
+		// (which would admit every source).
+		name:    "collector-policy-without-peers",
+		set:     []string{"prometheus.enabled=false", "grafana.enabled=false"},
+		present: []string{"StatefulSet/db-collector", "NetworkPolicy/db-collector"},
+	},
+	{
+		// The bundled peer follows the subchart's name, like its selector.
+		name:           "prometheus-name-override",
+		set:            []string{"prometheus.nameOverride=prom"},
+		present:        []string{"Deployment/prometheus", "NetworkPolicy/db-collector"},
+		collectorPeers: []string{"pods{app.kubernetes.io/component=server,app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=prom}"},
+	},
+	{
+		// Only an empty podSelector admits every pod in the namespace.
+		name:      "collector-peer-empty-pod-selector",
+		inline:    "dbCollector: {networkPolicy: {operators: [{podSelector: {}}]}}",
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		name:      "collector-peer-empty-match-labels",
+		inline:    "dbCollector: {networkPolicy: {prometheus: [{namespaceSelector: {matchLabels: {}}}]}}",
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		name:    "collector-policy-disabled",
+		set:     []string{"dbCollector.networkPolicy.enabled=false"},
 		present: []string{"StatefulSet/db-collector"},
-	},
-	{
-		name:    "production-example",
-		values:  []string{"production.example.yaml"},
-		present: []string{"StatefulSet/db-collector", "Ingress/grafana"},
+		absent:  []string{"NetworkPolicy/db-collector"},
 	},
 }
 
@@ -82,6 +149,16 @@ func (o object) id() string { return o.Kind + "/" + o.Metadata.Name }
 
 func helmTemplate(t *testing.T, profile chartProfile) []byte {
 	t.Helper()
+	out, stderr, err := runHelmTemplate(t, profile)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, stderr)
+	}
+	return out
+}
+
+// runHelmTemplate renders profile and returns stdout, stderr and the error.
+func runHelmTemplate(t *testing.T, profile chartProfile) ([]byte, string, error) {
+	t.Helper()
 	root := repoRoot(t)
 	helm := os.Getenv("HELM")
 	if helm == "" {
@@ -91,14 +168,24 @@ func helmTemplate(t *testing.T, profile chartProfile) []byte {
 	for _, file := range profile.values {
 		args = append(args, "-f", filepath.Join(root, "infra/helm/values", file))
 	}
+	for _, set := range profile.set {
+		args = append(args, "--set", set)
+	}
+	if profile.inline != "" {
+		path := filepath.Join(t.TempDir(), "inline.yaml")
+		if err := os.WriteFile(path, []byte(profile.inline), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		args = append(args, "-f", path)
+	}
 	var stderr bytes.Buffer
 	cmd := exec.Command(helm, args...)
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("%s %s: %v\n%s", helm, strings.Join(args, " "), err, stderr.String())
+		err = fmt.Errorf("%s %s: %w", helm, strings.Join(args, " "), err)
 	}
-	return out
+	return out, stderr.String(), err
 }
 
 func parseObjects(t *testing.T, rendered []byte) map[string]object {
@@ -131,6 +218,13 @@ func parseObjects(t *testing.T, rendered []byte) map[string]object {
 func TestChartProfiles(t *testing.T) {
 	for _, profile := range chartProfiles {
 		t.Run(profile.name, func(t *testing.T) {
+			if profile.wantError != "" {
+				_, stderr, err := runHelmTemplate(t, profile)
+				if err == nil || !strings.Contains(stderr, profile.wantError) {
+					t.Fatalf("expected helm to fail with %q, got %v\n%s", profile.wantError, err, stderr)
+				}
+				return
+			}
 			first := helmTemplate(t, profile)
 			// Argo CD renders the chart itself on every sync; output must not
 			// change between renders.
@@ -161,6 +255,7 @@ func TestChartProfiles(t *testing.T) {
 			checkIntegrations(t, objects)
 			checkCollectorSingleton(t, objects)
 			checkInClusterEndpoints(t, objects)
+			checkCollectorNetworkPolicy(t, objects, profile.collectorPeers)
 		})
 	}
 }
@@ -314,5 +409,147 @@ func mustUnmarshal(t *testing.T, content string, out any) {
 	t.Helper()
 	if err := yaml.Unmarshal([]byte(content), out); err != nil {
 		t.Fatal(fmt.Errorf("parse embedded config: %w", err))
+	}
+}
+
+// labelSelector is a Kubernetes label selector.
+type labelSelector struct {
+	MatchLabels      map[string]string `yaml:"matchLabels"`
+	MatchExpressions []any             `yaml:"matchExpressions"`
+}
+
+// String renders the selector's labels as {k=v,...}, sorted by key.
+func (s labelSelector) String() string {
+	pairs := make([]string, 0, len(s.MatchLabels))
+	for key, value := range s.MatchLabels {
+		pairs = append(pairs, key+"="+value)
+	}
+	sort.Strings(pairs)
+	if len(s.MatchExpressions) > 0 {
+		pairs = append(pairs, fmt.Sprintf("expressions=%v", s.MatchExpressions))
+	}
+	return "{" + strings.Join(pairs, ",") + "}"
+}
+
+// networkPolicyPeer is one entry of a NetworkPolicy ingress rule's from.
+type networkPolicyPeer struct {
+	PodSelector       *labelSelector `yaml:"podSelector"`
+	NamespaceSelector *labelSelector `yaml:"namespaceSelector"`
+	IPBlock           *struct {
+		CIDR   string   `yaml:"cidr"`
+		Except []string `yaml:"except"`
+	} `yaml:"ipBlock"`
+}
+
+// peerString renders a peer for comparison: "ns{...} pods{...}" for
+// selectors, "ip <cidr> except <cidr>,..." for an ipBlock.
+func peerString(peer networkPolicyPeer) string {
+	var parts []string
+	if peer.NamespaceSelector != nil {
+		parts = append(parts, "ns"+peer.NamespaceSelector.String())
+	}
+	if peer.PodSelector != nil {
+		parts = append(parts, "pods"+peer.PodSelector.String())
+	}
+	if peer.IPBlock != nil {
+		block := "ip " + peer.IPBlock.CIDR
+		if len(peer.IPBlock.Except) > 0 {
+			block += " except " + strings.Join(peer.IPBlock.Except, ",")
+		}
+		parts = append(parts, block)
+	}
+	return strings.Join(parts, " ")
+}
+
+// The db-collector NetworkPolicy must select exactly the collector pod, admit
+// only the expected peers to TCP 8082 and never render an empty `from`
+// (which admits every source). The bundled Prometheus peer must match the
+// rendered Prometheus Deployment's selector, so a subchart label change cannot
+// silently cut off scraping.
+func checkCollectorNetworkPolicy(t *testing.T, objects map[string]object, wantPeers []string) {
+	t.Helper()
+	policy, ok := objects["NetworkPolicy/db-collector"]
+	if !ok {
+		return
+	}
+	var spec struct {
+		PodSelector labelSelector `yaml:"podSelector"`
+		PolicyTypes []string      `yaml:"policyTypes"`
+		Ingress     *[]struct {
+			Ports []struct {
+				Protocol string `yaml:"protocol"`
+				Port     int    `yaml:"port"`
+			} `yaml:"ports"`
+			From *[]networkPolicyPeer `yaml:"from"`
+		} `yaml:"ingress"`
+	}
+	if err := policy.Spec.Decode(&spec); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(spec.PolicyTypes, ",") != "Ingress" {
+		t.Errorf("db-collector NetworkPolicy policyTypes = %v, want [Ingress]", spec.PolicyTypes)
+	}
+	if sts, ok := objects["StatefulSet/db-collector"]; ok {
+		var stsSpec struct {
+			Selector labelSelector `yaml:"selector"`
+		}
+		if err := sts.Spec.Decode(&stsSpec); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := spec.PodSelector.String(), stsSpec.Selector.String(); got != want {
+			t.Errorf("db-collector NetworkPolicy selects %s, StatefulSet selects %s", got, want)
+		}
+	}
+	if spec.Ingress == nil {
+		t.Fatal("db-collector NetworkPolicy has no ingress field; render ingress: [] to deny all")
+	}
+	var gotPeers []string
+	for _, rule := range *spec.Ingress {
+		if len(rule.Ports) != 1 || rule.Ports[0].Port != 8082 || rule.Ports[0].Protocol != "TCP" {
+			t.Errorf("db-collector NetworkPolicy rule ports = %+v, want only TCP 8082", rule.Ports)
+		}
+		if rule.From == nil || len(*rule.From) == 0 {
+			t.Fatal("db-collector NetworkPolicy rule has an empty from, which admits every source")
+		}
+		for _, peer := range *rule.From {
+			gotPeers = append(gotPeers, peerString(peer))
+		}
+	}
+	if !reflect.DeepEqual(gotPeers, wantPeers) {
+		t.Errorf("db-collector NetworkPolicy peers = %q, want %q", gotPeers, wantPeers)
+	}
+	if prom, ok := objects["Deployment/prometheus"]; ok {
+		var promSpec struct {
+			Selector labelSelector `yaml:"selector"`
+		}
+		if err := prom.Spec.Decode(&promSpec); err != nil {
+			t.Fatal(err)
+		}
+		if bundled := "pods" + promSpec.Selector.String(); !slices.Contains(gotPeers, bundled) {
+			t.Errorf("db-collector NetworkPolicy does not admit the bundled Prometheus (%s); peers %q", bundled, gotPeers)
+		}
+	}
+	checkCollectorSourceAddresses(t, objects, gotPeers)
+}
+
+// An ipBlock only sees external clients' addresses when the collector
+// Service keeps them: with externalTrafficPolicy Cluster, NodePort and
+// LoadBalancer traffic is masqueraded to a node address first (on kind,
+// kindnet then drops it).
+func checkCollectorSourceAddresses(t *testing.T, objects map[string]object, peers []string) {
+	t.Helper()
+	svc, ok := objects["Service/db-collector"]
+	if !ok || !slices.ContainsFunc(peers, func(peer string) bool { return strings.HasPrefix(peer, "ip ") }) {
+		return
+	}
+	var spec struct {
+		Type                  string `yaml:"type"`
+		ExternalTrafficPolicy string `yaml:"externalTrafficPolicy"`
+	}
+	if err := svc.Spec.Decode(&spec); err != nil {
+		t.Fatal(err)
+	}
+	if (spec.Type == "NodePort" || spec.Type == "LoadBalancer") && spec.ExternalTrafficPolicy != "Local" {
+		t.Errorf("Service/db-collector is %s with externalTrafficPolicy %q; the NetworkPolicy ipBlock needs Local to see client addresses", spec.Type, spec.ExternalTrafficPolicy)
 	}
 }

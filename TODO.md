@@ -211,11 +211,11 @@ Replica ownership and outage testing are section 19. Design details:
 - [x] Validate safe reloads, including partial reconciliation failure (rollback) and replacement-poller startup failure (unit-tested)
 
 ### 2.7 Collector endpoint security
-- [ ] Diagnostics: require the admin token for `GET /admin/config`; keep `/readyz` to status only and move raw driver errors (host, port, login) behind auth
-- [ ] Redaction: mask notification channel `config` values in `Redacted()`, strip userinfo from endpoint URLs, and reject credentials embedded in `loki`/`alertmanager` URLs at validation
-- [ ] Admin token: compare in constant time
-- [ ] Network exposure: add a NetworkPolicy limiting port 8082 to Prometheus and operator access
-- [ ] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; per-target TLS settings wait until a real target needs them
+- [x] Diagnostics: require the admin token for `GET /admin/config`; keep `/readyz` to status only and move raw driver errors (host, port, login) behind auth
+- [x] Redaction: mask notification channel `config` values in `Redacted()`, strip userinfo from endpoint URLs, and reject credentials embedded in `loki`/`alertmanager` URLs at validation
+- [x] Admin token: compare in constant time
+- [x] Network exposure: add a NetworkPolicy limiting port 8082 to Prometheus and operator access
+- [x] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; per-target TLS settings wait until a real target needs them
 
 ---
 
