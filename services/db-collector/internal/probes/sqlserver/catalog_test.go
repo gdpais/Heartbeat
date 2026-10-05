@@ -136,6 +136,20 @@ func TestCPUProbeConvertsOnlyTheLatestRecord(t *testing.T) {
 	}
 }
 
+// sys.dm_os_host_info needs SQL Server 2017 or later; on an older server the
+// whole cpu batch would fail to compile and fail its target every cycle.  The
+// platform comes from @@VERSION, which every version has.
+func TestCPUProbeDetectsWindowsWithoutHostInfo(t *testing.T) {
+	probe, _ := DefaultCatalog().Get("cpu")
+	query := probe.QueryTemplate
+	if strings.Contains(strings.ToLower(query), "dm_os_host_info") {
+		t.Errorf("cpu query uses sys.dm_os_host_info (SQL Server 2017+): %s", query)
+	}
+	if !strings.Contains(query, "@@VERSION LIKE N'% on Windows%'") {
+		t.Errorf("cpu query must detect Windows from @@VERSION: %s", query)
+	}
+}
+
 // File I/O and file size series of one file share their labels, so panels
 // and queries can join them.
 func TestFileIOProbeLabelsMatchStorage(t *testing.T) {

@@ -272,19 +272,21 @@ func DefaultCatalog() Catalog {
 			// SQL Server nor idle, floored at 0 because the two values are
 			// sampled separately and can add up to more than 100.  SQL Server
 			// on Linux reports SystemIdle as 0 whatever the load, so other
-			// processes are NULL (no sample) there.  The XML value() method
-			// needs QUOTED_IDENTIFIER ON, which the driver's ODBC login
-			// options set.  Before the first record, about a minute after
-			// startup, the query returns no row and the probe exports
-			// nothing.  sys.dm_os_host_info needs SQL Server 2017 or later.
+			// processes are NULL (no sample) there.  The platform comes from
+			// @@VERSION ("... on Windows Server 2019 ..." or "... on Linux
+			// (Ubuntu ...)"), which needs no permission and, unlike
+			// sys.dm_os_host_info (SQL Server 2017+), exists on every
+			// version.  The XML value() method needs QUOTED_IDENTIFIER ON,
+			// which the driver's ODBC login options set.  Before the first
+			// record, about a minute after startup, the query returns no row
+			// and the probe exports nothing.
 			QueryTemplate: "SELECT v.sql_process_percent, " +
-				"CASE WHEN host.host_platform = N'Windows' THEN " +
+				"CASE WHEN @@VERSION LIKE N'% on Windows%' THEN " +
 				"CASE WHEN 100 - v.system_idle_percent - v.sql_process_percent > 0 " +
 				"THEN 100 - v.system_idle_percent - v.sql_process_percent ELSE 0 END END AS other_process_percent " +
 				"FROM (SELECT TOP (1) record FROM sys.dm_os_ring_buffers " +
 				"WHERE ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR' AND record LIKE N'%<SystemHealth>%' " +
 				"ORDER BY timestamp DESC) AS latest " +
-				"CROSS JOIN sys.dm_os_host_info AS host " +
 				"CROSS APPLY (SELECT CONVERT(xml, latest.record) AS doc) AS r " +
 				"CROSS APPLY (SELECT " +
 				"r.doc.value('(/Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'int') AS sql_process_percent, " +
