@@ -875,13 +875,15 @@ func timeoutFor(item collectormetadata.ScheduledProbe) time.Duration {
 // probeTimeout returns the effective timeout for one probe execution.
 //
 // A probe-specific timeout wins but is capped at the scrape interval, so a
-// single probe can never outlive its cycle.  Without an override the default
-// is half the interval, capped at maxDefaultProbeTimeout, leaving room for the
-// target's other probes.  fallbackProbeTimeout applies when no interval is
-// known.
+// single probe can never outlive its cycle, and at
+// [collectorconfig.MaxProbeTimeout], which connectors' socket deadlines are
+// sized to outlast; probe definitions loaded from the metadata store are not
+// validated against it.  Without an override the default is half the
+// interval, capped at maxDefaultProbeTimeout, leaving room for the target's
+// other probes.  fallbackProbeTimeout applies when no interval is known.
 func probeTimeout(timeoutMS int, interval time.Duration) time.Duration {
 	if timeoutMS > 0 {
-		timeout := time.Duration(timeoutMS) * time.Millisecond
+		timeout := min(time.Duration(timeoutMS)*time.Millisecond, collectorconfig.MaxProbeTimeout)
 		if interval > 0 && timeout > interval {
 			return interval
 		}

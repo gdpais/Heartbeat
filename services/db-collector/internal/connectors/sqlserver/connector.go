@@ -41,6 +41,7 @@ import (
 
 	_ "github.com/microsoft/go-mssqldb"
 
+	collectorconfig "heartbeat/internal/config"
 	collectormetadata "heartbeat/services/db-collector/internal/metadata"
 )
 
@@ -116,8 +117,12 @@ type Manager struct {
 	// Application is the client application name sent to the server for
 	// observability purposes.
 	Application string
-	// DialTimeout limits how long the TCP connection and initial handshake may
-	// take.  It also bounds the ping performed when a pool is first created.
+	// DialTimeout limits how long the TCP dial of a new connection may take
+	// (the driver's "dial timeout").  The pre-login, TLS and login exchanges
+	// that follow ignore it; each of their reads is bounded by the socket
+	// timeout instead (see socketTimeout).  It also bounds the ping performed
+	// when a pool is first created, except while that ping waits on those
+	// exchanges.
 	DialTimeout time.Duration
 	// QueryTimeout is reserved for future use; individual query deadlines are
 	// currently managed at the probe level.
@@ -214,12 +219,19 @@ func (m Manager) driver() string {
 // the query context while it reads the pre-login and TLS handshake, and after
 // cancelling a query it waits for the server's acknowledgement without a
 // deadline, so on a frozen or vanished server those reads would otherwise last
-// until TCP gives up, which can take many minutes.  Collector probes are
-// cancelled long before (their default timeout is at most 10s), so only a
+// until TCP gives up, which can take many minutes.
+//
+// It is derived from [collectorconfig.MaxProbeTimeout] so it can never cut a
+// probe short: every probe is cancelled by its own timeout, at most
+// MaxProbeTimeout, before a read of a healthy server reaches this deadline,
+// and socketTimeoutMargin leaves room for the cancel round trip.  Only a
 // connection that is already dead hits it; such a connection then fails and
-// leaves the pool within about two socket timeouts.  Healthy servers never
-// stay silent this long within a probe unless its timeout_ms exceeds it.
-const socketTimeout = 30 * time.Second
+// leaves the pool within about two socket timeouts.
+const socketTimeout = collectorconfig.MaxProbeTimeout + socketTimeoutMargin
+
+// socketTimeoutMargin is how much longer than the longest probe timeout a
+// socket read may wait.
+const socketTimeoutMargin = 5 * time.Second
 
 // dsn builds the go-mssqldb connection URL.  The result contains the password
 // and must never be logged or included in errors.

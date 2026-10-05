@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/microsoft/go-mssqldb/msdsn"
+
+	collectorconfig "heartbeat/internal/config"
 )
 
 // The driver must parse the DSN into the intended timeouts; a misspelt
@@ -21,5 +23,10 @@ func TestDSNSetsDriverTimeouts(t *testing.T) {
 	}
 	if config.ConnTimeout != socketTimeout {
 		t.Fatalf("connection timeout = %s, want %s", config.ConnTimeout, socketTimeout)
+	}
+	// The DSN carries whole seconds; the socket deadline must still outlast
+	// the longest probe timeout so it never cuts a running probe short.
+	if config.ConnTimeout <= collectorconfig.MaxProbeTimeout {
+		t.Fatalf("connection timeout %s does not outlast the maximum probe timeout %s", config.ConnTimeout, collectorconfig.MaxProbeTimeout)
 	}
 }
