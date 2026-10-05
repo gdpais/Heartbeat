@@ -223,8 +223,12 @@ func DefaultCatalog() Catalog {
 			Category: "storage",
 			// One row per database file: file_name is the logical name, unique
 			// within a database, so every file gets its own series.  size is
-			// in 8 KB pages.
-			QueryTemplate: "SELECT DB_NAME(database_id) AS database_name, name AS file_name, type_desc AS file_type, size AS size_pages FROM sys.master_files",
+			// in 8 KB pages.  DB_NAME() is NULL for a database the login
+			// cannot see (no VIEW ANY DATABASE) or one dropped mid-query;
+			// the database_id fallback keeps the label set and keeps two such
+			// databases with the same logical file names (restored copies)
+			// apart.  file_io uses the same expression.
+			QueryTemplate: "SELECT COALESCE(DB_NAME(database_id), CONCAT(N'database_id:', database_id)) AS database_name, name AS file_name, type_desc AS file_type, size AS size_pages FROM sys.master_files",
 			Metrics: []Metric{{
 				Name:         "heartbeat_sqlserver_database_file_size_bytes",
 				Help:         "SQL Server database file size in bytes, one series per file.",
@@ -351,7 +355,8 @@ func DefaultCatalog() Catalog {
 			// (SQL Server start, or the database being brought online), so
 			// they are counters.  The join to sys.master_files names the file
 			// and drops the hidden resource database, which has no row there.
-			QueryTemplate: "SELECT DB_NAME(vfs.database_id) AS database_name, mf.name AS file_name, mf.type_desc AS file_type, " +
+			// database_name falls back to the id like the storage probe's.
+			QueryTemplate: "SELECT COALESCE(DB_NAME(vfs.database_id), CONCAT(N'database_id:', vfs.database_id)) AS database_name, mf.name AS file_name, mf.type_desc AS file_type, " +
 				"vfs.num_of_reads, vfs.num_of_writes, vfs.num_of_bytes_read, vfs.num_of_bytes_written, " +
 				"vfs.io_stall_read_ms, vfs.io_stall_write_ms " +
 				"FROM sys.dm_io_virtual_file_stats(NULL, NULL) AS vfs " +

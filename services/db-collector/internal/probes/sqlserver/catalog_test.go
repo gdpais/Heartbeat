@@ -251,3 +251,20 @@ func TestFileIOProbeLabelsMatchStorage(t *testing.T) {
 		}
 	}
 }
+
+// DB_NAME() is NULL for a database the login cannot see or one dropped
+// mid-query.  Both file probes fall back to the database id, the same way,
+// so the label is never "<nil>" and two unnamed databases never collide.
+func TestFileProbesNameDatabasesTheSameWay(t *testing.T) {
+	catalog := DefaultCatalog()
+	pattern := regexp.MustCompile(`COALESCE\(DB_NAME\((\w+\.)?database_id\), CONCAT\(N'database_id:', (\w+\.)?database_id\)\) AS database_name`)
+	for _, name := range []string{"storage", "file_io"} {
+		probe, _ := catalog.Get(name)
+		if !pattern.MatchString(probe.QueryTemplate) {
+			t.Errorf("%s query must name databases with %s: %s", name, pattern, probe.QueryTemplate)
+		}
+		if strings.Contains(probe.QueryTemplate, "SELECT DB_NAME(") {
+			t.Errorf("%s query uses a bare DB_NAME(), which can be NULL: %s", name, probe.QueryTemplate)
+		}
+	}
+}
