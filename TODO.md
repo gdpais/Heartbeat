@@ -69,6 +69,17 @@ Production delivery is section 18.
 - [ ] Install the Renovate GitHub App on the repository (config is in `renovate.json`)
 - [ ] Agree the local loop's time and resource budget (measured: about 2.0 GiB RAM for the full profile)
 
+### 0.5 Development workflow and releases
+
+Trunk-based development and tagged releases ([ADR 0006](docs/architecture/decisions/0006-trunk-based-development-and-tagged-releases.md));
+the rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+- [x] Decide the branching, versioning, release and changelog model; add `CONTRIBUTING.md` and `CHANGELOG.md`
+- [ ] Retire the `db-collectors` phase branch: delete the branch and its ruleset (its CI push trigger is already removed)
+- [ ] Protect `v*` tags with a tag ruleset: no updates or deletions
+- [ ] Release workflow: release-please on `master` keeps a release pull request (version, `CHANGELOG.md`, chart `version`/`appVersion`); when a release is created, build multi-arch images of both services, push them to GHCR tagged with the version, and add their digests to the release notes
+- [ ] First release, `v0.1.0` (phase 1): seed release-please at the current `master` so the hand-written `Unreleased` section becomes the `0.1.0` entry
+
 ---
 
 ## 1. Core system: PostgreSQL metadata and schema
@@ -718,7 +729,7 @@ It follows the Web UI so the first production deploy carries a usable product;
 pull it forward if a production SQL Server must be monitored sooner.
 
 - [ ] `heartbeat-deploy` config repository with Argo CD Applications and per-environment values
-- [ ] CI publishes multi-arch images and the chart to ECR through GitHub OIDC
+- [ ] The release workflow [0.5] also publishes the images and the chart to ECR through GitHub OIDC
 - [ ] EKS infrastructure as code; AWS Secrets Manager with External Secrets
 - [ ] Route the Watchdog to healthchecks.io and test loss of the monitoring path
 - [ ] Notification receivers: Discord, then Slack, Teams and WhatsApp; set up the WhatsApp Business Account and alert template

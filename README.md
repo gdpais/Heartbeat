@@ -72,6 +72,12 @@ Key boundaries: PostgreSQL stores product metadata only
 collectors and integrations are configured in YAML/Kubernetes with hot reload
 ([ADR 0002](docs/architecture/decisions/0002-runtime-config-in-yaml.md)).
 
+## Contributing
+
+Work happens on short-lived `feature/*` branches merged into `master` by pull
+request; releases are `vX.Y.Z` tags. See [CONTRIBUTING.md](CONTRIBUTING.md)
+and the [changelog](CHANGELOG.md).
+
 ## Repository layout
 
 ```text
