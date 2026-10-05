@@ -210,6 +210,11 @@ func TestAbandonedProbeBlocksItsTargetUntilItReturns(t *testing.T) {
 	if got := nonZero(probeSeries(t, reg, MetricProbeErrors)); fmt.Sprint(got) != fmt.Sprint(wantErrors) {
 		t.Fatalf("probe errors:\n got %v\nwant %v", got, wantErrors)
 	}
+	// The call is unregistered before its goroutine logs, so wait for the
+	// log rather than read it right after unstick.
+	waitFor(t, "the abandoned call's return to be logged", func() bool {
+		return len(logs.records(t, "abandoned probe returned; result discarded")) > 0
+	})
 	returned := logs.records(t, "abandoned probe returned; result discarded")
 	if len(returned) != 1 || returned[0]["target"] != "stuck" || returned[0]["probe"] != "p1" || returned[0]["running"] == nil {
 		t.Fatalf("expected one log for the returned abandoned call, got %v", returned)
@@ -278,7 +283,11 @@ func TestPollerStopIsBoundedByTheAbandonGrace(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- poller.Start(ctx) }()
-	<-executor.started
+	select {
+	case <-executor.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stuck probe never started")
+	}
 
 	stopped := time.Now()
 	cancel()
