@@ -162,13 +162,13 @@ count.
 
 ### 2.2 SQL Server connectivity and safety
 - [x] Implement secure SQL Server connector manager
-- [ ] Enforce least-privilege credentials: run `make test-sqlserver` and `make kind-e2e` as a login holding only the documented grants (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`), not `sa`
-- [ ] Warn at startup, in the log and a metric, when the collector login is `sysadmin`
-- [ ] Set `LOCK_TIMEOUT` and `DEADLOCK_PRIORITY LOW` on every collector session so a probe never waits on locks or wins a deadlock against the application
+- [x] Enforce least-privilege credentials: run `make test-sqlserver` and `make kind-e2e` as a login holding only the documented grants (`VIEW SERVER STATE`, `VIEW ANY DEFINITION`), not `sa`
+- [x] Warn at startup, in the log and a metric, when the collector login is `sysadmin`
+- [x] Set `LOCK_TIMEOUT` and `DEADLOCK_PRIORITY LOW` on every collector session so a probe never waits on locks or wins a deadlock against the application
 - [x] Enforce query timeout/budget guards
 - [x] Pool SQL Server connections per target
-- [ ] Review all production queries for non-blocking behavior
-- [ ] Define safe probe review/versioning process: write the probe review checklist now; probe versioning comes with API probe definitions [4.5]
+- [x] Review all production queries for non-blocking behavior
+- [x] Define safe probe review/versioning process: write the probe review checklist now; probe versioning comes with API probe definitions [4.5]
 
 ### 2.3 Probe implementation
 - [x] Implement waits probes
@@ -211,11 +211,11 @@ Replica ownership and outage testing are section 19. Design details:
 - [x] Validate safe reloads, including partial reconciliation failure (rollback) and replacement-poller startup failure (unit-tested)
 
 ### 2.7 Collector endpoint security
-- [ ] Diagnostics: require the admin token for `GET /admin/config`; keep `/readyz` to status only and move raw driver errors (host, port, login) behind auth
-- [ ] Redaction: mask notification channel `config` values in `Redacted()`, strip userinfo from endpoint URLs, and reject credentials embedded in `loki`/`alertmanager` URLs at validation
-- [ ] Admin token: compare in constant time
-- [ ] Network exposure: add a NetworkPolicy limiting port 8082 to Prometheus and operator access
-- [ ] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; per-target TLS settings wait until a real target needs them
+- [x] Diagnostics: require the admin token for `GET /admin/config`; keep `/readyz` to status only and move raw driver errors (host, port, login) behind auth
+- [x] Redaction: mask notification channel `config` values in `Redacted()`, strip userinfo from endpoint URLs, and reject credentials embedded in `loki`/`alertmanager` URLs at validation
+- [x] Admin token: compare in constant time
+- [x] Network exposure: add a NetworkPolicy limiting port 8082 to Prometheus and operator access
+- [x] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; per-target TLS settings wait until a real target needs them
 
 ---
 

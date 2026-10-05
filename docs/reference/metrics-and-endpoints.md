@@ -31,11 +31,41 @@ until a service uses them (ADR 0003).
 | --- | --- | --- |
 | `GET /metrics` | none | Prometheus exposition: probe metrics and self-observability |
 | `GET /healthz` (alias `/healthcheck`) | none | Liveness only; 200 while the process serves HTTP |
-| `GET /readyz` | none | 503 until every collector finishes its first cycle, when a collector is failed or crash-looping, when a collector has not completed a cycle within 2× its interval + 10s, or when the runtime diverged after a failed rollback. A monitored database being down does **not** make it unready; the database shows as a failed target in the body. The body never includes raw error text. |
-| `GET /admin/config` | **none (known gap)** | Redacted active config and reload status |
-| `POST /admin/config/reload` | `Authorization: Bearer $HEARTBEAT_ADMIN_TOKEN` | 401 without a valid token (or when no token is configured), 400 invalid config, 500 apply failure |
+| `GET /readyz` | none | 503 until every collector finishes its first cycle, when a collector is failed or crash-looping, when a collector has not completed a cycle within 2× its interval + 10s, or when the runtime diverged after a failed rollback. A monitored database being down does **not** make it unready. The body is only `{"status":"ready"}` or `{"status":"not_ready"}`; the reasons are in `GET /admin/config`. |
+| `GET /admin/config` | `Authorization: Bearer $HEARTBEAT_ADMIN_TOKEN` | Diagnostics, see below |
+| `POST /admin/config/reload` | `Authorization: Bearer $HEARTBEAT_ADMIN_TOKEN` | 400 invalid config, 500 apply failure, 503 before the first reconcile or while another reload holds the lock. The body includes the error text and the readiness report |
 
 Reload can also be triggered with `SIGHUP` or file polling.
+
+`GET /admin/config` returns:
+
+| Field | Content |
+| --- | --- |
+| `version`, `loaded_at`, `last_reload_at` | Active config version (SHA-256 of the file) and timestamps |
+| `last_reload_err`, `runtime_diverged`, `rollback_err` | Why the last reload was rejected or failed; set until the next successful reload |
+| `warnings` | Insecure startup settings, e.g. `sqlserver_trust_server_certificate` |
+| `readiness` | What `/readyz` decided and why: `status`, `reasons`, and per collector its phase, cycle age, restarts and targets. Each target has its state, consecutive failures, last success and the raw driver `error`, which can name the host, port and login but never contains the password |
+| `config` | The active config, redacted ([configuration reference](configuration.md#validation-and-reload-behavior)) |
+
+```bash
+curl -s -H "Authorization: Bearer local-admin-token" localhost:8082/admin/config | jq .readiness   # kind
+```
+
+**Admin authentication.** Both admin endpoints go through one check: exactly
+one `Authorization: Bearer <token>` header (scheme case-insensitive), whose
+SHA-256 digest is compared in constant time with the digest of
+`HEARTBEAT_ADMIN_TOKEN` computed at startup, so neither the token nor its
+length leaks through timing. A missing or wrong token gets 401 with a
+`WWW-Authenticate: Bearer` challenge before the method is checked (an
+authenticated wrong method gets 405). Admin responses are `Cache-Control:
+no-store`. With no token configured, both endpoints always answer 401.
+
+**Network access.** In Kubernetes the `db-collector` NetworkPolicy admits only
+Prometheus and the configured operator peers to port 8082
+([what the chart deploys](../guides/kubernetes-local.md#what-the-chart-deploys)).
+Operators reach the admin endpoints with
+`kubectl -n heartbeat port-forward pod/db-collector-0 8082`, which
+NetworkPolicy does not apply to, or from a listed peer such as a VPN range.
 
 ## OTel gateway (`:8083`)
 
@@ -159,6 +189,7 @@ Requests panel does, so an unreachable target never reads as 0. The catalog live
 | `heartbeat_collector_target_consecutive_failures` | gauge | `collector`, `environment`, `target` | Failed cycles in a row |
 | `heartbeat_collector_target_last_success_timestamp_seconds` | gauge | `collector`, `environment`, `target` | Unix time of the last successful cycle; use it for freshness alerts |
 | `heartbeat_collector_cycle_duration_seconds` | gauge | `collector` | Duration of the last collection cycle |
+| `heartbeat_collector_target_login_sysadmin` | gauge | `collector`, `environment`, `target` | 1 if the collector's login for the target is sysadmin-equivalent: a member of `sysadmin`, or holding `CONTROL SERVER` (it should be 0; see [login permissions](../guides/database-targets.md#collector-login-permissions)). Checked when the collector first connects to the target and about every 10 minutes after; absent until the first check, and while SQL Server cannot tell |
 | `heartbeat_collector_probe_duration_seconds` | histogram | `collector`, `environment`, `target`, `probe` | Probe execution time, failed and timed-out executions included; buckets 5ms, 10ms, 50ms, 100ms, 500ms, 1s, 5s, 10s, 30s, 60s |
 | `heartbeat_collector_probe_errors_total` | counter | `collector`, `environment`, `target`, `probe`, `reason` | Failed probe executions. `reason` is one of `timeout` (probe timeout or cycle deadline reached while running), `error` (connection, login, query or decoding error), `not_started` (cycle deadline passed before the probe could start), `panic`. Probes interrupted because the collector is stopping (shutdown or reload) are not counted |
 | `go_*`, `process_*` | | none | Go runtime (goroutines, GC, memory) and process (CPU, resident memory, open file descriptors, start time) metrics of the collector itself |
@@ -173,9 +204,9 @@ it stops and recreated when it starts, so a reload that changes a collector
 resets its error counters to 0 (a counter reset for `rate()`) and drops the
 series of removed targets and probes.
 
-Per target, the self-observability series are 3 target gauges plus, per
+Per target, the self-observability series are 4 target gauges plus, per
 scheduled probe, 13 histogram series (10 buckets, `+Inf`, sum, count) and 4
-error counters: 156 series for a target with the 9 built-in probes. Probe
+error counters: 157 series for a target with the 9 built-in probes. Probe
 metric series are listed in the table above.
 
 ### OTel gateway
@@ -221,5 +252,7 @@ a counter without `rate()` or `increase()`.
   default receiver is the OTel gateway webhook, which only counts them. Chat
   and WhatsApp receivers exist only in
   [`production.example.yaml`](../../infra/helm/values/production.example.yaml).
-- **Diagnostic endpoints.** `GET /admin/config` is unauthenticated. Tracked in
-  TODO §2.7.
+- **Admin token attempts are not rate limited.** The NetworkPolicy limits who
+  can try. Tracked in TODO §15.2.
+- **OTel gateway `/readyz`** is unauthenticated and still returns the config
+  version and the configured OTel endpoint.

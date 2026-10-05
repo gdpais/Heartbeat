@@ -29,14 +29,49 @@ and need:
 | `VIEW ANY DATABASE` (granted to `public` by default) | Database names (`DB_NAME()`) in the `storage` and `file_io` `database_name` label. If it was revoked, files of databases the login cannot see are labelled `database_id:<id>` instead. |
 | Access to the target's `database_name` | Used as the initial database |
 
-No write, `db_owner` or `sysadmin` rights are required. A `query_template`
-override runs with the same login; review any override that needs more than
-these permissions with the DBAs first.
+No write, `db_owner` or `sysadmin` rights are required. `make test-sqlserver`
+and `make kind-e2e` run every built-in probe as a login holding only these
+grants. A `query_template` override runs with the same login; review it against
+the [probe review checklist](../architecture/database-observability.md#probe-review-checklist),
+and with the DBAs first if it needs more than these permissions.
+
+If the login is sysadmin-equivalent anyway (a member of `sysadmin`, or
+holding `CONTROL SERVER`), the collector logs a warning (with the target and
+`credential_ref`) and exports `heartbeat_collector_target_login_sysadmin` as
+`1` ([metrics reference](../reference/metrics-and-endpoints.md#collector-self-observability)).
+It checks when it first connects to the target and about every 10 minutes
+after, so a change to the login's rights shows up within that time. If SQL
+Server cannot tell, the collector logs that once per check and exports no
+value.
 
 Connections use `encrypt=true` and verify the server certificate, so the target
 needs a certificate the collector trusts.
 `HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE=true` is for the local
-dev container only.
+dev container only; it applies to every target, and the collector logs a
+warning at startup and lists it in `GET /admin/config`.
+
+### What the collector runs on the server
+
+- At most 2 sessions per target, with the application name
+  `HeartbeatDBCollector`.
+- When it first connects to a target, and about every 10 minutes after, one
+  `SELECT IS_SRVROLEMEMBER('sysadmin'), HAS_PERMS_BY_NAME(NULL, NULL,
+  'CONTROL SERVER')`. It needs no extra permission.
+- Each probe query, in one batch prefixed with
+  `SET LOCK_TIMEOUT 1000; SET DEADLOCK_PRIORITY LOW;`. A probe waits at most
+  1 second for a lock, then fails with error 1222 for that cycle (logged, the
+  target is reported failed and retried on the next cycle). In a deadlock with
+  an application session at the default (`NORMAL`) or a higher priority, SQL
+  Server picks the collector as the victim; against another `LOW` session it
+  picks the one cheaper to roll back, which for a read-only probe is usually
+  the collector. `query_template` overrides get the same prefix, so a
+  template must be a query, not a bare stored procedure name (see the
+  [probe review checklist](../architecture/database-observability.md#probe-review-checklist)).
+
+1 second is well below the default probe timeout (half the scrape interval, at
+most 10 seconds), so a lock wait fails fast with a specific error instead of
+holding a place in the lock queue, ahead of application requests, until the
+probe deadline.
 
 ## 2. Add the target
 
@@ -115,7 +150,8 @@ is rejected and the previous config keeps running.
 ## 5. Verify
 
 ```bash
-curl -s http://localhost:8082/readyz        # the target appears; failed targets are listed without raw errors
+curl -s -H "Authorization: Bearer $HEARTBEAT_ADMIN_TOKEN" http://localhost:8082/admin/config |
+  jq '.readiness.collectors[].targets[] | select(.name == "finance-prod")'   # state, and the driver error if it fails
 curl -s http://localhost:8082/metrics | grep 'heartbeat_collector_target_up{.*target="finance-prod"'
 ```
 
@@ -123,7 +159,8 @@ curl -s http://localhost:8082/metrics | grep 'heartbeat_collector_target_up{.*ta
 `heartbeat_sqlserver_*` series should appear with `target="finance-prod"`. In
 Grafana, open the *SQL Server overview* dashboard and select the target.
 
-If the target stays down, check the collector's JSON logs (one line per probe
-failure, with collector, target and probe). Repeated failures back off
+If the target stays down, the target's `error` above shows the driver's
+message (login, host or certificate); the collector's JSON logs have one line
+per probe failure, with collector, target and probe. Repeated failures back off
 exponentially up to 5 minutes, so a fix can take that long to show up unless
 you reload.

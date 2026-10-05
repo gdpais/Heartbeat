@@ -80,6 +80,7 @@ succeeds.
 - Self-observability series: `heartbeat_collector_target_up`,
   `heartbeat_collector_target_consecutive_failures`,
   `heartbeat_collector_target_last_success_timestamp_seconds`,
+  `heartbeat_collector_target_login_sysadmin`,
   `heartbeat_collector_cycle_duration_seconds`, the per-probe
   `heartbeat_collector_probe_duration_seconds` histogram and
   `heartbeat_collector_probe_errors_total` counter (by `reason`: `timeout`,
@@ -91,8 +92,14 @@ succeeds.
   has completed its first cycle, when a collector is failed or crash-looping,
   when a collector has not completed a cycle within 2x its interval + 10s, or
   when the runtime diverged after a failed rollback. A monitored database
-  being down does not make the pod unready; it shows as a failed target in the
-  `/readyz` body and metrics. The body never includes raw error text.
+  being down does not make the pod unready; it shows as a failed target in
+  metrics and in the authenticated `GET /admin/config`, which also carries the
+  raw driver error. The `/readyz` body is only the status.
+- The admin endpoints (`GET /admin/config`, `POST /admin/config/reload`) need
+  `HEARTBEAT_ADMIN_TOKEN` as a bearer token, compared in constant time, and are
+  disabled without it. Startup warns when certificate verification is off
+  (`HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE`). Details:
+  [endpoints](../../docs/reference/metrics-and-endpoints.md#db-collector-8082).
 - SQL Server connections are pooled per target (max 2 open, 10m lifetime);
   idle pools are closed after 15m.
 - Shutdown is bounded: HTTP drain 10s, poller stop 20s, then pooled
@@ -179,7 +186,20 @@ Current behavior:
 - environment-based credentials use the `HEARTBEAT_CREDENTIAL_<REF>` naming
   pattern ([resolution rules](../../docs/reference/configuration.md#credential-resolution))
 - the DSN enables TLS by default
-- each connection is pinged before probe execution begins
+- each pool is verified when it is created with one query that also checks
+  whether the login is sysadmin-equivalent (`IS_SRVROLEMEMBER('sysadmin')` or
+  `HAS_PERMS_BY_NAME(NULL, NULL, 'CONTROL SERVER')`); the check is repeated
+  about every 10 minutes by the one `Open` that claims it, without holding the
+  pool lock. An elevated or undeterminable login is logged as a warning and
+  reported through `Manager.Sysadmin`, which `SQLExecutor` exposes to the
+  runner (`SysadminReporter`) for the
+  `heartbeat_collector_target_login_sysadmin` health series
+- connection errors are scrubbed of the login and password before they are
+  wrapped, because go-mssqldb's DSN parse errors quote the whole DSN
+- every batch starts with `connector.SessionSettings`
+  (`SET LOCK_TIMEOUT 1000; SET DEADLOCK_PRIORITY LOW;`) in the same round trip;
+  why and how operators see it is in the
+  [onboarding guide](../../docs/guides/database-targets.md#what-the-collector-runs-on-the-server)
 - probe execution uses a per-probe timeout
 
 ## Configuration and Endpoints
@@ -201,6 +221,9 @@ To add a new SQL Server probe:
    columns.
 4. Add or update tests in `internal/probes/sqlserver/catalog_test.go` and
    `internal/collectors/runner_test.go`.
+5. Check the probe against the
+   [probe review checklist](../../docs/architecture/database-observability.md#probe-review-checklist)
+   and run `make test-sqlserver`.
 
 To add a new collector:
 
@@ -208,8 +231,8 @@ To add a new collector:
    `config/integrations.yaml` when running the binary directly).
 2. Ensure the collector kind is `sqlserver`.
 3. Provide target credentials through the configured credential reference.
-4. Confirm the collector appears in `/readyz` and exports metrics on
-   `/metrics`.
+4. Confirm the collector appears under `readiness.collectors` in
+   `GET /admin/config` and exports metrics on `/metrics`.
 
 ## Related Code
 
