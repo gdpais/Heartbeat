@@ -154,8 +154,8 @@ func TestCatalogProbesAgainstSQLServer(t *testing.T) {
 // run reuses the pooled connection after go-mssqldb's session reset.
 func TestSessionSettingsAgainstSQLServer(t *testing.T) {
 	executor, target := liveExecutor(t, liveCredentialRef)
-	// memory_pressure decodes cntr_value labelled by metric.
-	const query = `SELECT 'lock_timeout' AS metric, @@LOCK_TIMEOUT AS cntr_value
+	// sessions decodes the gauge session_count labelled by status.
+	const query = `SELECT 'lock_timeout' AS status, @@LOCK_TIMEOUT AS session_count
 UNION ALL
 SELECT 'deadlock_priority', deadlock_priority FROM sys.dm_exec_sessions WHERE session_id = @@SPID`
 	want := map[string]float64{
@@ -164,8 +164,8 @@ SELECT 'deadlock_priority', deadlock_priority FROM sys.dm_exec_sessions WHERE se
 	}
 	for run := range 2 {
 		got := map[string]float64{}
-		for _, sample := range runLiveProbe(t, executor, target, "memory_pressure", query) {
-			got[sample.Labels["metric"]] = sample.Value
+		for _, sample := range runLiveProbe(t, executor, target, "sessions", query) {
+			got[sample.Labels["status"]] = sample.Value
 		}
 		if !maps.Equal(got, want) {
 			t.Fatalf("run %d: session settings = %v, want %v", run+1, got, want)
