@@ -45,3 +45,14 @@ groups:
         annotations:
           summary: "Heartbeat service {{ $labels.job }} is down"
           description: "Prometheus has not scraped {{ $labels.job }} successfully for at least 2 minutes."
+      # The collector should never log in with more than VIEW SERVER STATE and
+      # VIEW ANY DEFINITION. The flag is rechecked about every 10 minutes, so
+      # 15m keeps a single stale check from firing it.
+      - alert: HeartbeatCollectorLoginElevated
+        expr: heartbeat_collector_target_login_sysadmin == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "db-collector logs in to {{ $labels.environment }}/{{ $labels.target }} as a sysadmin-equivalent login"
+          description: "The collector login for {{ $labels.target }} is a member of sysadmin or holds CONTROL SERVER. Give it only VIEW SERVER STATE and VIEW ANY DEFINITION."

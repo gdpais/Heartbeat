@@ -78,3 +78,26 @@ tests:
             exp_annotations:
               summary: "Heartbeat alerting pipeline is alive"
               description: "Always firing. If the dead-man's switch stops receiving it, Heartbeat alerting is down."
+
+  - name: Elevated collector login fires after 15 minutes, a least-privilege one never
+    interval: 1m
+    input_series:
+      - series: 'heartbeat_collector_target_login_sysadmin{collector="c",environment="dev",target="db1"}'
+        values: '1x30'
+      - series: 'heartbeat_collector_target_login_sysadmin{collector="c",environment="dev",target="db2"}'
+        values: '0x30'
+    alert_rule_test:
+      - alertname: HeartbeatCollectorLoginElevated
+        eval_time: 10m
+        exp_alerts: []
+      - alertname: HeartbeatCollectorLoginElevated
+        eval_time: 20m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              collector: c
+              environment: dev
+              target: db1
+            exp_annotations:
+              summary: "db-collector logs in to dev/db1 as a sysadmin-equivalent login"
+              description: "The collector login for db1 is a member of sysadmin or holds CONTROL SERVER. Give it only VIEW SERVER STATE and VIEW ANY DEFINITION."
