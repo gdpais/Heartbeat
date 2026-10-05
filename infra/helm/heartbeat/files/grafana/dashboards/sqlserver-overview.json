@@ -262,13 +262,13 @@
       },
       "targets": [
         {
-          "expr": "heartbeat_sqlserver_cpu_sql_process_ratio{environment=~\"$environment\",target=~\"$target\"}",
-          "legendFormat": "{{target}} SQL Server",
+          "expr": "sum by (environment, target) (heartbeat_sqlserver_cpu_sql_process_ratio{environment=~\"$environment\",target=~\"$target\"})",
+          "legendFormat": "{{environment}}/{{target}} SQL Server",
           "refId": "A"
         },
         {
-          "expr": "heartbeat_sqlserver_cpu_other_process_ratio{environment=~\"$environment\",target=~\"$target\"}",
-          "legendFormat": "{{target}} other processes",
+          "expr": "sum by (environment, target) (heartbeat_sqlserver_cpu_other_process_ratio{environment=~\"$environment\",target=~\"$target\"})",
+          "legendFormat": "{{environment}}/{{target}} other processes",
           "refId": "B"
         }
       ],
@@ -306,8 +306,8 @@
       },
       "targets": [
         {
-          "expr": "heartbeat_sqlserver_page_life_expectancy_seconds{environment=~\"$environment\",target=~\"$target\"}",
-          "legendFormat": "{{target}}",
+          "expr": "sum by (environment, target) (heartbeat_sqlserver_page_life_expectancy_seconds{environment=~\"$environment\",target=~\"$target\"})",
+          "legendFormat": "{{environment}}/{{target}}",
           "refId": "A"
         }
       ],
@@ -345,8 +345,8 @@
       },
       "targets": [
         {
-          "expr": "heartbeat_sqlserver_buffer_cache_hit_ratio{environment=~\"$environment\",target=~\"$target\"}",
-          "legendFormat": "{{target}}",
+          "expr": "sum by (environment, target) (heartbeat_sqlserver_buffer_cache_hit_ratio{environment=~\"$environment\",target=~\"$target\"})",
+          "legendFormat": "{{environment}}/{{target}}",
           "refId": "A"
         }
       ],
@@ -383,13 +383,13 @@
       },
       "targets": [
         {
-          "expr": "sum by (target) (rate(heartbeat_sqlserver_database_file_reads_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval]))",
-          "legendFormat": "{{target}} reads",
+          "expr": "sum by (environment, target) (rate(heartbeat_sqlserver_database_file_reads_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval]))",
+          "legendFormat": "{{environment}}/{{target}} reads",
           "refId": "A"
         },
         {
-          "expr": "sum by (target) (rate(heartbeat_sqlserver_database_file_writes_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval]))",
-          "legendFormat": "{{target}} writes",
+          "expr": "sum by (environment, target) (rate(heartbeat_sqlserver_database_file_writes_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval]))",
+          "legendFormat": "{{environment}}/{{target}} writes",
           "refId": "B"
         }
       ],
@@ -426,13 +426,13 @@
       },
       "targets": [
         {
-          "expr": "sum by (target) (rate(heartbeat_sqlserver_database_file_read_bytes_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval]))",
-          "legendFormat": "{{target}} read",
+          "expr": "sum by (environment, target) (rate(heartbeat_sqlserver_database_file_read_bytes_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval]))",
+          "legendFormat": "{{environment}}/{{target}} read",
           "refId": "A"
         },
         {
-          "expr": "sum by (target) (rate(heartbeat_sqlserver_database_file_written_bytes_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval]))",
-          "legendFormat": "{{target}} written",
+          "expr": "sum by (environment, target) (rate(heartbeat_sqlserver_database_file_written_bytes_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval]))",
+          "legendFormat": "{{environment}}/{{target}} written",
           "refId": "B"
         }
       ],
@@ -469,13 +469,13 @@
       },
       "targets": [
         {
-          "expr": "sum by (target, file_type) (rate(heartbeat_sqlserver_database_file_read_stall_seconds_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval])) / (sum by (target, file_type) (rate(heartbeat_sqlserver_database_file_reads_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval])) > 0)",
-          "legendFormat": "{{target}} {{file_type}} read",
+          "expr": "sum by (environment, target, file_type) (rate(heartbeat_sqlserver_database_file_read_stall_seconds_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval])) / (sum by (environment, target, file_type) (rate(heartbeat_sqlserver_database_file_reads_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval])) > 0)",
+          "legendFormat": "{{environment}}/{{target}} {{file_type}} read",
           "refId": "A"
         },
         {
-          "expr": "sum by (target, file_type) (rate(heartbeat_sqlserver_database_file_write_stall_seconds_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval])) / (sum by (target, file_type) (rate(heartbeat_sqlserver_database_file_writes_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval])) > 0)",
-          "legendFormat": "{{target}} {{file_type}} write",
+          "expr": "sum by (environment, target, file_type) (rate(heartbeat_sqlserver_database_file_write_stall_seconds_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval])) / (sum by (environment, target, file_type) (rate(heartbeat_sqlserver_database_file_writes_total{environment=~\"$environment\",target=~\"$target\"}[$__rate_interval])) > 0)",
+          "legendFormat": "{{environment}}/{{target}} {{file_type}} write",
           "refId": "B"
         }
       ],
