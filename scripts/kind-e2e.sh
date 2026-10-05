@@ -37,8 +37,10 @@ if $own_cluster; then
 	export KIND_CONFIG=${E2E_KIND_CONFIG-}
 fi
 
+port_forward_pid=
 cleanup() {
 	status=$?
+	[ -z "$port_forward_pid" ] || kill "$port_forward_pid" 2>/dev/null || true
 	if [ "$status" -ne 0 ] && kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
 		echo "--- diagnostics"
 		kubectl --context "$CONTEXT" -n "$NAMESPACE" get pods -o wide || true
@@ -68,7 +70,39 @@ prom() { svc_get prometheus:9090 "/api/v1/query?query=$(printf '%s' "$1" | jq -s
 prom_value() { prom "$1" | jq -r '.data.result[0].value[1] // empty'; }
 # The pod proxy reaches the collector even while it is unready.
 pod_get() { k get --raw "/api/v1/namespaces/$NAMESPACE/pods/db-collector-0:8082/proxy$1"; }
-pod_readyz() { pod_get /readyz 2>/dev/null || true; }
+
+# Operator access to the admin endpoints, the documented way: kubectl
+# port-forward (not subject to the NetworkPolicy) plus the admin token. The API
+# server's proxy cannot be used: it drops the Authorization header.
+# kubectl runs directly, not through k, so $! is kubectl itself and kill
+# stops it (a backgrounded function would leave it orphaned). The token goes
+# to curl in a header file, never on a command line.
+admin_forward() {
+	kubectl --context "$CONTEXT" -n "$NAMESPACE" port-forward pod/db-collector-0 :8082 >"$WORK/port-forward.log" 2>&1 &
+	port_forward_pid=$!
+	wait_for 30 "port-forward to the collector" grep -q '^Forwarding from 127.0.0.1:' "$WORK/port-forward.log"
+	admin_port=$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9]*\) .*/\1/p' "$WORK/port-forward.log" | head -n 1)
+	(
+		umask 077
+		k -n "$NAMESPACE" get secret heartbeat-runtime -o json |
+			jq -r '"Authorization: Bearer " + (.data["admin-token"] | @base64d)' >"$WORK/admin-header"
+	)
+}
+admin_unforward() {
+	kill "$port_forward_pid" 2>/dev/null || true
+	port_forward_pid=
+}
+# admin_status <path> [header]: HTTP status of GET <path> through the port-forward.
+admin_status() {
+	if [ -n "${2:-}" ]; then
+		curl -sS -o /dev/null -w '%{http_code}' --max-time 5 -H "$2" "http://127.0.0.1:$admin_port$1"
+	else
+		curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$admin_port$1"
+	fi
+}
+admin_config() {
+	curl -sS --fail --max-time 5 -H "@$WORK/admin-header" "http://127.0.0.1:$admin_port/admin/config"
+}
 
 # wait_for <seconds> <description> <command...>: retries until the command succeeds.
 wait_for() {
@@ -84,11 +118,11 @@ wait_for() {
 
 collector_pod_uid() { k -n "$NAMESPACE" get pod db-collector-0 -o jsonpath='{.metadata.uid}'; }
 collector_restarts() { k -n "$NAMESPACE" get pod db-collector-0 -o jsonpath='{.status.containerStatuses[0].restartCount}'; }
-config_version() { pod_readyz | jq -r '.config_version // empty'; }
+config_version() { admin_config | jq -r '.version // empty'; }
 target_up() { [ "$(prom_value "heartbeat_collector_target_up{target=\"$1\"}")" = "$2" ]; }
 version_changed_from() { [ "$(config_version)" != "$1" ]; }
-reload_error_is_set() { pod_readyz | jq -e '.last_reload_err != ""'; }
-reload_error_is_clear() { pod_readyz | jq -e '.last_reload_err == ""'; }
+reload_error_is_set() { admin_config | jq -e '.last_reload_err != ""'; }
+reload_error_is_clear() { admin_config | jq -e '.last_reload_err == ""'; }
 watchdog_active() { svc_get alertmanager:9093 /api/v2/alerts | jq -e 'any(.[]; .labels.alertname == "Watchdog")'; }
 last_success() { prom_value "heartbeat_collector_target_last_success_timestamp_seconds{target=\"$1\"}"; }
 # gt <a> <b>: numeric a > b, for decimals too.
@@ -102,6 +136,9 @@ prometheus_answers() { [ -n "$(prom_value prometheus_tsdb_lowest_timestamp_secon
 # Prints the type Prometheus scraped for a metric (counter, gauge, ...).
 metric_type() { svc_get prometheus:9090 "/api/v1/metadata?metric=$1" | jq -r --arg m "$1" '.data[$m][0].type // empty'; }
 has_value() { [ -n "$(prom_value "$1")" ]; }
+probe_pod_phase() { k -n "$NAMESPACE" get pod np-probe -o jsonpath='{.status.phase}'; }
+probe_pod_exit() { k -n "$NAMESPACE" get pod np-probe -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}'; }
+probe_pod_done() { case "$(probe_pod_phase)" in Succeeded | Failed) true ;; *) false ;; esac; }
 target_fresh() {
 	age=$(prom_value "time() - heartbeat_collector_target_last_success_timestamp_seconds{target=\"$1\"}")
 	[ -n "$age" ] && [ "$(printf '%.0f' "$age")" -lt 60 ]
@@ -115,7 +152,10 @@ scripts/kind.sh images
 
 password="E2e-$(openssl rand -hex 16)"
 umask 077
-printf 'MSSQL_SA_PASSWORD=%s\nHEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV=sa:%s\n' "$password" "$password" >"$SQLSERVER_ENV_FILE"
+# sa is for setup and the session sampler below; the collector logs in as a
+# least-privilege login that kind.sh sqlserver-up creates.
+printf 'MSSQL_SA_PASSWORD=%s\nHEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV=heartbeat_collector:%s\n' \
+	"$password" "E2e-$(openssl rand -hex 16)" >"$SQLSERVER_ENV_FILE"
 umask 022
 # Points the collector at this run's container, plus a second target that can
 # never connect, to show that one failed target does not stop the others.
@@ -153,6 +193,9 @@ wait_for 60 "fresh last success" target_fresh sqlserver-dev
 sessions=$(prom_value "sum(heartbeat_sqlserver_sessions{target=\"sqlserver-dev\"})")
 [ -n "$sessions" ] || fail "no heartbeat_sqlserver_sessions for sqlserver-dev"
 pass "probe metrics present (sessions=$sessions)"
+sysadmin=$(prom_value "heartbeat_collector_target_login_sysadmin{target=\"sqlserver-dev\"}")
+[ "$sysadmin" = 0 ] || fail "heartbeat_collector_target_login_sysadmin for sqlserver-dev is '$sysadmin', expected 0"
+pass "the collector logs in without sysadmin (least-privilege login)"
 # Cumulative SQL Server values are scraped as counters, so rate() applies.
 for metric in heartbeat_sqlserver_wait_seconds_total heartbeat_sqlserver_batch_requests_total heartbeat_sqlserver_transactions_total; do
 	type=$(metric_type "$metric")
@@ -199,6 +242,44 @@ wait_for 120 "Watchdog in Alertmanager" watchdog_active
 pass "Watchdog active in Alertmanager"
 
 # ----------------------------------------------------------------------------
+step "unauthenticated endpoints expose no diagnostics"
+readyz=$(pod_get /readyz)
+[ "$(printf '%s' "$readyz" | jq -c keys)" = '["status"]' ] || fail "/readyz serves more than its status: $readyz"
+admin_forward
+for header in "" "Authorization: Bearer wrong-token"; do
+	code=$(admin_status /admin/config "$header")
+	[ "$code" = 401 ] || fail "GET /admin/config with header '$header' returned $code, want 401"
+done
+admin_config | jq -e '.readiness.status == "ready" and .version != ""' >/dev/null ||
+	fail "GET /admin/config with the admin token did not return diagnostics"
+pass "/readyz is status only ($readyz); /admin/config answers 401 without the token"
+
+step "the NetworkPolicy admits only Prometheus to the collector"
+collector_url=http://db-collector-headless:8082/healthz
+k -n "$NAMESPACE" exec deployment/prometheus -c prometheus-server -- wget -q -T 5 -O /dev/null "$collector_url" ||
+	fail "Prometheus cannot reach the collector's port 8082"
+# Same image, tool and Service name as from Prometheus, from a pod the policy
+# does not list. kindnet drops the connection, so only timeout's kill ends it
+# (wget's own -T is longer): exit 124 or 143. Any other failure (DNS,
+# refused) is not the policy. sh stays PID 1: busybox timeout execs wget in
+# its own process, and PID 1 ignores the SIGTERM it would send.
+prom_image=$(k -n "$NAMESPACE" get deployment prometheus -o jsonpath='{.spec.template.spec.containers[?(@.name=="prometheus-server")].image}')
+k -n "$NAMESPACE" delete pod np-probe --ignore-not-found --wait=true >/dev/null
+k -n "$NAMESPACE" run np-probe --image="$prom_image" --restart=Never --labels=app.kubernetes.io/name=np-probe \
+	--command -- sh -c 'timeout 10 wget -q -T 30 -O /dev/null "$0"; exit $?' "$collector_url" >/dev/null
+wait_for 120 "probe pod finished" probe_pod_done
+probe_log=$(k -n "$NAMESPACE" logs np-probe 2>&1 || true)
+phase=$(probe_pod_phase)
+exit_code=$(probe_pod_exit)
+k -n "$NAMESPACE" delete pod np-probe --wait=false >/dev/null
+[ "$phase" = Failed ] || fail "a pod other than Prometheus reached the collector's port 8082"
+case "$exit_code" in
+124 | 143) ;;
+*) fail "probe pod failed with exit code $exit_code, not a connection timeout: $probe_log" ;;
+esac
+pass "Prometheus reaches port 8082; another pod in the namespace times out (exit $exit_code)"
+
+# ----------------------------------------------------------------------------
 step "a valid ConfigMap update is hot-reloaded without a restart"
 uid_before=$(collector_pod_uid)
 version_before=$(config_version)
@@ -218,7 +299,7 @@ k -n "$NAMESPACE" get configmap heartbeat-integrations -o json >"$WORK/integrati
 jq '.data["integrations.yaml"] = "collectors: [{id: broken, kind: sqlserver, enabled: true}]\n"' \
 	"$WORK/integrations-good.json" | k replace -f - >/dev/null
 wait_for 180 "reload error reported" reload_error_is_set
-pod_readyz | jq -r '"      last_reload_err: " + .last_reload_err'
+admin_config | jq -r '"      last_reload_err: " + .last_reload_err'
 [ "$(config_version)" = "$version_good" ] || fail "invalid config replaced the active version"
 wait_for 90 "collection still fresh" target_fresh sqlserver-dev
 [ "$(collector_restarts)" = "$restarts_before" ] || fail "collector restarted on invalid config"
@@ -228,6 +309,7 @@ pass "invalid config rejected, version $version_good kept, still collecting"
 jq 'del(.metadata.resourceVersion, .metadata.uid, .metadata.creationTimestamp)' "$WORK/integrations-good.json" |
 	k apply --server-side --field-manager=helm --force-conflicts -f - >/dev/null
 wait_for 180 "reload error cleared" reload_error_is_clear
+admin_unforward
 
 # ----------------------------------------------------------------------------
 step "an unavailable SQL Server shows as failed without restarting the collector"
@@ -253,7 +335,7 @@ sample_concurrency() {
 	while [ ! -f "$WORK/stop-sampling" ]; do
 		pods=$(k -n "$NAMESPACE" get pods -l app.kubernetes.io/name=db-collector -o json |
 			jq '[.items[] | select(.status.containerStatuses[0].state.running != null)] | length')
-		sql=$(docker exec -e SQLCMDPASSWORD="$password" "$SQL_CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
+		sql=$(SQLCMDPASSWORD=$password docker exec -e SQLCMDPASSWORD "$SQL_CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
 			-S localhost -U sa -C -h -1 -W -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE program_name = 'HeartbeatDBCollector'" 2>/dev/null | tr -dc '0-9')
 		[ "${pods:-0}" -gt "$max_pods" ] && max_pods=$pods
 		[ "${sql:-0}" -gt "$max_sql" ] && max_sql=$sql

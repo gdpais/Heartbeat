@@ -67,7 +67,7 @@ answer.
 | http://localhost:9090/targets (Prometheus) | Six jobs, all **UP**: alertmanager, db-collector, loki, otel-collector, otel-gateway, prometheus |
 | http://localhost:9090/alerts | **Watchdog** firing. It always fires; that is how a dead-man's switch knows alerting works |
 | http://localhost:9093 (Alertmanager) | The Watchdog alert, received from Prometheus |
-| http://localhost:8082/readyz | `"status":"ready"` and one collector with no targets |
+| http://localhost:8082/readyz | `{"status":"ready"}`; the details need the admin token (next section) |
 
 So far the collector monitors nothing: the default config has no SQL Server
 targets.
@@ -75,8 +75,8 @@ targets.
 ## 4. Add a SQL Server target
 
 ```bash
-make sqlserver-dev-init   # once: writes .env.sqlserver-dev with a random SA password
-make sqlserver-dev-up     # starts SQL Server in Docker, creates the credential Secret, redeploys
+make sqlserver-dev-init   # once: writes .env.sqlserver-dev with random SA and collector passwords
+make sqlserver-dev-up     # starts SQL Server in Docker, creates the collector login and its Secret, redeploys
 ```
 
 The first run pulls the SQL Server image (about 1.5 GB). The container,
@@ -84,7 +84,8 @@ The first run pulls the SQL Server image (about 1.5 GB). The container,
 collector reaches it by name. Within a minute:
 
 ```bash
-curl -s localhost:8082/readyz | jq '{status, config_version, targets: [.collectors[].targets[] | {name, state}]}'
+curl -s -H "Authorization: Bearer local-admin-token" localhost:8082/admin/config |
+  jq '{version, status: .readiness.status, targets: [.readiness.collectors[].targets[] | {name, state}]}'
 ```
 
 shows the target `sqlserver-dev` with `"state": "ok"`. Then:
@@ -100,7 +101,7 @@ The collector hot-reloads `integrations.yaml`. Note the current version, then
 deploy a change (here, a 30s scrape interval):
 
 ```bash
-curl -s localhost:8082/readyz | jq -r .config_version
+curl -s -H "Authorization: Bearer local-admin-token" localhost:8082/admin/config | jq -r .version
 mkdir -p .tmp
 sed 's/scrape_interval: 15s/scrape_interval: 30s/' infra/helm/values/sqlserver-dev.yaml > .tmp/my-values.yaml
 EXTRA_VALUES=.tmp/my-values.yaml make kind-deploy
@@ -128,8 +129,9 @@ curl -X POST -H "Authorization: Bearer local-admin-token" localhost:8082/admin/c
 docker stop heartbeat-sqlserver-dev
 ```
 
-Within about 20 seconds `/readyz` shows the target as `"failed"`, but the
-collector itself stays `ready` (HTTP 200), and Prometheus shows
+Within about 20 seconds `GET /admin/config` shows the target as `"failed"`,
+with the driver's error, but the collector itself stays `ready` (`/readyz`
+answers 200), and Prometheus shows
 `heartbeat_collector_target_up` at `0`. The collector is not restarted: a
 database outage must never take down monitoring.
 

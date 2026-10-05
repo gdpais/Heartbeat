@@ -37,9 +37,77 @@ waits/locks, sessions, storage and regressions. Only
 
 ## Safety rules
 - Credentials are referenced by `credential_ref` only.
-- Production probes must be non-blocking.
+- The collector logs in with only `VIEW SERVER STATE` and `VIEW ANY DEFINITION`
+  and warns when its login is sysadmin-equivalent (`sysadmin` or
+  `CONTROL SERVER`)
+  ([login permissions](../guides/database-targets.md#collector-login-permissions)).
+- Production probes must be non-blocking: every probe passes the
+  [probe review checklist](#probe-review-checklist), and every collector batch
+  runs with `LOCK_TIMEOUT` 1s and `DEADLOCK_PRIORITY LOW`
+  ([what the collector runs](../guides/database-targets.md#what-the-collector-runs-on-the-server)).
 - Probe definitions are versioned and can be disabled instead of deleted.
+  Today the built-in catalog is versioned with the code and probes are disabled
+  by removing them from a collector's `probes` list; versioned probe
+  definitions come with API-managed probe definitions (TODO §4.5).
 - Runtime collector grouping, target activation, probe activation, and scaling live in `config/integrations.yaml` and Kubernetes delivery.
+
+### Probe review checklist
+
+Apply it to every new or changed probe in the built-in catalog
+([`catalog.go`](../../services/db-collector/internal/probes/sqlserver/catalog.go))
+and to every `query_template` override before it reaches a shared or
+production target. A reviewer other than the author signs it off; an override
+also needs the target's DBAs.
+
+**Read-only and least privilege**
+
+- [ ] One read-only query: `SELECT`, optionally with CTEs. No DML, DDL,
+  `EXEC`, `DBCC`, temporary tables, `BEGIN TRAN` or `USE`. A bare stored
+  procedure name does not work either: every batch starts with the session
+  settings, so it is no longer sent as a procedure call.
+- [ ] Needs no grant beyond `VIEW SERVER STATE` and `VIEW ANY DEFINITION`.
+  `make test-sqlserver` runs every catalog probe as such a login; a view the
+  login cannot see often returns no rows instead of an error, so check the
+  probe returns data.
+- [ ] Does not change session settings: no `SET LOCK_TIMEOUT`,
+  `SET DEADLOCK_PRIORITY`, `SET TRANSACTION ISOLATION LEVEL`, and no locking
+  hints (`HOLDLOCK`, `UPDLOCK`, `TABLOCK`, `XLOCK`, `NOLOCK`).
+
+**Non-blocking**
+
+- [ ] Reads server-level DMVs (`sys.dm_os_*`, `sys.dm_exec_*`) or
+  server-scoped catalog views (`sys.master_files`, `sys.databases`), never user
+  tables. DMVs read in-memory state and take no data locks; catalog views can
+  briefly wait on metadata locks during DDL, which the 1-second `LOCK_TIMEOUT`
+  bounds.
+- [ ] No per-database iteration (`sp_MSforeachdb`, cursors, dynamic SQL), no
+  cross-database metadata functions per row (`OBJECT_NAME(id, db_id)`,
+  `OBJECT_SCHEMA_NAME`), and nothing that scans data
+  (`sys.dm_db_index_physical_stats`, `sys.dm_db_database_page_allocations`).
+- [ ] Joins to `sys.dm_exec_sql_text` or `sys.dm_exec_query_plan` are bounded
+  (`TOP`) and justified; they are expensive on busy servers.
+- [ ] Measured on a production-sized non-production server
+  (`SET STATISTICS TIME, IO ON`): it finishes far below the probe timeout
+  (half the scrape interval, at most 10s) and well below the 1s lock timeout
+  when nothing blocks it.
+
+**Bounded output**
+
+- [ ] Returns one row per bounded entity (wait type, counter, database file,
+  status), never per session, request, query text, login or host, and at most
+  one row per label set (the live test fails on duplicate series).
+- [ ] Label columns come from a small, stable set and are trimmed (`RTRIM` on
+  `nchar` columns such as `counter_name`).
+
+**Metrics and tests**
+
+- [ ] Metric names follow Prometheus conventions with the unit in the name;
+  cumulative values are exported as counters (TODO §2.4).
+- [ ] Metric descriptors, the
+  [metrics reference](../reference/metrics-and-endpoints.md#sql-server-probe-metrics),
+  dashboards and rules are updated together (a Go test fails on references to
+  metrics the catalog does not emit).
+- [ ] `make test` and `make test-sqlserver` pass.
 
 ## Collector recovery and high availability (planned)
 

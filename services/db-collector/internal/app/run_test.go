@@ -43,7 +43,9 @@ type runFixture struct {
 	closed   atomic.Bool
 }
 
-func startRun(t *testing.T, delay time.Duration, t2 timeouts) *runFixture {
+// startRun starts run with a slow executor; configure, when given, adjusts
+// the dependencies first.
+func startRun(t *testing.T, delay time.Duration, t2 timeouts, configure ...func(*runDeps)) *runFixture {
 	t.Helper()
 	manager, path := newTestConfigManager(t)
 	writeTestConfig(t, path, testCollector{id: "sql-a", env: "prod", interval: "1s"})
@@ -65,6 +67,9 @@ func startRun(t *testing.T, delay time.Duration, t2 timeouts) *runFixture {
 		closeConnections: func() error { f.closed.Store(true); return nil },
 		timeouts:         t2,
 		onListen:         func(addr net.Addr) { f.addr <- addr },
+	}
+	for _, fn := range configure {
+		fn(&deps)
 	}
 	go func() { f.result <- run(ctx, deps) }()
 	return f

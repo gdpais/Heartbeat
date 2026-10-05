@@ -8,7 +8,9 @@
 //	HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR  HTTP listen address (default ":8082")
 //	HEARTBEAT_INTEGRATIONS_PATH         Path to integrations YAML file
 //	                                    (default "config/integrations.yaml")
-//	HEARTBEAT_ADMIN_TOKEN               Bearer token for admin reload endpoint
+//	HEARTBEAT_ADMIN_TOKEN               Bearer token for the admin endpoints
+//	                                    (GET /admin/config, POST /admin/config/reload);
+//	                                    unset disables them
 package main
 
 import (

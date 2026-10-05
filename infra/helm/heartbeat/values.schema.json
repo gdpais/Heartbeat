@@ -1,12 +1,56 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Heartbeat chart values",
-  "description": "Validates the embedded integrations.yaml. properties.integrations is a copy of packages/config-schema/src/integrations.schema.json (without $schema); tests/chart_values_test.go fails when they differ.",
+  "description": "Validates the embedded integrations.yaml and the db-collector NetworkPolicy settings. properties.integrations is a copy of packages/config-schema/src/integrations.schema.json (without $schema); tests/chart_schema_test.go fails when they differ.",
   "type": "object",
   "required": [
     "integrations"
   ],
   "properties": {
+    "dbCollector": {
+      "type": "object",
+      "properties": {
+        "service": {
+          "type": "object",
+          "properties": {
+            "externalTrafficPolicy": {
+              "enum": [
+                null,
+                "Cluster",
+                "Local"
+              ]
+            }
+          }
+        },
+        "networkPolicy": {
+          "description": "Ingress NetworkPolicy for the collector's port 8082. The bundled Prometheus is allowed when prometheus.enabled; prometheus and operators add NetworkPolicyPeer objects.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "prometheus",
+            "operators"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "prometheus": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/networkPolicyPeer"
+              }
+            },
+            "operators": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/networkPolicyPeer"
+              }
+            }
+          }
+        }
+      }
+    },
     "integrations": {
       "$id": "https://heartbeat.local/schemas/integrations.schema.json",
       "title": "Heartbeat Integrations Config",
@@ -246,6 +290,113 @@
           }
         }
       }
+    }
+  },
+  "$defs": {
+    "networkPolicyPeer": {
+      "description": "A Kubernetes NetworkPolicyPeer: a podSelector, a namespaceSelector (or both), or an ipBlock. An empty peer, or one that is only an empty selector (every pod in the namespace or every namespace), is rejected.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "podSelector": {
+          "$ref": "#/$defs/labelSelector"
+        },
+        "namespaceSelector": {
+          "$ref": "#/$defs/labelSelector"
+        },
+        "ipBlock": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cidr"
+          ],
+          "properties": {
+            "cidr": {
+              "type": "string",
+              "minLength": 1
+            },
+            "except": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "podSelector"
+            ],
+            "maxProperties": 1,
+            "properties": {
+              "podSelector": {
+                "maxProperties": 0
+              }
+            }
+          },
+          {
+            "required": [
+              "namespaceSelector"
+            ],
+            "maxProperties": 1,
+            "properties": {
+              "namespaceSelector": {
+                "maxProperties": 0
+              }
+            }
+          }
+        ]
+      }
+    },
+    "labelSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "matchLabels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "minProperties": 1
+        },
+        "matchExpressions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "operator"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "operator": {
+                "enum": [
+                  "In",
+                  "NotIn",
+                  "Exists",
+                  "DoesNotExist"
+                ]
+              },
+              "values": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "minItems": 1
+        }
+      },
+      "description": "A label selector. matchLabels and matchExpressions must not be empty when present, so an empty selector is always written {}."
     }
   }
 }
