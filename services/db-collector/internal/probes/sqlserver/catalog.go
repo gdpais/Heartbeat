@@ -272,7 +272,8 @@ func DefaultCatalog() Catalog {
 			// SQL Server nor idle, floored at 0 because the two values are
 			// sampled separately and can add up to more than 100.  SQL Server
 			// on Linux reports SystemIdle as 0 whatever the load, so other
-			// processes are NULL (no sample) there.  The platform comes from
+			// processes are NULL (no sample) there, as they are when either
+			// value is missing from the record.  The platform comes from
 			// @@VERSION ("... on Windows Server 2019 ..." or "... on Linux
 			// (Ubuntu ...)"), which needs no permission and, unlike
 			// sys.dm_os_host_info (SQL Server 2017+), exists on every
@@ -281,7 +282,8 @@ func DefaultCatalog() Catalog {
 			// record, about a minute after startup, the query returns no row
 			// and the probe exports nothing.
 			QueryTemplate: "SELECT v.sql_process_percent, " +
-				"CASE WHEN @@VERSION LIKE N'% on Windows%' THEN " +
+				"CASE WHEN @@VERSION LIKE N'% on Windows%' " +
+				"AND v.system_idle_percent IS NOT NULL AND v.sql_process_percent IS NOT NULL THEN " +
 				"CASE WHEN 100 - v.system_idle_percent - v.sql_process_percent > 0 " +
 				"THEN 100 - v.system_idle_percent - v.sql_process_percent ELSE 0 END END AS other_process_percent " +
 				"FROM (SELECT TOP (1) record FROM sys.dm_os_ring_buffers " +
