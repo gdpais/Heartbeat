@@ -1,0 +1,184 @@
+name: release
+
+# Publishes a vX.Y.Z tag (ADR 0006): checks the tag is on master and passed CI,
+# builds both service images for linux/amd64 and linux/arm64 and the Helm chart,
+# pushes them to GitHub Container Registry, and lists their digests in the
+# GitHub release. release-please creates the tags. Run it by hand to publish a
+# tag whose run failed, or one created before this workflow existed (v0.1.0).
+#
+# Published versions are immutable: an image or chart version that already
+# exists is never rebuilt or overwritten, only listed again.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish, for example v0.1.0
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/heartbeat
+  CHART_REPO: oci://ghcr.io/${{ github.repository_owner }}/charts
+
+jobs:
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: check
+        name: Tag is on master, matches the chart and passed CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/release-verify.sh "$TAG"
+
+  images:
+    name: Image (${{ matrix.service }})
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [db-collector, otel-gateway]
+    env:
+      REF: ghcr.io/${{ github.repository_owner }}/heartbeat/${{ matrix.service }}:${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: existing
+        name: Look for an already published image
+        run: |
+          if digest=$(docker buildx imagetools inspect "$REF" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            echo "$REF already exists ($digest); not rebuilding"
+            echo "digest=$digest" >>"$GITHUB_OUTPUT"
+          fi
+      # The Dockerfiles cross-compile in a native build stage, so no QEMU is needed.
+      - id: build
+        if: steps.existing.outputs.digest == ''
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: services/${{ matrix.service }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REF }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.verify.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.verify.outputs.sha }}
+          provenance: mode=max
+          sbom: true
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.existing.outputs.digest || steps.build.outputs.digest }}
+        run: printf '%s %s\n' "${{ matrix.service }}" "$DIGEST" >"digest-${{ matrix.service }}.txt"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.service }}
+          path: digest-${{ matrix.service }}.txt
+
+  chart:
+    name: Helm chart
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+      - name: Install pinned Helm
+        run: |
+          make install-tools
+          echo "$PWD/.tmp/bin" >> "$GITHUB_PATH"
+      - name: Fetch chart dependencies (Chart.lock)
+        run: make chart-deps
+      - name: Package and push the chart
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GH_TOKEN" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+          mkdir -p .tmp/chart
+          if helm pull "$CHART_REPO/heartbeat" --version "$VERSION" --destination .tmp/chart >.tmp/chart/out.txt 2>&1; then
+            echo "chart $VERSION already exists; not pushing"
+          else
+            helm package infra/helm/heartbeat --destination .tmp/chart
+            helm push ".tmp/chart/heartbeat-$VERSION.tgz" "$CHART_REPO" 2>&1 | tee .tmp/chart/out.txt
+          fi
+          digest=$(sed -n 's/^Digest: *//p' .tmp/chart/out.txt)
+          test -n "$digest"
+          printf 'chart %s\n' "$digest" >digest-chart.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digest-chart
+          path: digest-chart.txt
+
+  notes:
+    name: Release notes
+    needs: [verify, images, chart]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: digest-*
+          merge-multiple: true
+      - name: Add the published artifacts to the GitHub release
+        run: |
+          marker='<!-- published-artifacts -->'
+          {
+            echo "$marker"
+            echo "## Published artifacts"
+            echo
+            echo "Deploy by digest (ADR 0005); the version tags are for people."
+            echo
+            echo "| Artifact | Reference |"
+            echo "| --- | --- |"
+            for service in db-collector otel-gateway; do
+              digest=$(awk -v s="$service" '$1 == s {print $2}' digest-*.txt)
+              echo "| \`$service\` image | \`$IMAGE_PREFIX/$service:$VERSION@$digest\` |"
+            done
+            digest=$(awk '$1 == "chart" {print $2}' digest-*.txt)
+            echo "| Helm chart | \`$CHART_REPO/heartbeat\` version \`$VERSION\` (\`$digest\`) |"
+          } >artifacts.md
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes ""
+          fi
+          gh release view "$TAG" --json body --jq .body | awk -v m="$marker" '$0 == m {exit} {print}' >notes.md
+          cat artifacts.md >>notes.md
+          gh release edit "$TAG" --notes-file notes.md

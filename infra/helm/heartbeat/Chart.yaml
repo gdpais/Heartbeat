@@ -5,10 +5,10 @@ description: >-
   integrations config, Prometheus rules and Grafana dashboards, plus pinned
   observability engines that each environment can turn off.
 type: application
-# Chart version. Bump on every chart change that ships (ADR 0005).
-version: 0.1.0
+# Chart version: the release version, set by release-please (ADR 0006).
+version: 0.1.0 # x-release-please-version
 # Default tag for the Heartbeat images when values do not set one.
-appVersion: "0.1.0"
+appVersion: "0.1.0" # x-release-please-version
 home: https://github.com/gdpais/heartbeat
 sources:
   - https://github.com/gdpais/heartbeat
