@@ -103,6 +103,12 @@ type TargetRuntimeConfig struct {
 	Probes          []ProbeRuntimeConfig
 }
 
+// MaxProbeTimeout is the longest a single probe execution may run.  A probe's
+// timeout_ms above it is rejected, and collectors cap every probe timeout at
+// it.  Database connectors size their socket read deadlines from it, so a
+// probe still within its timeout is never cut off by the driver.
+const MaxProbeTimeout = 25 * time.Second
+
 // ProbeRuntimeConfig describes a single probe to execute against a target.
 type ProbeRuntimeConfig struct {
 	Name          string
@@ -390,6 +396,9 @@ func validateTargets(collector CollectorRuntimeConfig) error {
 		for _, probe := range target.Probes {
 			if probe.TimeoutMS < 0 {
 				return fmt.Errorf("collector %s target %s probe %s timeout_ms cannot be negative", collector.ID, target.Name, probe.Name)
+			}
+			if maxMS := MaxProbeTimeout.Milliseconds(); int64(probe.TimeoutMS) > maxMS {
+				return fmt.Errorf("collector %s target %s probe %s timeout_ms %d exceeds the maximum of %d", collector.ID, target.Name, probe.Name, probe.TimeoutMS, maxMS)
 			}
 		}
 	}

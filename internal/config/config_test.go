@@ -358,3 +358,43 @@ func TestValidateRejectsTargetScrapedByTwoSQLServerCollectors(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateBoundsProbeTimeout(t *testing.T) {
+	maxMS := int(MaxProbeTimeout.Milliseconds())
+	tests := []struct {
+		name      string
+		timeoutMS int
+		wantErr   string
+	}{
+		{"unset uses the default", 0, ""},
+		{"within the maximum", 5000, ""},
+		{"at the maximum", maxMS, ""},
+		{"negative", -1, "timeout_ms cannot be negative"},
+		{"above the maximum", maxMS + 1, fmt.Sprintf("timeout_ms %d exceeds the maximum of %d", maxMS+1, maxMS)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := RuntimeConfig{
+				Grafana:      Endpoint{BaseURL: "http://grafana:3000"},
+				Loki:         Endpoint{BaseURL: "http://loki:3100"},
+				Alertmanager: Endpoint{BaseURL: "http://alertmanager:9093"},
+				Collectors: []CollectorRuntimeConfig{{
+					ID: "sql", Kind: "sqlserver", Enabled: true, ScrapeInterval: time.Minute,
+					Targets: []TargetRuntimeConfig{{
+						Name: "core-db", Host: "db", Port: 1433,
+						Probes: []ProbeRuntimeConfig{{Name: "p1", TimeoutMS: tt.timeoutMS}},
+					}},
+				}}}
+			err := validate(cfg)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
