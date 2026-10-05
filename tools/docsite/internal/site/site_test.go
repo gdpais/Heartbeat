@@ -14,34 +14,20 @@ import (
 
 const testRepoURL = "https://example.test/heartbeat"
 
-func buildRepoSite(t *testing.T) (Config, map[string][]byte) {
+// fixtureRoot is a small documentation tree kept with the tests, so they
+// exercise the generator, not the repository's current docs. The real docs
+// are validated by the build itself (make docs-site), which fails on broken
+// links, images and anchors.
+const fixtureRoot = "testdata/repo"
+
+func buildFixtureSite(t *testing.T) (Config, map[string][]byte) {
 	t.Helper()
-	cfg := Config{Root: repoRoot(t), OutDir: "docs/site", RepoURL: testRepoURL, Ref: "main"}
+	cfg := Config{Root: fixtureRoot, OutDir: "docs/site", RepoURL: testRepoURL, Ref: "main"}
 	files, err := Build(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return cfg, files
-}
-
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The generator is a nested module, so look for the docs index rather
-	// than the nearest go.mod.
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "docs", "README.md")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("repository root (docs/README.md) not found")
-		}
-		dir = parent
-	}
 }
 
 var (
@@ -54,7 +40,7 @@ var (
 // existing anchor; links to repository files must name a file or directory
 // that exists.
 func TestSiteLinksResolve(t *testing.T) {
-	cfg, files := buildRepoSite(t)
+	cfg, files := buildFixtureSite(t)
 	ids := map[string]map[string]bool{}
 	for name, content := range files {
 		if strings.HasSuffix(name, ".html") {
@@ -64,7 +50,7 @@ func TestSiteLinksResolve(t *testing.T) {
 			}
 		}
 	}
-	checked := 0
+	checked, repoLinks := 0, 0
 	for name, content := range files {
 		if !strings.HasSuffix(name, ".html") {
 			continue
@@ -73,6 +59,7 @@ func TestSiteLinksResolve(t *testing.T) {
 			raw := html.UnescapeString(string(m[1]))
 			checked++
 			if strings.HasPrefix(raw, cfg.RepoURL+"/") {
+				repoLinks++
 				checkRepoLink(t, cfg, name, raw)
 				continue
 			}
@@ -101,8 +88,8 @@ func TestSiteLinksResolve(t *testing.T) {
 			}
 		}
 	}
-	if checked < 100 {
-		t.Fatalf("only %d links checked; link extraction is probably broken", checked)
+	if checked < 100 || repoLinks == 0 {
+		t.Fatalf("checked %d links (%d to repository files); link extraction is probably broken", checked, repoLinks)
 	}
 }
 
@@ -126,8 +113,8 @@ func checkRepoLink(t *testing.T, cfg Config, page, link string) {
 }
 
 func TestBuildIsDeterministic(t *testing.T) {
-	_, first := buildRepoSite(t)
-	_, second := buildRepoSite(t)
+	_, first := buildFixtureSite(t)
+	_, second := buildFixtureSite(t)
 	if len(first) != len(second) {
 		t.Fatalf("builds produced %d and %d files", len(first), len(second))
 	}
@@ -139,58 +126,64 @@ func TestBuildIsDeterministic(t *testing.T) {
 }
 
 func TestSiteContents(t *testing.T) {
-	_, files := buildRepoSite(t)
+	_, files := buildFixtureSite(t)
 	for _, want := range []string{
 		"index.html",
+		"product/overview.html",
 		"architecture/overview.html",
 		"architecture/decisions/index.html",
-		"reference/configuration.html",
+		"architecture/decisions/0001-example.html",
+		"guides/setup.html",
 		"archive/index.html",
-		"services/db-collector/index.html",
-		"services/otel-gateway/index.html",
+		"archive/old-plan.html",
+		"services/demo/index.html",
 	} {
 		if files[want] == nil {
 			t.Errorf("missing %s", want)
 		}
 	}
-	for name := range files {
-		if strings.HasPrefix(name, "plans/") || strings.HasPrefix(name, "reviews/") {
-			t.Errorf("%s: docs/plans and docs/reviews must not be published", name)
-		}
-	}
 
-	archived := string(files["archive/original-plan.html"])
-	if !strings.Contains(archived, `class="archived-banner"`) {
+	if !strings.Contains(string(files["archive/old-plan.html"]), `class="archived-banner"`) {
 		t.Error("archived pages must carry the archived banner")
 	}
 	for name, content := range files {
 		if strings.HasSuffix(name, ".html") && !strings.HasPrefix(name, "archive/") &&
-			bytes.Contains(content, []byte(`href="archive/original-plan.html"`)) {
+			bytes.Contains(content, []byte("old-plan.html")) {
 			t.Errorf("%s: archived pages must stay out of the sidebar", name)
 		}
 	}
 
 	home := string(files["index.html"])
-	for _, group := range []string{"New to Heartbeat", "Developers", "Operators and SREs"} {
+	for _, group := range []string{"New readers", "Developers"} {
 		if !strings.Contains(home, "<h2>"+group+"</h2>") {
 			t.Errorf("sidebar is missing the %q audience group", group)
 		}
 	}
-	if !strings.Contains(string(files["reference/configuration.html"]), `<div class="table-wrap"><table>`) {
+	if !strings.Contains(home, `<p class="nav-note">clients, newcomers</p>`) {
+		t.Error("an audience group's parenthetical must become its note")
+	}
+	// The ADR nests under the decisions index it shares a directory with.
+	if !regexp.MustCompile(`(?s)decisions/index\.html"[^<]*>Decisions</a>\s*<ul class="nav-list nav-children">.*?0001-example\.html`).MatchString(home) {
+		t.Error("ADR pages must nest under the decisions index in the sidebar")
+	}
+	if !strings.Contains(string(files["architecture/overview.html"]), `<div class="table-wrap"><table>`) {
 		t.Error("tables must be wrapped in a scroll container")
+	}
+	if !strings.Contains(home, testRepoURL+"/blob/main/config/app.yaml") ||
+		!strings.Contains(home, testRepoURL+"/tree/main/docs/guides") {
+		t.Error("links to repository files and directories must point at the repository")
 	}
 }
 
-// Mermaid diagrams (the data model's ER diagrams) must reach mermaid.js
-// exactly as written in the Markdown.
+// Mermaid diagrams must reach mermaid.js exactly as written in the Markdown.
 func TestDiagramSourcesUnchanged(t *testing.T) {
-	cfg, files := buildRepoSite(t)
-	source, err := os.ReadFile(filepath.Join(cfg.Root, "docs/architecture/data-model.md"))
+	cfg, files := buildFixtureSite(t)
+	source, err := os.ReadFile(filepath.Join(cfg.Root, "docs/architecture/overview.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	fences := regexp.MustCompile("(?s)```mermaid\n(.*?)```").FindAllSubmatch(source, -1)
-	rendered := regexp.MustCompile(`(?s)<pre class="diagram-source"><code>(.*?)</code></pre>`).FindAllSubmatch(files["architecture/data-model.html"], -1)
+	rendered := regexp.MustCompile(`(?s)<pre class="diagram-source"><code>(.*?)</code></pre>`).FindAllSubmatch(files["architecture/overview.html"], -1)
 	if len(fences) == 0 || len(fences) != len(rendered) {
 		t.Fatalf("found %d mermaid blocks in Markdown and %d in HTML", len(fences), len(rendered))
 	}
@@ -199,30 +192,60 @@ func TestDiagramSourcesUnchanged(t *testing.T) {
 			t.Errorf("diagram %d changed between Markdown and HTML", i+1)
 		}
 	}
-	if !bytes.Contains(files["architecture/data-model.html"], []byte(MermaidURL)) {
+	if !bytes.Contains(files["architecture/overview.html"], []byte(MermaidURL)) {
 		t.Error("pages with diagrams must load mermaid.js")
 	}
-	if bytes.Contains(files["reference/configuration.html"], []byte(MermaidURL)) {
+	if bytes.Contains(files["guides/setup.html"], []byte(MermaidURL)) {
 		t.Error("pages without diagrams must not load mermaid.js")
 	}
 }
 
-// The architecture overview embeds its diagrams as SVG files, which the
-// site must carry byte for byte.
+// Embedded images are copied into the site byte for byte.
 func TestImagesCopied(t *testing.T) {
-	cfg, files := buildRepoSite(t)
-	overview := string(files["architecture/overview.html"])
-	for _, name := range []string{"current-runtime.svg", "target-platform.svg"} {
-		if !strings.Contains(overview, `src="diagrams/`+name+`"`) {
-			t.Errorf("overview does not embed diagrams/%s", name)
-		}
-		want, err := os.ReadFile(filepath.Join(cfg.Root, "docs/architecture/diagrams", name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(files["architecture/diagrams/"+name], want) {
-			t.Errorf("architecture/diagrams/%s is missing or differs from the repository file", name)
-		}
+	cfg, files := buildFixtureSite(t)
+	if !strings.Contains(string(files["architecture/overview.html"]), `src="diagrams/flow.svg"`) {
+		t.Error("overview does not embed diagrams/flow.svg")
+	}
+	want, err := os.ReadFile(filepath.Join(cfg.Root, "docs/architecture/diagrams/flow.svg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(files["architecture/diagrams/flow.svg"], want) {
+		t.Error("architecture/diagrams/flow.svg is missing or differs from the repository file")
+	}
+}
+
+// The build is what validates the real docs, so it must fail, naming the
+// file and line, on anything a reader would find broken.
+func TestBuildRejectsBrokenReferences(t *testing.T) {
+	for _, tc := range []struct{ name, page, want string }{
+		{"missing page", "See [nowhere](missing.md).", "docs/guides/a.md:3: missing.md: no such file"},
+		{"missing anchor", "See [b](b.md#nope).", "docs/guides/a.md:3: #nope: no such heading in docs/guides/b.md"},
+		{"missing same-page anchor", "See [above](#nope).", "docs/guides/a.md:3: #nope: no such heading in docs/guides/a.md"},
+		{"missing image", "![Gone](gone.svg)", "docs/guides/a.md:3: image gone.svg: no such file"},
+		{"outside the repository", "See [up](../../../x.md).", "docs/guides/a.md:3: ../../../x.md points outside the repository"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, root, "docs/README.md", "# Docs\n\n## By audience\n\n**Readers**\n\n- [A](guides/a.md)\n")
+			writeFile(t, root, "docs/guides/a.md", "# A\n\n"+tc.page+"\n")
+			writeFile(t, root, "docs/guides/b.md", "# B\n\n## Real heading\n")
+			_, err := Build(Config{Root: root, OutDir: "docs/site", RepoURL: testRepoURL, Ref: "main"})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Build error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func writeFile(t *testing.T, root, name, content string) {
+	t.Helper()
+	p := filepath.Join(root, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

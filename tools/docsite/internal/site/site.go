@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -78,6 +79,15 @@ type page struct {
 	// links maps each Link node that points at another page to that page;
 	// the sidebar is built from these on the home page.
 	links map[*ast.Link]*page
+	// anchors are the #fragment links to published pages, checked against
+	// the target's heading IDs once every page is parsed.
+	anchors []anchorRef
+}
+
+type anchorRef struct {
+	line     int
+	target   *page
+	fragment string
 }
 
 type builder struct {
@@ -117,6 +127,7 @@ func Build(cfg Config) (map[string][]byte, error) {
 	for _, p := range b.pages {
 		problems = append(problems, b.parse(p)...)
 	}
+	problems = append(problems, b.checkAnchors()...)
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("broken links in Markdown:\n  %s", strings.Join(problems, "\n  "))
 	}
@@ -248,9 +259,18 @@ func (b *builder) parse(p *page) []string {
 				problems = append(problems, fmt.Sprintf("%s:%d: %s", p.src, lineOf(n, source), err))
 				return ast.WalkContinue, nil
 			}
+			raw := string(n.Destination)
 			n.Destination = []byte(dest)
 			if target != nil {
 				p.links[n] = target
+			}
+			if _, fragment, ok := strings.Cut(raw, "#"); ok && fragment != "" {
+				if strings.HasPrefix(raw, "#") {
+					target = p
+				}
+				if target != nil {
+					p.anchors = append(p.anchors, anchorRef{line: lineOf(n, source), target: target, fragment: fragment})
+				}
 			}
 		}
 		return ast.WalkContinue, nil
@@ -269,6 +289,28 @@ func (b *builder) parse(p *page) []string {
 		anchor.SetAttributeString("title", []byte("Link to this section"))
 		anchor.AppendChild(anchor, ast.NewString([]byte("#")))
 		n.AppendChild(n, anchor)
+	}
+	return problems
+}
+
+// checkAnchors reports every #fragment link to a published page that names
+// no heading on that page.
+func (b *builder) checkAnchors() []string {
+	ids := map[*page]map[string]bool{}
+	for _, p := range b.pages {
+		ids[p] = map[string]bool{}
+		for _, h := range p.headings {
+			ids[p][h.ID] = true
+		}
+	}
+	var problems []string
+	for _, p := range b.pages {
+		for _, a := range p.anchors {
+			fragment, err := url.PathUnescape(a.fragment)
+			if err != nil || !ids[a.target][fragment] {
+				problems = append(problems, fmt.Sprintf("%s:%d: #%s: no such heading in %s", p.src, a.line, a.fragment, a.target.src))
+			}
+		}
 	}
 	return problems
 }
