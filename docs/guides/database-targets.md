@@ -33,7 +33,8 @@ these permissions with the DBAs first.
 Connections use `encrypt=true` and verify the server certificate, so the target
 needs a certificate the collector trusts.
 `HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE=true` is for the local
-dev container only.
+dev container only; it applies to every target, and the collector logs a
+warning at startup and lists it in `GET /admin/config`.
 
 ## 2. Add the target
 
@@ -109,7 +110,8 @@ is rejected and the previous config keeps running.
 ## 5. Verify
 
 ```bash
-curl -s http://localhost:8082/readyz        # the target appears; failed targets are listed without raw errors
+curl -s -H "Authorization: Bearer $HEARTBEAT_ADMIN_TOKEN" http://localhost:8082/admin/config |
+  jq '.readiness.collectors[].targets[] | select(.name == "finance-prod")'   # state, and the driver error if it fails
 curl -s http://localhost:8082/metrics | grep 'heartbeat_collector_target_up{.*target="finance-prod"'
 ```
 
@@ -117,7 +119,8 @@ curl -s http://localhost:8082/metrics | grep 'heartbeat_collector_target_up{.*ta
 `heartbeat_sqlserver_*` series should appear with `target="finance-prod"`. In
 Grafana, open the *SQL Server overview* dashboard and select the target.
 
-If the target stays down, check the collector's JSON logs (one line per probe
-failure, with collector, target and probe). Repeated failures back off
+If the target stays down, the target's `error` above shows the driver's
+message (login, host or certificate); the collector's JSON logs have one line
+per probe failure, with collector, target and probe. Repeated failures back off
 exponentially up to 5 minutes, so a fix can take that long to show up unless
 you reload.

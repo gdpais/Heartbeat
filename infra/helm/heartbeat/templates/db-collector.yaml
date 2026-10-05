@@ -72,7 +72,7 @@ spec:
               containerPort: 8082
           # Liveness only checks the process: a monitored database outage must
           # never restart the collector. Readiness reports whether the
-          # collectors are actually cycling (see /readyz reasons).
+          # collectors are actually cycling (reasons in GET /admin/config).
           livenessProbe:
             httpGet:
               path: /healthz
@@ -131,7 +131,7 @@ spec:
       port: 8082
       targetPort: http
 ---
-# Operator access (health, admin reload). Routes to the pod only when ready.
+# Operator access (health, admin endpoints). Routes to the pod only when ready.
 apiVersion: v1
 kind: Service
 metadata:
@@ -150,4 +150,7 @@ spec:
       {{- if and (eq $c.service.type "NodePort") $c.service.nodePort }}
       nodePort: {{ $c.service.nodePort }}
       {{- end }}
+  {{- if and (has $c.service.type (list "NodePort" "LoadBalancer")) $c.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ $c.service.externalTrafficPolicy }}
+  {{- end }}
 {{- end }}
