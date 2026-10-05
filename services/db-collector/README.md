@@ -21,7 +21,8 @@ The implemented path is:
 
 1. `services/db-collector/cmd/db-collector/main.go` starts the app.
 2. `internal/app/app.go` loads integration config and creates the shared
-   Prometheus registry, SQL executor, exporter, and collector lifecycle.
+   Prometheus registry (with Go runtime, process and per-probe metrics), SQL
+   executor, exporter, and collector lifecycle.
 3. Each enabled collector becomes a background `Poller`.
 4. The `Poller` repeatedly calls `Runner.RunOnce` on the configured scrape
    interval.
@@ -29,7 +30,8 @@ The implemented path is:
    by one.
 6. `SQLExecutor` opens a SQL Server connection, runs the probe query, decodes
    rows into samples, and optionally emits evidence.
-7. `PrometheusExporter` records the samples as gauges exposed on `/metrics`.
+7. `PrometheusExporter` records the samples as gauges or counters, as the
+   probe's metric descriptors say, exposed on `/metrics`.
 
 ## Collector Model
 
@@ -78,8 +80,13 @@ succeeds.
 - Self-observability series: `heartbeat_collector_target_up`,
   `heartbeat_collector_target_consecutive_failures`,
   `heartbeat_collector_target_last_success_timestamp_seconds`,
-  `heartbeat_collector_target_login_sysadmin`, and
-  `heartbeat_collector_cycle_duration_seconds`.
+  `heartbeat_collector_target_login_sysadmin`,
+  `heartbeat_collector_cycle_duration_seconds`, the per-probe
+  `heartbeat_collector_probe_duration_seconds` histogram and
+  `heartbeat_collector_probe_errors_total` counter (by `reason`: `timeout`,
+  `error`, `not_started`, `panic`; created at 0 when the collector starts),
+  and Go runtime and process metrics. A stopped collector's probe series are
+  deleted with its other series.
 - A crashed poller is restarted with backoff (1s doubling to 1m).
 - `/healthz` is liveness only. `/readyz` returns 503 before every collector
   has completed its first cycle, when a collector is failed or crash-looping,
@@ -113,9 +120,18 @@ Each probe definition includes:
 Each metric descriptor tells the runtime how to extract one Prometheus sample
 from the query result:
 
-- `ValueColumn` becomes the numeric gauge value
-- `LabelColumns` become Prometheus labels
+- `ValueColumn` becomes the numeric value; a NULL produces no sample
+- `Scale` converts it to the metric's base unit (for example `0.001` for
+  milliseconds to seconds, `1024` for KB to bytes); zero means 1
+- `Type` is gauge (the zero value) or counter; counters are values SQL Server
+  accumulates since startup, exported as reported and read with `rate()`
+- `LabelColumns` become Prometheus labels; pick columns with a bounded set of
+  values
 - `Name` and `Help` define the exported metric
+
+One row can feed several descriptors: `throughput` pivots its two
+performance counters into one row with a column per metric. Ratios are
+computed in the query and exported as gauges.
 
 The built-in probes, their source views and the metrics they emit are listed
 in the [metrics reference](../../docs/reference/metrics-and-endpoints.md#sql-server-probe-metrics).
@@ -129,9 +145,17 @@ SQL instead of the catalog default.
 
 - query rows are read into `map[string]any`
 - `[]byte` values are normalized to strings
-- numeric values are converted with `toFloat64`
+- numeric values are converted with `toFloat64` and multiplied by the
+  descriptor's `Scale`
 - label keys are taken from the metric descriptor, not from arbitrary columns
-- any row that does not contain the configured value column is skipped
+- any row that does not contain the configured value column, or holds NULL in
+  it, is skipped
+
+`internal/export` then records each probe's samples under its scope. Recording
+a known series does not allocate, and scrapes copy the current values under a
+short read lock, so a scrape never holds up collection. Samples whose label
+set or type differs from the metric's first registration, negative counter
+values, and label values that are not valid UTF-8 are rejected and logged.
 
 This means the extractor is schema-driven rather than dynamically inferred.
 Only the columns named in the probe catalog contribute to exported metrics.

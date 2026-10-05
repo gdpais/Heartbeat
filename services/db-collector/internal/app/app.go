@@ -114,12 +114,15 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	registry := prometheus.NewRegistry()
+	registry, probeMetrics, err := newRegistry()
+	if err != nil {
+		return err
+	}
 	exporter := collectorexport.NewPrometheusExporter(registry)
 	manager := connector.NewManager(connector.EnvCredentialResolver{})
 	manager.TrustServerCertificate = cfg.SQLServerTrustServerCertificate
 	executor := collectors.NewSQLExecutor(manager)
-	runner := collectors.NewRunner(executor, exporter, collectors.LoggingEvidenceSink{}).WithLogger(logger)
+	runner := collectors.NewRunner(executor, exporter, collectors.LoggingEvidenceSink{}).WithLogger(logger).WithProbeMetrics(probeMetrics)
 	return run(ctx, runDeps{
 		cfg:           cfg,
 		logger:        logger,

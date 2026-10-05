@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	connector "heartbeat/services/db-collector/internal/connectors/sqlserver"
 	collectorexport "heartbeat/services/db-collector/internal/export"
 	collectormetadata "heartbeat/services/db-collector/internal/metadata"
@@ -91,21 +93,32 @@ func runLiveProbe(t *testing.T, executor SQLExecutor, target collectormetadata.D
 // logged in as the least-privilege collector login, so a probe that needs
 // more than the documented grants fails here.  Fakes cannot catch what the
 // catalog queries return on a live server, such as several rows mapping to
-// one label set or nchar padding in label values; the exporter keeps only the
-// last of duplicate series.
+// one label set, nchar padding in label values, or a pivoted counter column
+// that is NULL; the exporter keeps only the last of duplicate series.  Samples
+// are also exported through a Prometheus registry, as in production, so type,
+// value and label-value errors fail here.
 func TestCatalogProbesAgainstSQLServer(t *testing.T) {
 	executor, target := liveExecutor(t, liveCredentialRef)
 
 	// blocking returns rows only while a request is blocked.
 	mayBeEmpty := map[string]bool{"blocking": true}
+	registry := prometheus.NewRegistry()
+	exporter := collectorexport.NewPrometheusExporter(registry)
 	for _, name := range executor.Catalog.Names() {
 		t.Run(name, func(t *testing.T) {
 			samples := runLiveProbe(t, executor, target, name, "")
 			if len(samples) == 0 && !mayBeEmpty[name] {
 				t.Fatal("probe returned no samples")
 			}
+			t.Logf("%d samples", len(samples))
+			probe, _ := executor.Catalog.Get(name)
+			emitted := map[string]bool{}
 			seen := map[string]bool{}
 			for _, sample := range samples {
+				emitted[sample.Metric] = true
+				if sample.Type == collectorexport.Counter && sample.Value < 0 {
+					t.Errorf("counter %s is negative: %v", sample.Metric, sample.Value)
+				}
 				for label, value := range sample.Labels {
 					if value != strings.TrimSpace(value) {
 						t.Errorf("%s label %s=%q has surrounding whitespace", sample.Metric, label, value)
@@ -117,7 +130,21 @@ func TestCatalogProbesAgainstSQLServer(t *testing.T) {
 				}
 				seen[key] = true
 			}
+			// Every descriptor yields a sample, so no column of a pivoted
+			// row is NULL on a stock server.
+			for _, metric := range probe.Metrics {
+				if !emitted[metric.Name] && !mayBeEmpty[name] {
+					t.Errorf("no %s sample", metric.Name)
+				}
+			}
+			scope := collectorexport.Scope{Collector: "sqlserver-test", Target: target.Name, Probe: name}
+			if err := exporter.RecordScope(scope, samples); err != nil {
+				t.Errorf("export: %v", err)
+			}
 		})
+	}
+	if _, err := registry.Gather(); err != nil {
+		t.Fatalf("Gather: %v", err)
 	}
 }
 
@@ -127,8 +154,8 @@ func TestCatalogProbesAgainstSQLServer(t *testing.T) {
 // run reuses the pooled connection after go-mssqldb's session reset.
 func TestSessionSettingsAgainstSQLServer(t *testing.T) {
 	executor, target := liveExecutor(t, liveCredentialRef)
-	// memory_pressure decodes cntr_value labelled by metric.
-	const query = `SELECT 'lock_timeout' AS metric, @@LOCK_TIMEOUT AS cntr_value
+	// sessions decodes the gauge session_count labelled by status.
+	const query = `SELECT 'lock_timeout' AS status, @@LOCK_TIMEOUT AS session_count
 UNION ALL
 SELECT 'deadlock_priority', deadlock_priority FROM sys.dm_exec_sessions WHERE session_id = @@SPID`
 	want := map[string]float64{
@@ -137,8 +164,8 @@ SELECT 'deadlock_priority', deadlock_priority FROM sys.dm_exec_sessions WHERE se
 	}
 	for run := range 2 {
 		got := map[string]float64{}
-		for _, sample := range runLiveProbe(t, executor, target, "memory_pressure", query) {
-			got[sample.Labels["metric"]] = sample.Value
+		for _, sample := range runLiveProbe(t, executor, target, "sessions", query) {
+			got[sample.Labels["status"]] = sample.Value
 		}
 		if !maps.Equal(got, want) {
 			t.Fatalf("run %d: session settings = %v, want %v", run+1, got, want)

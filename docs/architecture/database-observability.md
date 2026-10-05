@@ -14,12 +14,12 @@ emits today. Metric names and labels are listed in the
 
 | Signal | Status | Current probe / metric |
 | --- | --- | --- |
-| Wait statistics | Collected | `waits` → `heartbeat_sqlserver_wait_time_ms` |
+| Wait statistics | Collected | `waits` → `heartbeat_sqlserver_wait_seconds_total` (counter) |
 | Blocking and locks | Collected (blocked requests) | `blocking` → `heartbeat_sqlserver_blocked_requests` |
 | Sessions and connections | Collected | `sessions` → `heartbeat_sqlserver_sessions` |
-| Memory pressure | Collected | `memory_pressure` → `heartbeat_sqlserver_memory_kb` |
-| Database size / file size | Collected | `storage` → `heartbeat_sqlserver_database_file_size_mb` |
-| Throughput counters (batch requests, transactions) | Collected | `throughput` → `heartbeat_sqlserver_throughput` |
+| Memory pressure | Collected | `memory_pressure` → `heartbeat_sqlserver_total_server_memory_bytes` |
+| Database size / file size | Collected | `storage` → `heartbeat_sqlserver_database_file_size_bytes` |
+| Throughput counters (batch requests, transactions) | Collected | `throughput` → `heartbeat_sqlserver_batch_requests_total`, `heartbeat_sqlserver_transactions_total` (counters) |
 | Instance availability | Partial | `heartbeat_collector_target_up` (collector reachability) |
 | CPU pressure | Planned (phase 1) | — |
 | Buffer/cache hit ratio | Planned (phase 1, with page life expectancy) | — |
@@ -112,8 +112,8 @@ also needs the target's DBAs.
 ## Collector recovery and high availability (planned)
 
 Status: items 1-3 are implemented for a single collector replica (failure
-isolation, backoff, freshness metrics, stale-series cleanup, readiness, reload
-rollback); see the [DB collector README](../../services/db-collector/README.md). Items 4-5 remain planned.
+isolation, backoff, freshness metrics, per-probe error counters and
+durations, stale-series cleanup, readiness, reload rollback); see the [DB collector README](../../services/db-collector/README.md). Items 4-5 remain planned.
 
 The remaining items are planned improvements, not guarantees of the current runtime. The
 current SQL path is remote queries -> custom collector's in-memory metrics ->

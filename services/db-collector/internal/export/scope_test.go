@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 const blockedMetric = "heartbeat_sqlserver_blocked_requests"
@@ -62,7 +61,7 @@ func TestRecordScopeDeletesSeriesNoLongerReported(t *testing.T) {
 	if got := exported(t, reg)["core-db"]; len(got) != 1 || got[0] != "58" {
 		t.Fatalf("expected only session 58, got %v", got)
 	}
-	if value := testutil.ToFloat64(exporter.gauges[blockedMetric].WithLabelValues("58", "prod", "core-db")); value != 2 {
+	if value, ok := gathered(t, reg, blockedMetric, map[string]string{"blocking_session_id": "58", "environment": "prod", "target": "core-db"}); !ok || value != 2 {
 		t.Fatalf("unexpected value %v", value)
 	}
 	// Block cleared: the probe returns zero rows.
@@ -85,7 +84,7 @@ func TestClearScopeAndForgetCollector(t *testing.T) {
 			t.Fatalf("RecordScope: %v", err)
 		}
 	}
-	// Unscoped series are never deleted.
+	// Unscoped series are not owned by any scope, so scope cleanup keeps them.
 	if err := exporter.Record([]Sample{blocked("legacy", "9", 1)}); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
@@ -218,4 +217,66 @@ func TestRecordScopeReportsDuplicateSeries(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Two collectors scraping one target would take turns on its counters, and
+// every drop would read as a reset to rate().  Gauges may be shared.
+func TestCounterSeriesHaveASingleOwner(t *testing.T) {
+	sample := func(metricType MetricType, value float64) Sample {
+		name := "heartbeat_test_gauge"
+		if metricType == Counter {
+			name = "heartbeat_test_total"
+		}
+		return Sample{Metric: name, Type: metricType, Value: value, Labels: map[string]string{"environment": "prod", "target": "core-db"}}
+	}
+	first := Scope{Collector: "a", Target: "core-db", Probe: "waits"}
+	second := Scope{Collector: "b", Target: "core-db", Probe: "waits"}
+	tests := []struct {
+		name      string
+		metric    MetricType
+		wantErr   bool
+		wantValue float64
+	}{
+		{"counter keeps the owner's value", Counter, true, 100},
+		{"gauge is shared, last writer wins", Gauge, false, 5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := prometheus.NewRegistry()
+			exporter := NewPrometheusExporter(reg)
+			owned := sample(tt.metric, 100)
+			if err := exporter.RecordScope(first, []Sample{owned}); err != nil {
+				t.Fatalf("RecordScope(first): %v", err)
+			}
+			err := exporter.RecordScope(second, []Sample{sample(tt.metric, 5)})
+			if tt.wantErr != (err != nil) || (err != nil && !strings.Contains(err.Error(), "already reported by another scope")) {
+				t.Fatalf("RecordScope(second): wantErr %v, got %v", tt.wantErr, err)
+			}
+			if value, ok := gathered(t, reg, owned.Metric, owned.Labels); !ok || value != tt.wantValue {
+				t.Fatalf("exported %v %v, want %v", value, ok, tt.wantValue)
+			}
+			// The owner keeps writing as usual.
+			if err := exporter.RecordScope(first, []Sample{sample(tt.metric, 110)}); err != nil {
+				t.Fatalf("owner rewrite: %v", err)
+			}
+		})
+	}
+
+	t.Run("counter is free again once its owner drops it", func(t *testing.T) {
+		reg := prometheus.NewRegistry()
+		exporter := NewPrometheusExporter(reg)
+		if err := exporter.RecordScope(first, []Sample{sample(Counter, 100)}); err != nil {
+			t.Fatalf("RecordScope(first): %v", err)
+		}
+		if err := exporter.Record([]Sample{sample(Counter, 1)}); err == nil {
+			t.Fatal("Record must not overwrite an owned counter")
+		}
+		exporter.ForgetCollector("a")
+		if err := exporter.RecordScope(second, []Sample{sample(Counter, 7)}); err != nil {
+			t.Fatalf("RecordScope(second) after the owner left: %v", err)
+		}
+		if value, ok := gathered(t, reg, "heartbeat_test_total", sample(Counter, 0).Labels); !ok || value != 7 {
+			t.Fatalf("exported %v %v, want 7", value, ok)
+		}
+	})
 }

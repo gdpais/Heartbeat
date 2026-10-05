@@ -8,15 +8,23 @@ tests:
   - name: SQL Server wait rate survives a SQL Server restart
     interval: 1m
     input_series:
-      # +60000 ms per minute, then the counter resets (restart) and resumes.
-      - series: 'heartbeat_sqlserver_wait_time_ms{collector="c",environment="dev",target="db1",wait_type="LCK_M_S"}'
-        values: '0 60000 120000 180000 240000 300000 0 60000 120000 180000 240000 300000'
+      # +60 s of waits per minute, then the counter resets (restart) and resumes.
+      - series: 'heartbeat_sqlserver_wait_seconds_total{collector="c",environment="dev",target="db1",wait_type="LCK_M_S"}'
+        values: '0 60 120 180 240 300 0 60 120 180 240 300'
     promql_expr_test:
       - expr: heartbeat:sqlserver_wait_seconds:rate5m
         eval_time: 5m
         exp_samples:
           - labels: 'heartbeat:sqlserver_wait_seconds:rate5m{environment="dev",target="db1",wait_type="LCK_M_S"}'
             value: 1
+      # A window spanning the restart (4m..8m: 240 300 0 60 120) counts the
+      # drop as a reset, not as -300: 180 s of waits seen over 240 s,
+      # extrapolated to the 5m window, is 0.75 and never negative.
+      - expr: heartbeat:sqlserver_wait_seconds:rate5m
+        eval_time: 8m
+        exp_samples:
+          - labels: 'heartbeat:sqlserver_wait_seconds:rate5m{environment="dev",target="db1",wait_type="LCK_M_S"}'
+            value: 0.75
       - expr: heartbeat:sqlserver_wait_seconds:rate5m
         eval_time: 11m
         exp_samples:

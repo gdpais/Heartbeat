@@ -133,6 +133,9 @@ replacement_ready() {
 		[ "$(k -n "$NAMESPACE" get pod db-collector-0 -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" = True ]
 }
 prometheus_answers() { [ -n "$(prom_value prometheus_tsdb_lowest_timestamp_seconds)" ]; }
+# Prints the type Prometheus scraped for a metric (counter, gauge, ...).
+metric_type() { svc_get prometheus:9090 "/api/v1/metadata?metric=$1" | jq -r --arg m "$1" '.data[$m][0].type // empty'; }
+has_value() { [ -n "$(prom_value "$1")" ]; }
 probe_pod_phase() { k -n "$NAMESPACE" get pod np-probe -o jsonpath='{.status.phase}'; }
 probe_pod_exit() { k -n "$NAMESPACE" get pod np-probe -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}'; }
 probe_pod_done() { case "$(probe_pod_phase)" in Succeeded | Failed) true ;; *) false ;; esac; }
@@ -193,12 +196,30 @@ pass "probe metrics present (sessions=$sessions)"
 sysadmin=$(prom_value "heartbeat_collector_target_login_sysadmin{target=\"sqlserver-dev\"}")
 [ "$sysadmin" = 0 ] || fail "heartbeat_collector_target_login_sysadmin for sqlserver-dev is '$sysadmin', expected 0"
 pass "the collector logs in without sysadmin (least-privilege login)"
-# Exact, unpadded label values; one server-wide series each (issue #4).
-counters=$(prom "heartbeat_sqlserver_throughput{target=\"sqlserver-dev\"}" |
-	jq -r '[.data.result[].metric.counter_name] | sort | join(",")')
-[ "$counters" = "Batch Requests/sec,Transactions/sec" ] ||
-	fail "throughput counter_name values are [$counters], expected Batch Requests/sec,Transactions/sec"
-pass "throughput counters labelled without padding ($counters)"
+# Cumulative SQL Server values are scraped as counters, so rate() applies.
+for metric in heartbeat_sqlserver_wait_seconds_total heartbeat_sqlserver_batch_requests_total heartbeat_sqlserver_transactions_total; do
+	type=$(metric_type "$metric")
+	[ "$type" = counter ] || fail "$metric has type [$type], expected counter"
+done
+pass "waits and throughput exported as counters"
+# One server-wide series per throughput counter (issue #4).
+for metric in heartbeat_sqlserver_batch_requests_total heartbeat_sqlserver_transactions_total; do
+	count=$(prom_value "count($metric{target=\"sqlserver-dev\"})")
+	[ "$count" = 1 ] || fail "$metric has [$count] series for sqlserver-dev, expected 1"
+done
+wait_for 120 "batch request rate" has_value "rate(heartbeat_sqlserver_batch_requests_total{target=\"sqlserver-dev\"}[1m])"
+pass "one series per throughput counter, and rate() returns a value"
+# Self-observability: Go runtime and process metrics, probe durations, and
+# error counters created at 0 for every scheduled probe (4 reasons each).
+for query in 'go_goroutines{job="db-collector"}' 'process_resident_memory_bytes{job="db-collector"}' \
+	'heartbeat_collector_probe_duration_seconds_count{target="sqlserver-dev"}'; do
+	[ -n "$(prom_value "$query")" ] || fail "no $query"
+done
+probes=$(prom_value 'count(heartbeat_collector_probe_duration_seconds_count{target="sqlserver-dev"})')
+errors=$(prom_value 'count(heartbeat_collector_probe_errors_total{target="sqlserver-dev"})')
+[ -n "$probes" ] && [ "$errors" = "$((probes * 4))" ] ||
+	fail "probe error counters: [$errors] series for [$probes] probes, expected 4 per probe"
+pass "collector self-metrics present ($probes probes timed, $errors error counters)"
 svc_get grafana:3000 /api/dashboards/uid/sqlserver-overview | jq -e '.dashboard.uid == "sqlserver-overview"' >/dev/null ||
 	fail "Grafana has no sqlserver-overview dashboard"
 seen=$(svc_get grafana:3000 "/api/datasources/proxy/uid/prometheus/api/v1/query?query=heartbeat_collector_target_up" |
@@ -212,6 +233,9 @@ step "a failed target is isolated"
 wait_for 120 "unreachable target reported down" target_up unreachable 0
 target_up sqlserver-dev 1 || fail "healthy target stopped when another failed"
 pass "unreachable target down, sqlserver-dev still up"
+wait_for 60 "probe errors counted for the unreachable target" has_value \
+	'sum(heartbeat_collector_probe_errors_total{target="unreachable"}) > 0'
+pass "probe errors counted for the unreachable target"
 
 step "Prometheus alerts reach Alertmanager (Watchdog)"
 wait_for 120 "Watchdog in Alertmanager" watchdog_active

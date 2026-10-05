@@ -186,9 +186,9 @@ count.
 - [x] Normalize SQL Server outputs into Prometheus-friendly metrics
 - [x] Expose scrape endpoint
 - [x] Produce structured evidence for blocking/session probes
-- [ ] Export cumulative SQL Server values (waits, throughput counters) as counters that tolerate SQL Server restarts, renamed to Prometheus conventions (`_total` suffix, seconds rather than ms, e.g. `heartbeat_sqlserver_wait_seconds_total`); update rules, rule tests and dashboards to rates in the same change
+- [x] Export cumulative SQL Server values (waits, throughput counters) as counters that tolerate SQL Server restarts, renamed to Prometheus conventions (`_total` suffix, seconds rather than ms, e.g. `heartbeat_sqlserver_wait_seconds_total`); update rules, rule tests and dashboards to rates in the same change
 - [x] Keep DB collector metric output stateless and Prometheus-scraped instead of persisted in PostgreSQL
-- [ ] Add collector self-observability: per-probe duration histogram, and Go runtime and process metrics on the collector's registry
+- [x] Add collector self-observability: per-probe duration histogram, and Go runtime and process metrics on the collector's registry
 
 ### 2.5 Runtime config model
 - [x] Read desired runtime collector config from `config/integrations.yaml`
@@ -206,7 +206,7 @@ Replica ownership and outage testing are section 19. Design details:
 - [x] Isolate probe/target failures so one failed target cannot stop unrelated collection
 - [x] Retry transient collection failures with bounded exponential backoff and jitter; expose persistent failures without retry storms
 - [x] Expose per-target success, consecutive failures, last-success time, and freshness; expire stale/removed metric series
-- [ ] Add per-probe cumulative error counters
+- [x] Add per-probe cumulative error counters
 - [x] Make readiness reflect expected collector state and add deployment health probes and restart/recovery policies
 - [x] Validate safe reloads, including partial reconciliation failure (rollback) and replacement-poller startup failure (unit-tested)
 

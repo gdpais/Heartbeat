@@ -8,11 +8,11 @@ groups:
 
   - name: heartbeat-sqlserver-recording
     rules:
-      # wait_time_ms is SQL Server's cumulative wait counter exported as a
-      # gauge; rate() treats a drop (SQL Server restart) as a counter reset.
-      # Recorded as wait seconds per second.
+      # Wait seconds per second by wait type. The counter is SQL Server's
+      # cumulative wait time; rate() treats its drop when SQL Server restarts
+      # or wait statistics are cleared as a counter reset.
       - record: heartbeat:sqlserver_wait_seconds:rate5m
-        expr: sum by (environment, target, wait_type) (rate(heartbeat_sqlserver_wait_time_ms[5m])) / 1000
+        expr: sum by (environment, target, wait_type) (rate(heartbeat_sqlserver_wait_seconds_total[5m]))
       # The blocking probe exports nothing while nothing is blocked; record 0
       # for targets whose last cycle succeeded so absence means "unknown".
       - record: heartbeat:sqlserver_blocked_requests:sum

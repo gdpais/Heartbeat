@@ -376,6 +376,9 @@ func validate(cfg RuntimeConfig) error {
 			return err
 		}
 	}
+	if err := validateUniqueSQLServerTargets(cfg.Collectors); err != nil {
+		return err
+	}
 	notificationIDs := map[string]struct{}{}
 	for _, channel := range cfg.NotificationChannels {
 		if channel.ID == "" {
@@ -429,6 +432,36 @@ func validateTargets(collector CollectorRuntimeConfig) error {
 	for _, selected := range collector.TargetNames {
 		if _, exists := targets[selected]; !exists && len(targets) > 0 {
 			return fmt.Errorf("collector %s target_names references unknown target %q", collector.ID, selected)
+		}
+	}
+	return nil
+}
+
+// validateUniqueSQLServerTargets rejects a target, identified by environment
+// and name, that more than one enabled sqlserver collector scrapes.  Probe
+// series carry only environment and target labels, so two collectors would
+// write the same series: counters would jump between their readings, which
+// rate() reads as resets, and the database would be polled twice.
+func validateUniqueSQLServerTargets(collectors []CollectorRuntimeConfig) error {
+	type targetKey struct{ environment, name string }
+	owners := map[targetKey]string{}
+	for _, collector := range collectors {
+		if !collector.Enabled || collector.Kind != "sqlserver" {
+			continue
+		}
+		selected := map[string]bool{}
+		for _, name := range collector.TargetNames {
+			selected[name] = true
+		}
+		for _, target := range collector.Targets {
+			if len(selected) > 0 && !selected[target.Name] {
+				continue
+			}
+			key := targetKey{environment: target.EnvironmentSlug, name: target.Name}
+			if owner, exists := owners[key]; exists {
+				return fmt.Errorf("target %q in environment %q is scraped by collectors %s and %s; enable it in one collector only", target.Name, target.EnvironmentSlug, owner, collector.ID)
+			}
+			owners[key] = collector.ID
 		}
 	}
 	return nil
