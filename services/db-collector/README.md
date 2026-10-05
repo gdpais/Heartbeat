@@ -70,17 +70,26 @@ succeeds.
 - Targets run concurrently (up to 8 per collector); probes within a target run
   one at a time. Each cycle is bounded by the scrape interval, and each probe
   by `min(interval/2, 10s)` unless `timeout_ms` overrides it (capped at the
-  interval).
+  interval; at most 25000, a larger value is rejected when the config is
+  loaded).
 - Every probe also has a hard deadline: if it has not returned 2s after its
   timeout, the cycle deadline or a stop, the collector abandons it, reports a
   `timeout`, and moves on, so a query the SQL Server driver cannot cancel (it
   waits for the server to acknowledge the cancel, which a frozen or vanished
   server never does) never stalls the cycle, other targets, or shutdown. The
   abandoned call finishes in the background and its result is discarded;
-  until it returns, the target's probes are not started (`not_started`) and
-  the target counts as failed, so a dead target holds at most one connection.
-  The driver's 30s socket timeout (`connection timeout`) bounds that wait: a
-  dead connection fails and leaves the pool within about a minute.
+  until it returns, the target's probes in that collector are not started
+  (`not_started`) and the target counts as failed. The bound is one stuck call
+  per collector and target name, not per database: the same database reached
+  under another target name (another environment or collector), or a target
+  renamed by a reload, can hold one more stuck call each. Stuck calls keep
+  their connections, and the pool for one address, database and login holds
+  at most 2, so later probes of that database can wait for a connection until
+  their own timeout.
+  The driver's 30s socket timeout (`connection timeout`, the 25s maximum probe
+  timeout plus a 5s margin, so it never cuts a running probe short) bounds
+  that wait: a dead connection fails and leaves the pool within about a
+  minute. A probe that fails on that socket timeout counts as `timeout`.
 - A failing probe only affects its own target. The first failure retries on
   the next cycle; repeated failures back off exponentially (capped at 5m, with
   jitter). Every probe failure is logged as structured JSON with collector,

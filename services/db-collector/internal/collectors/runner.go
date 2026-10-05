@@ -24,7 +24,9 @@
 // driver that cannot cancel a query on a dead connection therefore never stalls
 // the cycle, the other targets, or a Poller stopping.  An abandoned call's late
 // result is discarded, and while it is still running no other probe of its
-// target starts, so a dead target holds at most one call and one connection.
+// target starts in that collector, so each collector holds at most one stuck
+// call, and one connection, per target name.  The bound is per collector and
+// target name, not per database: see [probeCalls].
 //
 // With [Runner.WithProbeMetrics], every probe execution is also timed and
 // every probe failure counted by reason (see [ProbeMetrics]).
@@ -618,8 +620,12 @@ func notStartedError(probe string, cause error) error {
 // probeCalls tracks the executor calls in flight, at most one per target of
 // a collector, including calls the Runner abandoned.  Probes of one target run
 // serially, so a second call for a target can only be requested while an
-// abandoned one is still running; start refuses it.  This bounds a dead target
-// to one stuck goroutine and connection however long the outage lasts.
+// abandoned one is still running; start refuses it.  This bounds each
+// collector and target name to one stuck goroutine and connection however
+// long the outage lasts.  It does not bound a database: the same database
+// reached under another target name or by another collector, or a target
+// renamed by a reload, can hold one more stuck call each, and stuck calls
+// occupy connections of the connector's shared pool, whose size is small.
 // probeCalls is safe for concurrent use.
 type probeCalls struct {
 	mu    sync.Mutex
