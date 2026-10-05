@@ -108,7 +108,10 @@ rather than a frozen value.
 default and named instances alike. There is no fixed good page life
 expectancy; compare a target with its own baseline. The hit ratio stays close
 to 1 on most servers even under memory pressure, so read it together with page
-life expectancy and file reads.
+life expectancy and file reads. Both are server-wide: on a server with several
+NUMA nodes, a page life expectancy drop on one node can hide in the
+`Buffer Manager` value. Per-node values (`Buffer Node` counters) are planned
+(TODO §11.2).
 
 **File I/O.** `file_io` exports six counters per database file, labelled like
 the `storage` probe's file size: read and write operations, bytes read and
@@ -120,7 +123,9 @@ where `> 0` leaves no value instead of dividing by zero for an idle file. The
 counters restart at 0 when SQL Server restarts or a database comes back online,
 which `rate()` treats as a reset. A stock instance has about 10 files (60
 series); budget 6 series per file, so a server with 100 databases and two files
-each exports about 1,200.
+each exports about 1,200. `storage` and `file_io` label a database whose name
+SQL Server does not return (the login lacks `VIEW ANY DATABASE`, or the
+database was dropped during the query) `database_id:<id>`.
 
 A target, identified by environment and name, may be enabled in only one
 sqlserver collector: configuration that lists it twice is rejected, because
@@ -134,7 +139,12 @@ that overrides a probe's `query_template` must return the same columns in the
 same units.
 
 A failed probe clears its series instead of exporting stale values, and a
-removed collector's series are deleted. A probe that returns no rows exports no
+removed collector's series are deleted. One failed probe also fails its whole
+target for that cycle (`heartbeat_collector_target_up` is 0), although the
+target's other probes still run and export; if it keeps failing, the target
+backs off and none of its probes run until the retry. For example, `storage`
+and `file_io` read `sys.master_files`, which a long `RESTORE` or schema change
+can lock until the probe times out. A probe that returns no rows exports no
 series: `heartbeat_sqlserver_blocked_requests` is absent, not 0, while nothing
 is blocked. Queries that need a zero fall back to targets whose last cycle
 succeeded (`heartbeat_collector_target_up == 1`), as the dashboard's Blocked

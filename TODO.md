@@ -557,6 +557,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [ ] storage pressure
 - [ ] throughput/latency
 - [ ] error events where available
+- [ ] page life expectancy per NUMA node (`Buffer Node` counters); the `buffer_cache` probe reports only the server-wide `Buffer Manager` value
 
 ### 11.3 Dashboards
 - [ ] SQL Server overview dashboard
