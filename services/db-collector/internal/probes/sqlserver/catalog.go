@@ -15,6 +15,12 @@
 //   - storage        – database file sizes from sys.master_files
 //   - throughput     – cumulative batch requests and transactions from
 //     sys.dm_os_performance_counters (counters)
+//   - cpu            – SQL Server and other-process CPU utilisation from the
+//     scheduler monitor ring buffer in sys.dm_os_ring_buffers (ratios)
+//   - buffer_cache   – page life expectancy and buffer cache hit ratio from
+//     sys.dm_os_performance_counters
+//   - file_io        – cumulative reads, writes, bytes and I/O stall time per
+//     database file from sys.dm_io_virtual_file_stats (counters)
 //
 // Metric names follow Prometheus conventions: base units (seconds, bytes),
 // and a _total suffix on counters, which only counters carry.
@@ -130,6 +136,30 @@ func sqlStringList(values []string) string {
 	return strings.Join(quoted, ", ")
 }
 
+// fileIOColumn is one counter of the file_io probe: metric name, help, value
+// column and unit scale.
+type fileIOColumn struct {
+	name, help, column string
+	scale              float64
+}
+
+// fileIOMetrics returns counter descriptors labelled like the storage probe,
+// one per column of the file_io result set.
+func fileIOMetrics(columns []fileIOColumn) []Metric {
+	metrics := make([]Metric, len(columns))
+	for i, c := range columns {
+		metrics[i] = Metric{
+			Name:         c.name,
+			Help:         c.help,
+			Type:         collectorexport.Counter,
+			ValueColumn:  c.column,
+			Scale:        c.scale,
+			LabelColumns: []string{"database_name", "file_name", "file_type"},
+		}
+	}
+	return metrics
+}
+
 // Catalog is an immutable, name-indexed collection of [Probe] definitions.
 type Catalog struct {
 	byName map[string]Probe
@@ -193,8 +223,12 @@ func DefaultCatalog() Catalog {
 			Category: "storage",
 			// One row per database file: file_name is the logical name, unique
 			// within a database, so every file gets its own series.  size is
-			// in 8 KB pages.
-			QueryTemplate: "SELECT DB_NAME(database_id) AS database_name, name AS file_name, type_desc AS file_type, size AS size_pages FROM sys.master_files",
+			// in 8 KB pages.  DB_NAME() is NULL for a database the login
+			// cannot see (no VIEW ANY DATABASE) or one dropped mid-query;
+			// the database_id fallback keeps the label set and keeps two such
+			// databases with the same logical file names (restored copies)
+			// apart.  file_io uses the same expression.
+			QueryTemplate: "SELECT COALESCE(DB_NAME(database_id), CONCAT(N'database_id:', database_id)) AS database_name, name AS file_name, type_desc AS file_type, size AS size_pages FROM sys.master_files",
 			Metrics: []Metric{{
 				Name:         "heartbeat_sqlserver_database_file_size_bytes",
 				Help:         "SQL Server database file size in bytes, one series per file.",
@@ -230,6 +264,111 @@ func DefaultCatalog() Catalog {
 					ValueColumn: "transactions",
 				},
 			},
+		},
+		{
+			Name:     "cpu",
+			Category: "cpu",
+			// The scheduler monitor writes one SystemHealth record a minute
+			// with the CPU split over the last minute, in percent; the ring
+			// buffer keeps the last 256 (about four hours).  Only the newest
+			// record is converted to XML: TOP (1) picks the raw row before
+			// the CROSS APPLY casts it.  Other processes are what is neither
+			// SQL Server nor idle, floored at 0 because the two values are
+			// sampled separately and can add up to more than 100.  SQL Server
+			// on Linux reports SystemIdle as 0 whatever the load, so other
+			// processes are NULL (no sample) there, as they are when either
+			// value is missing from the record.  The platform comes from
+			// @@VERSION ("... on Windows Server 2019 ..." or "... on Linux
+			// (Ubuntu ...)"), which needs no permission and, unlike
+			// sys.dm_os_host_info (SQL Server 2017+), exists on every
+			// version.  The XML value() method needs QUOTED_IDENTIFIER ON,
+			// which the driver's ODBC login options set.  Before the first
+			// record, about a minute after startup, the query returns no row
+			// and the probe exports nothing.  It also returns no row when the
+			// newest record is 3 minutes old or more (its timestamp and
+			// sys.dm_os_sys_info.ms_ticks count milliseconds since startup),
+			// so a ring buffer that stops being written cannot re-export an
+			// old value forever.
+			QueryTemplate: "SELECT v.sql_process_percent, " +
+				"CASE WHEN @@VERSION LIKE N'% on Windows%' " +
+				"AND v.system_idle_percent IS NOT NULL AND v.sql_process_percent IS NOT NULL THEN " +
+				"CASE WHEN 100 - v.system_idle_percent - v.sql_process_percent > 0 " +
+				"THEN 100 - v.system_idle_percent - v.sql_process_percent ELSE 0 END END AS other_process_percent " +
+				"FROM (SELECT TOP (1) timestamp, record FROM sys.dm_os_ring_buffers " +
+				"WHERE ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR' AND record LIKE N'%<SystemHealth>%' " +
+				"ORDER BY timestamp DESC) AS latest " +
+				"CROSS JOIN sys.dm_os_sys_info AS si " +
+				"CROSS APPLY (SELECT CONVERT(xml, latest.record) AS doc) AS r " +
+				"CROSS APPLY (SELECT " +
+				"r.doc.value('(/Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'int') AS sql_process_percent, " +
+				"r.doc.value('(/Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]', 'int') AS system_idle_percent) AS v " +
+				"WHERE si.ms_ticks - latest.timestamp < 180000",
+			Metrics: []Metric{
+				{
+					Name:        "heartbeat_sqlserver_cpu_sql_process_ratio",
+					Help:        "Share of the host's CPU used by the SQL Server process over the last scheduler monitor minute (0-1).",
+					ValueColumn: "sql_process_percent",
+					Scale:       0.01,
+				},
+				{
+					Name:        "heartbeat_sqlserver_cpu_other_process_ratio",
+					Help:        "Share of the host's CPU used by processes other than SQL Server over the last scheduler monitor minute (0-1). Windows only.",
+					ValueColumn: "other_process_percent",
+					Scale:       0.01,
+				},
+			},
+		},
+		{
+			Name:     "buffer_cache",
+			Category: "buffer_cache",
+			// Buffer Manager counters.  object_name is SQLServer:Buffer Manager
+			// on a default instance and MSSQL$NAME:Buffer Manager on a named
+			// one, padded with spaces (nchar), hence RTRIM and the suffix
+			// match; Buffer Node (per NUMA node) does not match.  The hit
+			// ratio is a raw fraction over its base counter, divided here;
+			// NULLIF turns a zero base into NULL, which exports no sample.
+			QueryTemplate: "SELECT " +
+				"MAX(CASE WHEN counter_name = N'Page life expectancy' THEN cntr_value END) AS page_life_expectancy_seconds, " +
+				"CAST(MAX(CASE WHEN counter_name = N'Buffer cache hit ratio' THEN cntr_value END) AS float) " +
+				"/ NULLIF(MAX(CASE WHEN counter_name = N'Buffer cache hit ratio base' THEN cntr_value END), 0) AS buffer_cache_hit_ratio " +
+				"FROM sys.dm_os_performance_counters " +
+				"WHERE RTRIM(object_name) LIKE N'%:Buffer Manager' " +
+				"AND counter_name IN (N'Page life expectancy', N'Buffer cache hit ratio', N'Buffer cache hit ratio base')",
+			Metrics: []Metric{
+				{
+					Name:        "heartbeat_sqlserver_page_life_expectancy_seconds",
+					Help:        "Seconds a page is expected to stay in the SQL Server buffer pool without references (Buffer Manager Page life expectancy).",
+					ValueColumn: "page_life_expectancy_seconds",
+				},
+				{
+					Name:        "heartbeat_sqlserver_buffer_cache_hit_ratio",
+					Help:        "Share of page requests served from the SQL Server buffer pool without a disk read (Buffer Manager Buffer cache hit ratio, 0-1).",
+					ValueColumn: "buffer_cache_hit_ratio",
+				},
+			},
+		},
+		{
+			Name:     "file_io",
+			Category: "file_io",
+			// One row per database file, with the storage probe's labels.
+			// The values accumulate from the moment the database came online
+			// (SQL Server start, or the database being brought online), so
+			// they are counters.  The join to sys.master_files names the file
+			// and drops the hidden resource database, which has no row there.
+			// database_name falls back to the id like the storage probe's.
+			QueryTemplate: "SELECT COALESCE(DB_NAME(vfs.database_id), CONCAT(N'database_id:', vfs.database_id)) AS database_name, mf.name AS file_name, mf.type_desc AS file_type, " +
+				"vfs.num_of_reads, vfs.num_of_writes, vfs.num_of_bytes_read, vfs.num_of_bytes_written, " +
+				"vfs.io_stall_read_ms, vfs.io_stall_write_ms " +
+				"FROM sys.dm_io_virtual_file_stats(NULL, NULL) AS vfs " +
+				"JOIN sys.master_files AS mf ON mf.database_id = vfs.database_id AND mf.file_id = vfs.file_id",
+			Metrics: fileIOMetrics([]fileIOColumn{
+				{"heartbeat_sqlserver_database_file_reads_total", "Cumulative read operations on a SQL Server database file.", "num_of_reads", 0},
+				{"heartbeat_sqlserver_database_file_writes_total", "Cumulative write operations on a SQL Server database file.", "num_of_writes", 0},
+				{"heartbeat_sqlserver_database_file_read_bytes_total", "Cumulative bytes read from a SQL Server database file.", "num_of_bytes_read", 0},
+				{"heartbeat_sqlserver_database_file_written_bytes_total", "Cumulative bytes written to a SQL Server database file.", "num_of_bytes_written", 0},
+				{"heartbeat_sqlserver_database_file_read_stall_seconds_total", "Cumulative seconds SQL Server waited for reads from a database file to complete.", "io_stall_read_ms", 0.001},
+				{"heartbeat_sqlserver_database_file_write_stall_seconds_total", "Cumulative seconds SQL Server waited for writes to a database file to complete.", "io_stall_write_ms", 0.001},
+			}),
 		},
 	}
 	catalog := Catalog{byName: map[string]Probe{}}

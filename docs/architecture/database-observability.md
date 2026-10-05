@@ -21,9 +21,10 @@ emits today. Metric names and labels are listed in the
 | Database size / file size | Collected | `storage` → `heartbeat_sqlserver_database_file_size_bytes` |
 | Throughput counters (batch requests, transactions) | Collected | `throughput` → `heartbeat_sqlserver_batch_requests_total`, `heartbeat_sqlserver_transactions_total` (counters) |
 | Instance availability | Partial | `heartbeat_collector_target_up` (collector reachability) |
-| CPU pressure | Planned (phase 1) | — |
-| Buffer/cache hit ratio | Planned (phase 1, with page life expectancy) | — |
-| Physical and logical reads/writes per second, I/O, IOPS | Planned (phase 1: file I/O) | — |
+| CPU utilisation | Collected (one-minute granularity; other processes on Windows only) | `cpu` → `heartbeat_sqlserver_cpu_sql_process_ratio`, `heartbeat_sqlserver_cpu_other_process_ratio` |
+| Buffer/cache hit ratio, page life expectancy | Collected | `buffer_cache` → `heartbeat_sqlserver_buffer_cache_hit_ratio`, `heartbeat_sqlserver_page_life_expectancy_seconds` |
+| Physical reads/writes, I/O, IOPS, I/O latency | Collected per database file | `file_io` → reads, writes, bytes and I/O stall seconds per file, e.g. `heartbeat_sqlserver_database_file_reads_total` (counters) |
+| Logical reads (page lookups) | Planned | — |
 | Query latency | Planned | — |
 | Rollbacks, user transactions | Planned | — |
 | Free space and growth trends | Planned | — |

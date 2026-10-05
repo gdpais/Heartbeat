@@ -18,12 +18,15 @@ sysadmin login.
 
 ### Collector login permissions
 
-The built-in probes are read-only and need:
+The built-in probes need SQL Server 2012 or later (the newest feature they use
+is `CONCAT`); CI runs them against SQL Server 2022 on Linux. They are read-only
+and need:
 
 | Permission | Needed for |
 | --- | --- |
-| `VIEW SERVER STATE` (or `VIEW SERVER PERFORMANCE STATE` on SQL Server 2022+) | `sys.dm_os_wait_stats`, `sys.dm_exec_requests`, `sys.dm_exec_sessions`, `sys.dm_os_performance_counters` |
-| `VIEW ANY DEFINITION` | `sys.master_files` for the `storage` probe. Without it, file sizes are silently missing. |
+| `VIEW SERVER STATE` | `sys.dm_os_wait_stats`, `sys.dm_exec_requests`, `sys.dm_exec_sessions`, `sys.dm_os_performance_counters`, `sys.dm_os_ring_buffers`, `sys.dm_os_sys_info`, `sys.dm_io_virtual_file_stats`. Every built-in probe was verified as a login holding only `VIEW SERVER STATE` and `VIEW ANY DEFINITION`. SQL Server 2022's narrower `VIEW SERVER PERFORMANCE STATE` has not been verified on its own, so grant `VIEW SERVER STATE`. |
+| `VIEW ANY DEFINITION` | `sys.master_files` for the `storage` and `file_io` probes. Without it, file sizes and file I/O are silently missing. |
+| `VIEW ANY DATABASE` (granted to `public` by default) | Database names (`DB_NAME()`) in the `storage` and `file_io` `database_name` label. If it was revoked, files of databases the login cannot see are labelled `database_id:<id>` instead. |
 | Access to the target's `database_name` | Used as the initial database |
 
 No write, `db_owner` or `sysadmin` rights are required. `make test-sqlserver`
@@ -93,6 +96,9 @@ collectors:
         - name: memory_pressure
         - name: storage
         - name: throughput
+        - name: cpu
+        - name: buffer_cache
+        - name: file_io
       targets:
         - name: finance-prod          # becomes the `target` label; unique per collector
           host: finance-sql.internal

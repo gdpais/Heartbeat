@@ -2,6 +2,7 @@ package sqlserver
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 
 func TestCatalogContainsRequiredProbes(t *testing.T) {
 	catalog := DefaultCatalog()
-	required := []string{"waits", "blocking", "sessions", "memory_pressure", "storage", "throughput"}
+	required := []string{"waits", "blocking", "sessions", "memory_pressure", "storage", "throughput", "cpu", "buffer_cache", "file_io"}
 	for _, name := range required {
 		probe, ok := catalog.Get(name)
 		if !ok {
@@ -86,6 +87,7 @@ func TestMetricConvertAppliesScale(t *testing.T) {
 		{"milliseconds to seconds", 0.001, 1500, 1.5},
 		{"KB to bytes", 1024, 2, 2048},
 		{"8 KB pages to bytes", 8192, 3, 24576},
+		{"percent to ratio", 0.01, 50, 0.5},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -119,5 +121,150 @@ func TestWaitsProbeExcludesBenignWaits(t *testing.T) {
 	}
 	if got := sqlStringList([]string{"A", "B'C"}); got != "N'A', N'B''C'" {
 		t.Errorf("sqlStringList = %s", got)
+	}
+}
+
+// The scheduler monitor ring buffer holds up to 256 records; converting each
+// to XML would cost far more than the one value read.  The query must pick
+// the newest raw record first and convert only that one: no ORDER BY sorts
+// on an XML value, the TOP (1) derived table converts nothing, and the only
+// XML conversion comes after that table closes.
+func TestCPUProbeConvertsOnlyTheLatestRecord(t *testing.T) {
+	probe, _ := DefaultCatalog().Get("cpu")
+	query := strings.ToLower(probe.QueryTemplate)
+	usesXML := func(s string) bool { return strings.Contains(s, "xml") || strings.Contains(s, ".value(") }
+
+	for rest := query; ; {
+		i := strings.Index(rest, "order by")
+		if i < 0 {
+			break
+		}
+		rest = rest[i+len("order by"):]
+		clause := rest
+		if end := strings.Index(clause, ")"); end >= 0 {
+			clause = clause[:end]
+		}
+		if usesXML(clause) {
+			t.Errorf("cpu query orders by an XML value (%q), which converts every record", clause)
+		}
+	}
+
+	open := strings.Index(query, "(select top (1)")
+	if open < 0 {
+		t.Fatalf("cpu query must pick the newest record in a (SELECT TOP (1) ...) derived table: %s", query)
+	}
+	end := closingParen(query, open)
+	if end < 0 {
+		t.Fatalf("unbalanced parentheses in cpu query: %s", query)
+	}
+	if derived := query[open : end+1]; usesXML(derived) {
+		t.Errorf("TOP (1) derived table must select the raw record, not XML: %s", derived)
+	}
+	if strings.Count(query, "convert(xml") != 1 || strings.Contains(query, "as xml") {
+		t.Errorf("cpu query must convert to XML exactly once, with CONVERT(xml: %s", query)
+	}
+	if convert := strings.Index(query, "convert(xml"); convert < end {
+		t.Errorf("CONVERT(xml must come after the TOP (1) derived table closes: %s", query)
+	}
+}
+
+// closingParen returns the index of the parenthesis that closes the one at
+// open, skipping string literals, or -1.
+func closingParen(s string, open int) int {
+	depth, quoted := 0, false
+	for i := open; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '\'':
+			quoted = !quoted
+		case quoted:
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// The scheduler monitor writes a record a minute.  If it stops, the newest
+// record must age out instead of being exported forever: the query keeps it
+// only while it is younger than 3 minutes on the server's millisecond clock.
+func TestCPUProbeSkipsStaleRecords(t *testing.T) {
+	probe, _ := DefaultCatalog().Get("cpu")
+	query := probe.QueryTemplate
+	for _, part := range []string{"CROSS JOIN sys.dm_os_sys_info AS si", "WHERE si.ms_ticks - latest.timestamp < 180000"} {
+		if !strings.Contains(query, part) {
+			t.Errorf("cpu query lacks the staleness guard %q: %s", part, query)
+		}
+	}
+}
+
+// Other-process CPU is 100 - idle - SQL Server, floored at 0.  A missing value
+// makes the difference NULL, which the floor's ELSE would turn into 0, so the
+// guards belong in the outer CASE: no sample instead of a false 0.
+func TestCPUProbeOtherProcessIsNullWithoutInputs(t *testing.T) {
+	probe, _ := DefaultCatalog().Get("cpu")
+	query := probe.QueryTemplate
+	start, end := strings.Index(query, "CASE WHEN"), strings.Index(query, " AS other_process_percent")
+	if start < 0 || end < start {
+		t.Fatalf("cpu query has no CASE ... AS other_process_percent: %s", query)
+	}
+	expr := query[start:end]
+	condition := expr[:strings.Index(expr, " THEN ")]
+	for _, guard := range []string{"v.system_idle_percent IS NOT NULL", "v.sql_process_percent IS NOT NULL"} {
+		if !strings.Contains(condition, guard) {
+			t.Errorf("other_process_percent outer CASE condition lacks %q: %s", guard, condition)
+		}
+	}
+	if !strings.Contains(expr, "ELSE 0 END END") {
+		t.Errorf("other_process_percent must floor at 0 inside the guarded CASE and be NULL otherwise: %s", expr)
+	}
+}
+
+// sys.dm_os_host_info needs SQL Server 2017 or later; on an older server the
+// whole cpu batch would fail to compile and fail its target every cycle.  The
+// platform comes from @@VERSION, which every version has.
+func TestCPUProbeDetectsWindowsWithoutHostInfo(t *testing.T) {
+	probe, _ := DefaultCatalog().Get("cpu")
+	query := probe.QueryTemplate
+	if strings.Contains(strings.ToLower(query), "dm_os_host_info") {
+		t.Errorf("cpu query uses sys.dm_os_host_info (SQL Server 2017+): %s", query)
+	}
+	if !strings.Contains(query, "@@VERSION LIKE N'% on Windows%'") {
+		t.Errorf("cpu query must detect Windows from @@VERSION: %s", query)
+	}
+}
+
+// File I/O and file size series of one file share their labels, so panels
+// and queries can join them.
+func TestFileIOProbeLabelsMatchStorage(t *testing.T) {
+	catalog := DefaultCatalog()
+	storage, _ := catalog.Get("storage")
+	fileIO, _ := catalog.Get("file_io")
+	want := storage.Metrics[0].LabelColumns
+	for _, metric := range fileIO.Metrics {
+		if !slices.Equal(metric.LabelColumns, want) {
+			t.Errorf("%s labels %v, want the storage probe's %v", metric.Name, metric.LabelColumns, want)
+		}
+	}
+}
+
+// DB_NAME() is NULL for a database the login cannot see or one dropped
+// mid-query.  Both file probes fall back to the database id, the same way,
+// so the label is never "<nil>" and two unnamed databases never collide.
+func TestFileProbesNameDatabasesTheSameWay(t *testing.T) {
+	catalog := DefaultCatalog()
+	pattern := regexp.MustCompile(`COALESCE\(DB_NAME\((\w+\.)?database_id\), CONCAT\(N'database_id:', (\w+\.)?database_id\)\) AS database_name`)
+	for _, name := range []string{"storage", "file_io"} {
+		probe, _ := catalog.Get(name)
+		if !pattern.MatchString(probe.QueryTemplate) {
+			t.Errorf("%s query must name databases with %s: %s", name, pattern, probe.QueryTemplate)
+		}
+		if strings.Contains(probe.QueryTemplate, "SELECT DB_NAME(") {
+			t.Errorf("%s query uses a bare DB_NAME(), which can be NULL: %s", name, probe.QueryTemplate)
+		}
 	}
 }

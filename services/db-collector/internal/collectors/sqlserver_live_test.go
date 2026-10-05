@@ -102,15 +102,33 @@ func TestCatalogProbesAgainstSQLServer(t *testing.T) {
 
 	// blocking returns rows only while a request is blocked.
 	mayBeEmpty := map[string]bool{"blocking": true}
+	// cpu returns no row until the scheduler monitor writes its first record,
+	// about a minute after SQL Server starts.
+	waitForRows := map[string]time.Duration{"cpu": 3 * time.Minute}
+	// SQL Server on Linux, which the test server runs, reports no system
+	// idle time, so the cpu probe leaves other-process CPU out there.
+	mayBeAbsent := map[string]bool{"heartbeat_sqlserver_cpu_other_process_ratio": true}
 	registry := prometheus.NewRegistry()
 	exporter := collectorexport.NewPrometheusExporter(registry)
 	for _, name := range executor.Catalog.Names() {
 		t.Run(name, func(t *testing.T) {
-			samples := runLiveProbe(t, executor, target, name, "")
+			run := func() ([]collectorexport.Sample, time.Duration) {
+				t.Helper()
+				started := time.Now()
+				samples := runLiveProbe(t, executor, target, name, "")
+				return samples, time.Since(started)
+			}
+			samples, _ := run()
+			for deadline := time.Now().Add(waitForRows[name]); len(samples) == 0 && time.Now().Before(deadline); {
+				time.Sleep(5 * time.Second)
+				samples, _ = run()
+			}
 			if len(samples) == 0 && !mayBeEmpty[name] {
 				t.Fatal("probe returned no samples")
 			}
-			t.Logf("%d samples", len(samples))
+			// A second run on the pooled connection measures the query alone.
+			_, elapsed := run()
+			t.Logf("%d samples, query round trip %s", len(samples), elapsed)
 			probe, _ := executor.Catalog.Get(name)
 			emitted := map[string]bool{}
 			seen := map[string]bool{}
@@ -133,7 +151,7 @@ func TestCatalogProbesAgainstSQLServer(t *testing.T) {
 			// Every descriptor yields a sample, so no column of a pivoted
 			// row is NULL on a stock server.
 			for _, metric := range probe.Metrics {
-				if !emitted[metric.Name] && !mayBeEmpty[name] {
+				if !emitted[metric.Name] && !mayBeEmpty[name] && !mayBeAbsent[metric.Name] {
 					t.Errorf("no %s sample", metric.Name)
 				}
 			}
