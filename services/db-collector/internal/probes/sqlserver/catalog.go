@@ -280,19 +280,25 @@ func DefaultCatalog() Catalog {
 			// version.  The XML value() method needs QUOTED_IDENTIFIER ON,
 			// which the driver's ODBC login options set.  Before the first
 			// record, about a minute after startup, the query returns no row
-			// and the probe exports nothing.
+			// and the probe exports nothing.  It also returns no row when the
+			// newest record is 3 minutes old or more (its timestamp and
+			// sys.dm_os_sys_info.ms_ticks count milliseconds since startup),
+			// so a ring buffer that stops being written cannot re-export an
+			// old value forever.
 			QueryTemplate: "SELECT v.sql_process_percent, " +
 				"CASE WHEN @@VERSION LIKE N'% on Windows%' " +
 				"AND v.system_idle_percent IS NOT NULL AND v.sql_process_percent IS NOT NULL THEN " +
 				"CASE WHEN 100 - v.system_idle_percent - v.sql_process_percent > 0 " +
 				"THEN 100 - v.system_idle_percent - v.sql_process_percent ELSE 0 END END AS other_process_percent " +
-				"FROM (SELECT TOP (1) record FROM sys.dm_os_ring_buffers " +
+				"FROM (SELECT TOP (1) timestamp, record FROM sys.dm_os_ring_buffers " +
 				"WHERE ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR' AND record LIKE N'%<SystemHealth>%' " +
 				"ORDER BY timestamp DESC) AS latest " +
+				"CROSS JOIN sys.dm_os_sys_info AS si " +
 				"CROSS APPLY (SELECT CONVERT(xml, latest.record) AS doc) AS r " +
 				"CROSS APPLY (SELECT " +
 				"r.doc.value('(/Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'int') AS sql_process_percent, " +
-				"r.doc.value('(/Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]', 'int') AS system_idle_percent) AS v",
+				"r.doc.value('(/Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]', 'int') AS system_idle_percent) AS v " +
+				"WHERE si.ms_ticks - latest.timestamp < 180000",
 			Metrics: []Metric{
 				{
 					Name:        "heartbeat_sqlserver_cpu_sql_process_ratio",

@@ -99,7 +99,9 @@ interval, and lag the real load by up to a minute; idle is `1 -` their sum.
 SQL Server on Linux reports no idle time (always 0, measured on 2019 and
 2022), so `heartbeat_sqlserver_cpu_other_process_ratio` is exported on Windows
 only (the probe reads the platform from `@@VERSION`). Nothing is exported in
-the first minute after SQL Server starts.
+the first minute after SQL Server starts, nor while the newest record is 3
+minutes old or more, so a scheduler monitor that stops writing shows as a gap
+rather than a frozen value.
 
 **Buffer cache.** Page life expectancy (seconds) and the buffer cache hit ratio
 (0–1) come from the server-wide `Buffer Manager` performance counters, on

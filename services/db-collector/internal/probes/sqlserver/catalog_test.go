@@ -189,6 +189,19 @@ func closingParen(s string, open int) int {
 	return -1
 }
 
+// The scheduler monitor writes a record a minute.  If it stops, the newest
+// record must age out instead of being exported forever: the query keeps it
+// only while it is younger than 3 minutes on the server's millisecond clock.
+func TestCPUProbeSkipsStaleRecords(t *testing.T) {
+	probe, _ := DefaultCatalog().Get("cpu")
+	query := probe.QueryTemplate
+	for _, part := range []string{"CROSS JOIN sys.dm_os_sys_info AS si", "WHERE si.ms_ticks - latest.timestamp < 180000"} {
+		if !strings.Contains(query, part) {
+			t.Errorf("cpu query lacks the staleness guard %q: %s", part, query)
+		}
+	}
+}
+
 // Other-process CPU is 100 - idle - SQL Server, floored at 0.  A missing value
 // makes the difference NULL, which the floor's ELSE would turn into 0, so the
 // guards belong in the outer CASE: no sample instead of a false 0.
