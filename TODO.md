@@ -69,6 +69,19 @@ Production delivery is section 18.
 - [ ] Install the Renovate GitHub App on the repository (config is in `renovate.json`)
 - [ ] Agree the local loop's time and resource budget (measured: about 2.0 GiB RAM for the full profile)
 
+### 0.5 Development workflow and releases
+
+Trunk-based development and tagged releases ([ADR 0006](docs/architecture/decisions/0006-trunk-based-development-and-tagged-releases.md));
+the rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+- [x] Decide the branching, versioning, release and changelog model; add `CONTRIBUTING.md` and `CHANGELOG.md`
+- [x] Retire the `db-collectors` phase branch, its ruleset and its CI push trigger
+- [x] Release workflows: release-please keeps a release pull request (`CHANGELOG.md`, `version.txt`, chart `version`/`appVersion`); a `vX.Y.Z` tag on `master` that passed CI publishes multi-arch images and the chart to GHCR and lists their digests in the GitHub release
+- [ ] Create the release GitHub App; set `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY` ([setup](CONTRIBUTING.md#releases))
+- [ ] At `1.0.0`, the first production release: remove `"prerelease": true` from `release-please-config.json`
+- [ ] Tag ruleset on `v*`: only the release app creates tags; no updates or deletions
+- [ ] First release, `v0.1.0`: tag the phase 1 merge commit `64ac1b6`, run the `release` workflow by hand for it, check the release notes list three digests, and make the GHCR packages public
+
 ---
 
 ## 1. Core system: PostgreSQL metadata and schema
@@ -718,7 +731,7 @@ It follows the Web UI so the first production deploy carries a usable product;
 pull it forward if a production SQL Server must be monitored sooner.
 
 - [ ] `heartbeat-deploy` config repository with Argo CD Applications and per-environment values
-- [ ] CI publishes multi-arch images and the chart to ECR through GitHub OIDC
+- [ ] The release workflow [0.5] also publishes the images and the chart to ECR through GitHub OIDC
 - [ ] EKS infrastructure as code; AWS Secrets Manager with External Secrets
 - [ ] Route the Watchdog to healthchecks.io and test loss of the monitoring path
 - [ ] Notification receivers: Discord, then Slack, Teams and WhatsApp; set up the WhatsApp Business Account and alert template

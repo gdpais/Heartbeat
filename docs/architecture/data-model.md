@@ -386,29 +386,7 @@ Added only when SQL Server or host topology work needs explicit inventory.
 Assets describe *where things run*; keep them minimal so they don't turn into a
 CMDB.
 
-```mermaid
-erDiagram
-  environments ||--o{ assets : contains
-  assets |o--o{ database_targets : hosts
-  assets ||--o{ asset_relationships : source
-  assets ||--o{ asset_relationships : target
-
-  assets {
-    uuid id PK
-    uuid environment_id FK
-    text name
-    text asset_type
-    text platform
-    text status
-    jsonb labels
-  }
-  asset_relationships {
-    uuid id PK
-    uuid source_asset_id FK
-    uuid target_asset_id FK
-    text relationship_type
-  }
-```
+![Deferred topology: environments contain assets, assets optionally host database targets, and asset_relationships link two assets](diagrams/data-model-deferred-topology.svg)
 
 Planned hooks when enabled: `database_targets.asset_id` (nullable, set null),
 `applications.primary_asset_id`, `application_components.asset_id`, unique

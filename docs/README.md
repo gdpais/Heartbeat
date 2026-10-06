@@ -31,6 +31,8 @@ which is not committed.
   before adding a SQL Server probe or approving a `query_template` override
 - [Architecture decisions](architecture/decisions/README.md): why things are the
   way they are
+- [Contributing](../CONTRIBUTING.md): branches, commits, checks, pull requests
+  and releases; [changelog](../CHANGELOG.md)
 - Service internals: [DB collector](../services/db-collector/README.md),
   [OTel gateway](../services/otel-gateway/README.md)
 - [TODO.md](../TODO.md): implementation task list

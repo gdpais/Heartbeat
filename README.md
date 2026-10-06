@@ -72,6 +72,12 @@ Key boundaries: PostgreSQL stores product metadata only
 collectors and integrations are configured in YAML/Kubernetes with hot reload
 ([ADR 0002](docs/architecture/decisions/0002-runtime-config-in-yaml.md)).
 
+## Contributing
+
+Work happens on short-lived `feature/*` branches merged into `master` by pull
+request; releases are `vX.Y.Z` tags. See [CONTRIBUTING.md](CONTRIBUTING.md)
+and the [changelog](CHANGELOG.md).
+
 ## Repository layout
 
 ```text
@@ -109,4 +115,6 @@ GitHub Actions (`.github/workflows/db-collector-ci.yml`) runs `make test`,
 `make test-integration` and `make test-sqlserver`;
 `make chart-check` with Helm 4 and Helm 3; and `make kind-e2e`, the acceptance
 checks on a fresh kind cluster. `.github/workflows/docs-pages.yml` publishes the
-HTML docs to GitHub Pages from `master`.
+HTML docs to GitHub Pages from `master`. `release-please.yml` and `release.yml`
+publish tagged releases to GitHub Container Registry
+([CONTRIBUTING.md](CONTRIBUTING.md#releases)).

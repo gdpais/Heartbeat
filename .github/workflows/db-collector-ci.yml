@@ -2,7 +2,7 @@ name: db-collector-ci
 
 on:
   push:
-    branches: [master, db-collectors]
+    branches: [master]
   pull_request:
 
 jobs:
@@ -21,7 +21,7 @@ jobs:
         run: make vet
       - name: Validate Prometheus rules
         run: make rules-check
-      - name: Build the HTML docs site (fails on broken links)
+      - name: Build the HTML docs site (fails on broken links, images or anchors)
         run: make docs-site
       - name: Run isolated PostgreSQL integration tests
         run: make test-integration

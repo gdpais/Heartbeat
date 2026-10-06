@@ -1,0 +1,36 @@
+name: release-please
+
+# Keeps a release pull request open with the next version and its CHANGELOG.md
+# entries, generated from Conventional Commits (ADR 0006). Merging it tags
+# master and creates the GitHub release; the tag starts release.yml.
+#
+# Runs with a GitHub App token, not GITHUB_TOKEN: pull requests and tags made
+# with GITHUB_TOKEN start no workflows, so CI would never run on the release
+# pull request and the tag would not start the release.
+# Requires the RELEASE_APP_CLIENT_ID variable and RELEASE_APP_PRIVATE_KEY secret
+# (CONTRIBUTING.md#releases); the job is skipped until the variable is set.
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    if: vars.RELEASE_APP_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      - uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
