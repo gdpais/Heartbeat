@@ -140,6 +140,9 @@ release, and the tag starts `.github/workflows/release.yml`, which:
    and pushes the chart to `oci://ghcr.io/gdpais/charts/heartbeat`;
 3. lists every artifact with its digest in the GitHub release.
 
+While the version is `0.y.z`, every release is marked *Pre-release* on GitHub:
+Heartbeat is a prototype until `1.0.0`.
+
 A published version is never rebuilt. If a run fails after the tag exists, run
 the `release` workflow by hand (Actions → release → Run workflow) with the tag;
 it skips what is already published.

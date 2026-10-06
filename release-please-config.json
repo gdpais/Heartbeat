@@ -7,6 +7,7 @@
       "package-name": "heartbeat",
       "include-component-in-tag": false,
       "bump-minor-pre-major": true,
+      "prerelease": true,
       "changelog-sections": [
         { "type": "feat", "section": "Added" },
         { "type": "fix", "section": "Fixed" },

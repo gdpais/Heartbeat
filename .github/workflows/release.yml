@@ -177,7 +177,10 @@ jobs:
             echo "| Helm chart | \`$CHART_REPO/heartbeat\` version \`$VERSION\` (\`$digest\`) |"
           } >artifacts.md
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --title "$TAG" --notes ""
+            # 0.y.z releases are pre-releases (ADR 0006), as release-please makes them.
+            prerelease=""
+            case $VERSION in 0.*) prerelease="--prerelease" ;; esac
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes "" $prerelease
           fi
           gh release view "$TAG" --json body --jq .body | awk -v m="$marker" '$0 == m {exit} {print}' >notes.md
           cat artifacts.md >>notes.md

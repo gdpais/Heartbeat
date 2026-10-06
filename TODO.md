@@ -78,6 +78,7 @@ the rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Retire the `db-collectors` phase branch, its ruleset and its CI push trigger
 - [x] Release workflows: release-please keeps a release pull request (`CHANGELOG.md`, `version.txt`, chart `version`/`appVersion`); a `vX.Y.Z` tag on `master` that passed CI publishes multi-arch images and the chart to GHCR and lists their digests in the GitHub release
 - [ ] Create the release GitHub App; set `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY` ([setup](CONTRIBUTING.md#releases))
+- [ ] At `1.0.0`, the first production release: remove `"prerelease": true` from `release-please-config.json`
 - [ ] Tag ruleset on `v*`: only the release app creates tags; no updates or deletions
 - [ ] First release, `v0.1.0`: tag the phase 1 merge commit `64ac1b6`, run the `release` workflow by hand for it, check the release notes list three digests, and make the GHCR packages public
 
