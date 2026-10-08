@@ -109,10 +109,10 @@ Server reports. Query them with `rate()` or `increase()`, never raw. A SQL
 Server restart, a failover, or `DBCC SQLPERF('sys.dm_os_wait_stats', CLEAR)`
 lowers the value; `rate()` and `increase()` treat that drop as a counter reset,
 so rates stay correct (the increase between the last scrape before the reset
-and the reset itself is lost). A failed probe or collector restart leaves a gap
-but no reset: the counter resumes at SQL Server's value. A wait type appears
-when its wait time first becomes non-zero, so its first increase after SQL
-Server starts is not counted.
+and the reset itself is lost). A failed probe, a target backing off or a
+collector restart leaves a gap but no reset: the counter resumes at SQL
+Server's value. A wait type appears when its wait time first becomes non-zero,
+so its first increase after SQL Server starts is not counted.
 
 The `waits` probe leaves out benign idle waits (system tasks sleeping, queues
 waiting for work, timers such as `SLEEP_TASK`, `LAZYWRITER_SLEEP` or
@@ -172,8 +172,11 @@ A failed probe clears its series instead of exporting stale values, and a
 removed collector's series are deleted. One failed probe also fails its whole
 target for that cycle (`heartbeat_collector_target_up` is 0), although the
 target's other probes still run and export; if it keeps failing, the target
-backs off and none of its probes run until the retry. For example, `storage`
-and `file_io` read `sys.master_files`, which a long `RESTORE` or schema change
+backs off and none of its probes run until the retry. While it backs off
+(up to 5m) all its probe series are cleared, so the probes that still work
+leave a gap instead of a frozen value; only the
+`heartbeat_collector_target_*` series stay. For example, `storage` and
+`file_io` read `sys.master_files`, which a long `RESTORE` or schema change
 can lock until the probe times out. A probe that returns no rows exports no
 series: `heartbeat_sqlserver_blocked_requests` is absent, not 0, while nothing
 is blocked. Queries that need a zero fall back to targets whose last cycle

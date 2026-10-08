@@ -2,6 +2,8 @@ package collectors
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +69,90 @@ func TestRunnerExecutesConfiguredCollector(t *testing.T) {
 	}
 	if len(sink.evidence) != 1 {
 		t.Fatalf("expected 1 evidence item, got %d", len(sink.evidence))
+	}
+}
+
+// backoffScenario drives one target with a healthy "throughput" probe and a
+// "blocking" probe that fails until healthy is set, through cycles on a fake
+// clock with a 10s interval and no jitter: failed at 0s and 10s (backoff until
+// 20s), skipped at 15s.
+type backoffScenario struct {
+	t        *testing.T
+	exporter *collectorexport.InMemoryExporter
+	runner   Runner
+	tracker  *targetTracker
+	clock    *fakeClock
+	t0       time.Time
+	healthy  bool
+}
+
+var errDivideByZero = errors.New("mssql: Divide by zero error encountered")
+
+func newBackoffScenario(t *testing.T) *backoffScenario {
+	s := &backoffScenario{
+		t:        t,
+		exporter: collectorexport.NewInMemoryExporter(),
+		clock:    &fakeClock{},
+		tracker:  newTargetTracker(),
+		t0:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	executor := funcExecutor(func(_ context.Context, item collectormetadata.ScheduledProbe) ([]collectorexport.Sample, []collectormetadata.Evidence, error) {
+		if item.Definition.Name == "blocking" && !s.healthy {
+			return nil, nil, errDivideByZero
+		}
+		return sampleFor(item), nil, nil
+	})
+	s.runner = NewRunner(executor, s.exporter, nil).WithLogger(slog.New(slog.DiscardHandler))
+	s.tracker.now = s.clock.Now
+	s.tracker.jitter = func() float64 { return 0 }
+	return s
+}
+
+// cycle runs one cycle at offset from t0 and returns the target's result
+// after checking its state.
+func (s *backoffScenario) cycle(offset time.Duration, want TargetState) TargetResult {
+	s.t.Helper()
+	s.clock.Set(s.t0.Add(offset))
+	collector := testCollector(10*time.Second, testTarget("core-db", "throughput", "blocking"))
+	result := s.runner.runCycle(context.Background(), collector, s.tracker)
+	if len(result.Targets) != 1 || result.Targets[0].State != want {
+		s.t.Fatalf("at %s: expected one %s target, got %+v", offset, want, result.Targets)
+	}
+	return result.Targets[0]
+}
+
+// healthyProbeExported reports whether the healthy probe's series is exported.
+func (s *backoffScenario) healthyProbeExported() bool {
+	_, ok := s.exporter.Value(testMetric, sampleLabels("core-db", "throughput"))
+	return ok
+}
+
+// A target backing off runs no probes, so it must not keep exporting the last
+// values of the probes that succeeded in its failed cycle: they would stay
+// frozen for up to the backoff cap.  Its health series stay.
+func TestBackoffClearsSeriesOfHealthyProbes(t *testing.T) {
+	s := newBackoffScenario(t)
+	s.cycle(0, TargetFailed)
+	s.cycle(10*time.Second, TargetFailed)
+	if !s.healthyProbeExported() {
+		t.Fatalf("expected the healthy probe's fresh sample in a failed cycle")
+	}
+
+	s.cycle(15*time.Second, TargetBackoff)
+	if s.healthyProbeExported() {
+		t.Fatalf("healthy probe's sample stayed exported during backoff")
+	}
+	if up, ok := s.exporter.Value(MetricTargetUp, healthLabels("core-db")); !ok || up != 0 {
+		t.Fatalf("expected target_up=0 during backoff, got %v (present %v)", up, ok)
+	}
+	if failures, ok := s.exporter.Value(MetricTargetConsecutiveFailures, healthLabels("core-db")); !ok || failures != 2 {
+		t.Fatalf("expected consecutive_failures=2 during backoff, got %v (present %v)", failures, ok)
+	}
+
+	s.healthy = true
+	s.cycle(20*time.Second, TargetOK)
+	if !s.healthyProbeExported() {
+		t.Fatalf("expected the healthy probe's sample back after recovery")
 	}
 }
 
