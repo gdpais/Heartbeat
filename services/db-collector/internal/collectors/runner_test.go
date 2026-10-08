@@ -156,6 +156,31 @@ func TestBackoffClearsSeriesOfHealthyProbes(t *testing.T) {
 	}
 }
 
+// Every backoff cycle reports the error that caused the backoff, so
+// /admin/config shows why a target is not collected for the whole failure
+// episode, not only in its failed cycles.
+func TestBackoffReportsLastFailureError(t *testing.T) {
+	s := newBackoffScenario(t)
+	s.cycle(0, TargetFailed)
+	failed := s.cycle(10*time.Second, TargetFailed)
+	if !errors.Is(failed.Err, errDivideByZero) {
+		t.Fatalf("expected the probe error on the failed cycle, got %v", failed.Err)
+	}
+
+	skipped := s.cycle(15*time.Second, TargetBackoff)
+	if skipped.Err == nil || skipped.Err.Error() != failed.Err.Error() {
+		t.Fatalf("expected the last failure error during backoff, got %v, want %v", skipped.Err, failed.Err)
+	}
+
+	s.healthy = true
+	if recovered := s.cycle(20*time.Second, TargetOK); recovered.Err != nil {
+		t.Fatalf("expected no error after recovery, got %v", recovered.Err)
+	}
+	if state := s.tracker.get("core-db"); state.lastErr != nil {
+		t.Fatalf("expected recovery to forget the last error, got %v", state.lastErr)
+	}
+}
+
 func TestDecodeRowsUsesExplicitMetricDescriptors(t *testing.T) {
 	item := collectormetadata.ScheduledProbe{
 		Target: collectormetadata.DatabaseTarget{Name: "core-db", EnvironmentSlug: "prod"},

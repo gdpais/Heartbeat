@@ -44,7 +44,7 @@ Reload can also be triggered with `SIGHUP` or file polling.
 | `version`, `loaded_at`, `last_reload_at` | Active config version (SHA-256 of the file) and timestamps |
 | `last_reload_err`, `runtime_diverged`, `rollback_err` | Why the last reload was rejected or failed; set until the next successful reload |
 | `warnings` | Insecure startup settings, e.g. `sqlserver_trust_server_certificate` |
-| `readiness` | What `/readyz` decided and why: `status`, `reasons`, and per collector its phase, cycle age, restarts and targets. Each target has its state, consecutive failures, last success and the raw driver `error`, which can name the host, port and login but never contains the password |
+| `readiness` | What `/readyz` decided and why: `status`, `reasons`, and per collector its phase, cycle age, restarts and targets. Each target has its state, consecutive failures, last success and the raw driver `error` of its last failed cycle, kept while it backs off, which can name the host, port and login but never contains the password |
 | `config` | The active config, redacted ([configuration reference](configuration.md#validation-and-reload-behavior)) |
 
 ```bash

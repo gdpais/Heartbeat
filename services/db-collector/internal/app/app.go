@@ -592,9 +592,10 @@ type targetReport struct {
 	ConsecutiveFailures int        `json:"consecutive_failures"`
 	LastSuccess         *time.Time `json:"last_success"`
 	NextAttempt         *time.Time `json:"next_attempt,omitempty"`
-	// Error is the last cycle's raw probe or driver error. It can name the
-	// host, port and login but never the password: hosts are validated at
-	// config load so the connection URL always parses. Admin endpoints only.
+	// Error is the raw probe or driver error of the target's last failed
+	// cycle, also set while it backs off. It can name the host, port and
+	// login but never the password: hosts are validated at config load so
+	// the connection URL always parses. Admin endpoints only.
 	Error string `json:"error,omitempty"`
 }
 

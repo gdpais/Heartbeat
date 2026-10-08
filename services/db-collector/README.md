@@ -116,7 +116,8 @@ succeeds.
   when the runtime diverged after a failed rollback. A monitored database
   being down does not make the pod unready; it shows as a failed target in
   metrics and in the authenticated `GET /admin/config`, which also carries the
-  raw driver error. The `/readyz` body is only the status.
+  raw driver error of the target's last failed cycle, kept while it backs off.
+  The `/readyz` body is only the status.
 - The admin endpoints (`GET /admin/config`, `POST /admin/config/reload`) need
   `HEARTBEAT_ADMIN_TOKEN` as a bearer token, compared in constant time, and are
   disabled without it. Startup warns when certificate verification is off
