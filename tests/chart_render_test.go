@@ -40,6 +40,9 @@ type chartProfile struct {
 	// admit to port 8082, in peerString form; none means it denies all
 	// ingress. Checked whenever the profile renders the policy.
 	collectorPeers []string
+	// stateEmptyDir means the collector's state is an emptyDir instead of the
+	// db-collector-state claim (dbCollector.persistence.enabled=false).
+	stateEmptyDir bool
 	// wantError, when set, is part of the error helm must fail with; nothing
 	// else is checked.
 	wantError string
@@ -123,6 +126,18 @@ var chartProfiles = []chartProfile{
 		set:     []string{"dbCollector.networkPolicy.enabled=false"},
 		present: []string{"StatefulSet/db-collector"},
 		absent:  []string{"NetworkPolicy/db-collector"},
+	},
+	{
+		name:           "collector-state-without-volume",
+		set:            []string{"dbCollector.persistence.enabled=false"},
+		present:        []string{"StatefulSet/db-collector"},
+		collectorPeers: []string{bundledPrometheusPeer},
+		stateEmptyDir:  true,
+	},
+	{
+		name:      "collector-state-without-size",
+		set:       []string{"dbCollector.persistence.size="},
+		wantError: "values don't meet the specifications of the schema",
 	},
 }
 
@@ -256,6 +271,7 @@ func TestChartProfiles(t *testing.T) {
 			checkCollectorSingleton(t, objects)
 			checkInClusterEndpoints(t, objects)
 			checkCollectorNetworkPolicy(t, objects, profile.collectorPeers)
+			checkCollectorState(t, objects, profile.stateEmptyDir)
 		})
 	}
 }
@@ -551,5 +567,101 @@ func checkCollectorSourceAddresses(t *testing.T, objects map[string]object, peer
 	}
 	if (spec.Type == "NodePort" || spec.Type == "LoadBalancer") && spec.ExternalTrafficPolicy != "Local" {
 		t.Errorf("Service/db-collector is %s with externalTrafficPolicy %q; the NetworkPolicy ipBlock needs Local to see client addresses", spec.Type, spec.ExternalTrafficPolicy)
+	}
+}
+
+// The collector keeps its outsystems_logs watermarks in a state volume at
+// HEARTBEAT_STATE_DIR, the only writable path of its read-only root
+// filesystem: the db-collector-state claim, not a volumeClaimTemplate, which
+// could never change on an existing StatefulSet.
+func checkCollectorState(t *testing.T, objects map[string]object, emptyDir bool) {
+	t.Helper()
+	sts, ok := objects["StatefulSet/db-collector"]
+	if !ok {
+		return
+	}
+	type volume struct {
+		Name                  string    `yaml:"name"`
+		EmptyDir              *struct{} `yaml:"emptyDir"`
+		PersistentVolumeClaim *struct {
+			ClaimName string `yaml:"claimName"`
+		} `yaml:"persistentVolumeClaim"`
+	}
+	var spec struct {
+		Template struct {
+			Spec struct {
+				SecurityContext struct {
+					FSGroup int `yaml:"fsGroup"`
+				} `yaml:"securityContext"`
+				Containers []struct {
+					Env []struct {
+						Name  string `yaml:"name"`
+						Value string `yaml:"value"`
+					} `yaml:"env"`
+					VolumeMounts []struct {
+						Name      string `yaml:"name"`
+						MountPath string `yaml:"mountPath"`
+						ReadOnly  bool   `yaml:"readOnly"`
+					} `yaml:"volumeMounts"`
+					SecurityContext struct {
+						ReadOnlyRootFilesystem bool `yaml:"readOnlyRootFilesystem"`
+					} `yaml:"securityContext"`
+				} `yaml:"containers"`
+				Volumes []volume `yaml:"volumes"`
+			} `yaml:"spec"`
+		} `yaml:"template"`
+		VolumeClaimTemplates []any `yaml:"volumeClaimTemplates"`
+	}
+	if err := sts.Spec.Decode(&spec); err != nil {
+		t.Fatal(err)
+	}
+	pod := spec.Template.Spec
+	container := pod.Containers[0]
+	if !container.SecurityContext.ReadOnlyRootFilesystem {
+		t.Error("db-collector root filesystem is writable")
+	}
+	if pod.SecurityContext.FSGroup == 0 {
+		t.Error("db-collector pod has no fsGroup; the nonroot user cannot write the state volume")
+	}
+	var stateDir string
+	for _, env := range container.Env {
+		if env.Name == "HEARTBEAT_STATE_DIR" {
+			stateDir = env.Value
+		}
+	}
+	mounted := false
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == "state" && mount.MountPath == stateDir && stateDir != "" && !mount.ReadOnly {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Errorf("db-collector does not mount a writable state volume at HEARTBEAT_STATE_DIR (%q)", stateDir)
+	}
+	if len(spec.VolumeClaimTemplates) > 0 {
+		t.Error("db-collector has volumeClaimTemplates; they can never change on an existing StatefulSet")
+	}
+	hasEmptyDir := slices.ContainsFunc(pod.Volumes, func(v volume) bool { return v.Name == "state" && v.EmptyDir != nil })
+	usesClaim := slices.ContainsFunc(pod.Volumes, func(v volume) bool {
+		return v.Name == "state" && v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == "db-collector-state"
+	})
+	pvc, hasClaim := objects["PersistentVolumeClaim/db-collector-state"]
+	switch {
+	case emptyDir && (!hasEmptyDir || usesClaim || hasClaim):
+		t.Errorf("state: emptyDir %v, claim %v, mounted %v; want an emptyDir only", hasEmptyDir, hasClaim, usesClaim)
+	case !emptyDir && (hasEmptyDir || !usesClaim || !hasClaim):
+		t.Errorf("state: emptyDir %v, claim %v, mounted %v; want the db-collector-state claim only", hasEmptyDir, hasClaim, usesClaim)
+	case !emptyDir:
+		var claim struct {
+			Resources struct {
+				Requests map[string]string `yaml:"requests"`
+			} `yaml:"resources"`
+		}
+		if err := pvc.Spec.Decode(&claim); err != nil {
+			t.Fatal(err)
+		}
+		if size := claim.Resources.Requests["storage"]; size != "256Mi" {
+			t.Errorf("state claim requests %s, want 256Mi", size)
+		}
 	}
 }

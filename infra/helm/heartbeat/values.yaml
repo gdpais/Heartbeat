@@ -39,6 +39,17 @@ dbCollector:
   sqlserver:
     # Trusts any server certificate. Only for throwaway local targets.
     trustServerCertificate: false
+  # State that must survive a restart, mounted at /var/lib/heartbeat
+  # (HEARTBEAT_STATE_DIR): the outsystems_logs watermarks, a few hundred bytes
+  # per collector, target and log type. Without it, or with enabled: false
+  # (an emptyDir), a restarted collector starts each log type over from its
+  # initial_lookback. The claim is db-collector-state; the size can grow
+  # later if the StorageClass allows volume expansion.
+  persistence:
+    enabled: true
+    size: 256Mi
+    # Empty uses the cluster's default StorageClass.
+    storageClassName: ""
   # Covers the bounded shutdown: HTTP drain 10s + poller stop 20s + 5s.
   terminationGracePeriodSeconds: 45
   service:
@@ -107,11 +118,14 @@ otelGateway:
   affinity: {}
 
 # Pod and container hardening shared by both Heartbeat workloads. The images
-# are distroless and run as the nonroot user.
+# are distroless and run as the nonroot user. fsGroup makes the collector's
+# state volume writable by that user.
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532
   runAsGroup: 65532
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
   seccompProfile:
     type: RuntimeDefault
 containerSecurityContext:
