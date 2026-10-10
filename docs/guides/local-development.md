@@ -105,8 +105,9 @@ certificate.
 | `make chart-check` | `helm lint`, then renders every values profile and checks it (below) | Helm, `make chart-deps` |
 | `make kind-e2e` | Acceptance checks on a temporary kind cluster (below) | Docker, kind, kubectl, Helm, jq |
 
-CI (`.github/workflows/db-collector-ci.yml`) runs all of them, and repeats
-`chart-check` with Helm 3.
+CI (`.github/workflows/ci.yml`) runs all of them, and repeats `chart-check`
+with Helm 3; on a pull request the slower ones run only when the change can
+affect them ([CONTRIBUTING.md](../../CONTRIBUTING.md#ci)).
 
 `make chart-check` renders the chart for each profile (defaults, kind,
 minimal, SQL Server sandbox, production example) and fails if rendering is not
