@@ -507,7 +507,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 
 ### 9.1 Prometheus
 - [x] Provision scrape config for services and collectors
-- [x] Add OutSystems recording rules
+- [ ] Add OutSystems recording rules (the first one grouped the gateway counter by labels it does not have and was removed)
 - [x] Add SQL Server recording rules
 - [x] Add alert rule output path (`rules/generated/`, loaded by Prometheus; nothing renders into it yet)
 - [x] Add an `alerting` block so Prometheus sends alerts to Alertmanager (plus an always-firing Watchdog routed to a dead-man's switch)
