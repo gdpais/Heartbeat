@@ -143,7 +143,9 @@ dev cluster without touching it, and removes only what it created. It checks
 the ADR 0003 acceptance criteria: every workload ready; the running collector
 is the image just built; the SQL target's metrics are fresh in Prometheus and
 visible through Grafana, collected by a login that is not `sysadmin`; a failed
-target is isolated; the Watchdog alert reaches Alertmanager; a valid ConfigMap
+target is isolated; the Watchdog alert reaches Alertmanager; an
+`outsystems_logs` collector, added by a hot reload, extracts a fixture
+`oslog_Error` table to Loki and counts the rows in Prometheus; a valid ConfigMap
 change hot-reloads without a restart; an invalid one is rejected while
 collection continues; a SQL Server outage shows as a failed target without
 restarting the collector; a collector update never runs two
