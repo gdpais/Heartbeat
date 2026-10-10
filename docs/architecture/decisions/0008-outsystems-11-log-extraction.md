@@ -35,7 +35,7 @@ readiness and self-metrics.
 | Choosing log types | `probes:` in the collector's YAML lists the log types to extract, as for the `sqlserver` kind. A `query_template` override per environment is allowed under the same contract and review | Same configuration model and hot reload as the SQL Server probes (ADR 0002). |
 | Query contract | Parameters `@from` (exclusive), `@to` (inclusive) and `@limit`; at most `@limit` rows ordered by an `Instant` column. Every other column becomes a log attribute **under its OutSystems name**; `Message` becomes the log body; an optional `Severity` column sets the severity. Details in the [queries README](../../../services/db-collector/internal/probes/outsystems/queries/README.md) | Default OutSystems field names stay queryable, so existing SRE queries and habits carry over. The query author, who knows the tables, controls joins, filters and severity. |
 | Incremental reads | A watermark per target and log type: read `Instant` in (`watermark`, `now − lag`], advance only after the batch is delivered. When a batch is full, rows sharing its last `Instant` are left for the next cycle. The watermark is stored in a file on the collector's volume; without one, start at `now − initial_lookback` | No gaps from rows the log service commits late (`lag`), none at batch boundaries, and a restart resumes where it stopped. |
-| Delivery | OTLP/HTTP logs to the OTel Collector (`opentelemetry.endpoint`), then Loki. At least once: a failed export is retried from the same watermark; Loki drops exact duplicates | Keeps Loki behind the Collector like every other log source; the Collector stays the place for routing and processing. |
+| Delivery | OTLP/HTTP logs to the OTel Collector (`opentelemetry.endpoint`), then Loki. At least once: a failed export is retried from the same watermark, so a retried batch can appear twice in Loki | Keeps Loki behind the Collector like every other log source; the Collector stays the place for routing and processing. |
 | Loki labels | Resource attributes `service.name` (the application), `deployment.environment.name` and `outsystems.log_type`. User, session and request IDs, client IP, module, screen and the rest stay structured metadata | Few streams per application; high-cardinality fields stay filterable without becoming labels. |
 | Derived metrics | Computed by the extractor from the rows it reads and exposed on the collector's `/metrics`, scraped by Prometheus. The catalog is in [application observability](../application-observability.md#derived-metrics) | Exact counts and durations from every row, testable with fixtures, and the same Prometheus-scraped model as the SQL Server metrics. |
 | Traces | None in this decision. Synthesizing request traces from `Request_Key` is designed in [application observability](../application-observability.md#request-traces) and needs its own decision (storage) | First prove the identifiers are reliable in real logs. |
@@ -73,4 +73,9 @@ Considered and not chosen:
   the OTel Collector; the attribute names they use are mapped there, not in
   the extractor.
 - `Instant` is stored in the logging database server's local time on some
-  installations; the time zone is a per-collector setting (default UTC).
+  installations; the time zone is a per-collector setting (default UTC). In
+  a zone with daylight saving time, rows logged in the hour that repeats when
+  clocks go back can be missed; UTC avoids it.
+- Rows the platform's log service commits later than `lag` after their
+  `Instant` are missed. The OutSystems log delay metric shows how close the
+  log service gets to `lag`, and an alert on it comes with the derived metrics.
