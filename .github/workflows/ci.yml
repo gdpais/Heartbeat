@@ -1,0 +1,183 @@
+name: ci
+
+# Runs on every pull request and every push to master (ADR 0007). The cheap
+# checks always run; the slower jobs run only when the change can affect them
+# (scripts/ci-changes.sh). Pushes to master and manual runs (Actions → ci →
+# Run workflow) run everything.
+#
+# ci-ok is the only check master requires. It fails unless every job did what
+# the change detection asked for (scripts/ci-gate.sh), so a job skipped by
+# mistake cannot pass as green.
+#
+# Do not add `paths:` filters to these triggers: a required check whose
+# workflow never starts is never reported, and the pull request waits forever.
+# To add a job: give it `needs: changes` and an `if:` on a flag (add the flag
+# to scripts/ci-changes.sh and its test), and add it to ci-ok's needs and
+# arguments.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its older run. Runs on master are never
+# cancelled: a release checks the run of its tagged commit.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      db_collector: ${{ steps.detect.outputs.db_collector }}
+      chart: ${{ steps.detect.outputs.chart }}
+      kind_e2e: ${{ steps.detect.outputs.kind_e2e }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # A pull request runs on its merge commit; its first parent is the
+          # target branch, so HEAD^1..HEAD is exactly what the pull request
+          # changes.
+          fetch-depth: 2
+      - id: detect
+        name: Decide which jobs this change needs
+        env:
+          CI_RUN_ALL: ${{ github.event_name != 'pull_request' }}
+        run: |
+          : >changed.txt
+          if [ "$CI_RUN_ALL" != true ]; then
+            if [ "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3 ]; then
+              # --no-renames lists both sides of a move, so moving a file out
+              # of a component still counts as changing that component.
+              git diff --name-only --no-renames HEAD^1 HEAD >changed.txt
+            else
+              echo "HEAD is not a merge commit; running every job"
+              CI_RUN_ALL=true
+            fi
+          fi
+          scripts/ci-changes.sh <changed.txt | tee -a "$GITHUB_OUTPUT" >flags.txt
+          {
+            echo "## Change detection"
+            echo
+            if [ "$CI_RUN_ALL" = true ]; then
+              echo "Every job runs (${{ github.event_name }})."
+            else
+              echo "$(wc -l <changed.txt | tr -d ' ') changed paths:"
+              echo
+              echo '```'
+              cat changed.txt
+              echo '```'
+            fi
+            echo
+            echo '```'
+            cat flags.txt
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+          cat flags.txt
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Run Go tests
+        run: make test
+      - name: Run race checks
+        run: make test-race
+      - name: Run Go static checks
+        run: make vet
+      - name: Validate Prometheus rules
+        run: make rules-check
+      - name: Build the HTML docs site (fails on broken links, images or anchors)
+        run: make docs-site
+      - name: Run isolated PostgreSQL integration tests
+        run: make test-integration
+
+  sqlserver:
+    name: SQL Server probes
+    needs: changes
+    if: needs.changes.outputs.db_collector == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Run every SQL Server probe against a disposable SQL Server
+        run: make test-sqlserver
+
+  chart:
+    name: Helm chart
+    needs: changes
+    if: needs.changes.outputs.chart == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install pinned kind, kubectl, Helm 4 and Helm 3
+        run: |
+          make install-tools
+          echo "$PWD/.tmp/bin" >> "$GITHUB_PATH"
+      - name: Fetch chart dependencies (Chart.lock)
+        run: make chart-deps
+      - name: Lint and render every profile with Helm 4
+        run: make chart-check
+      - name: Render every profile with Helm 3
+        run: make chart-check HELM="$PWD/.tmp/bin/helm3"
+
+  kind-e2e:
+    name: kind end-to-end
+    needs: [changes, chart]
+    # Runs after the chart checks pass, or without them when the chart did not
+    # change. A job whose dependency was skipped is skipped too unless its
+    # condition calls a status function, hence !cancelled().
+    if: ${{ !cancelled() && needs.changes.outputs.kind_e2e == 'true' && (needs.chart.result == 'success' || needs.chart.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install pinned kind, kubectl and Helm
+        run: |
+          make install-tools
+          echo "$PWD/.tmp/bin" >> "$GITHUB_PATH"
+      - name: Check tool versions
+        run: make tools-check
+      - name: Fetch chart dependencies (Chart.lock)
+        run: make chart-deps
+      # Creates its own kind cluster with the pinned node image, builds and
+      # loads both images, starts a SQL Server container and runs the ADR 0003
+      # acceptance checks; removes everything it created on exit.
+      - name: Run acceptance checks on kind
+        run: make kind-e2e
+
+  ci-ok:
+    name: ci-ok
+    needs: [changes, test, sqlserver, chart, kind-e2e]
+    # always(), not !cancelled(): a gate skipped on failure or cancellation
+    # would count as passed.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Every job did what the change detection asked for
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: scripts/ci-gate.sh changes test sqlserver:db_collector chart:chart kind-e2e:kind_e2e
