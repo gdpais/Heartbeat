@@ -78,3 +78,5 @@ review and are not tracked in git. Their lasting outcomes are recorded as
 | **Plane** | One of Heartbeat's four areas (telemetry, analysis jobs, control plane, presentation); see [core systems](architecture/overview.md#core-systems). |
 | **Control plane** | The planned Go API plus PostgreSQL, Redis and YAML config, which manage inventory, policies, schedules and investigations. |
 | **ADR** | Architecture decision record, under [`architecture/decisions/`](architecture/decisions/README.md). |
+
+<!-- CI scenario: docs only -->
