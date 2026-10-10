@@ -98,10 +98,10 @@ phase-by-phase status and [TODO.md](../../TODO.md) for the task list.
 
 ## Open questions
 
-- Which OutSystems versions and deployment models are in the first release, and which
-  telemetry export paths are available?
-- Which user, session and request identifiers are reliably present in
-  OutSystems logs?
+- Which user, session and request identifiers are reliably present in each
+  OutSystems log type? (The first release targets OutSystems 11 self-managed,
+  read from its logging database:
+  [ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md).)
 - Are traces needed in the MVP, or only metrics and logs?
 - Is in-app report download enough, or is email delivery required from day one?
 - Auth model: local RBAC, SSO/OIDC, or both? Is multi-tenancy needed?

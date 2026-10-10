@@ -236,20 +236,21 @@ Replica ownership and outage testing are section 19. Design details:
 
 ---
 
-## 3. Core system: OTel gateway (`services/otel-gateway`)
+## 3. Core system: OutSystems ingest
 
-Delivery stage 2. Requires shared event/config contracts [0.3, 8.1–8.2],
-stock OTel Collector routing [9.5], Loki label/storage conventions [9.2] and
-representative OutSystems events/field mappings [10.2–10.3]. Deliver these
-prerequisites with gateway work rather than waiting for the later feature track.
-Use explicitly configured application/environment identities until API inventory
-exists; API-managed onboarding [4.4, 10.1] follows in stage 3.
-Generic source expansion [3.4] remains later work and does not block the initial
-OutSystems gateway. Grafana dashboards [10.4] follow the ingest path.
+Delivery stage 2. The first deployment is OutSystems 11 self-managed: its logs
+are extracted from the logging database by a new db-collector kind,
+`outsystems_logs`, not pushed to the OTel gateway
+([ADR 0008](docs/architecture/decisions/0008-outsystems-11-log-extraction.md),
+design in [application observability](docs/architecture/application-observability.md)).
+Use explicitly configured application/environment identities until API
+inventory exists; API-managed onboarding [4.4, 10.1] follows in stage 3.
+Generic source expansion [3.4] remains later work. Grafana dashboards [10.4]
+follow the ingest path.
 
-- [ ] Validate this stage: representative Traditional/Reactive parser fixtures, normalized contract/labels and OTLP → Loki/Prometheus integration [16.1–16.2]
+- [ ] Validate this stage: every log-type query against a SQL Server fixture with the `oslog_*` tables, extraction → OTel Collector → Loki and derived metrics → Prometheus on kind, restarts and outages without gaps [16.1–16.2]
 
-### 3.1 Service bootstrap
+### 3.1 OTel gateway bootstrap
 - [x] Create Go service entrypoint `services/otel-gateway/cmd/otel-gateway/`
 - [x] Create internal packages for parsers and normalization
 - [x] Add health/metrics/logging/graceful shutdown
@@ -260,28 +261,29 @@ OutSystems gateway. Grafana dashboards [10.4] follow the ingest path.
 - [x] Ensure custom code outputs shared Heartbeat telemetry contract
 - [x] Avoid rebuilding OTel Collector behavior in service code
 
-### 3.3 OutSystems normalization
-- [ ] Implement OutSystems parser(s)
-- [ ] Implement OutSystems normalization pipeline
-- [ ] Forward normalized events to the OTel Collector (the gateway currently normalizes and returns them)
-- [ ] Support Traditional + Reactive OutSystems
-- [ ] Preserve default OutSystems log field/query compatibility first
-- [ ] Normalize:
-  - [ ] environment
-  - [ ] application/module
-  - [ ] component/action/screen/API op
-  - [ ] user/session/request identifiers
-  - [ ] client IP
-  - [ ] severity
-  - [ ] error fingerprint
-  - [ ] latency/duration
-  - [ ] host/node/runtime metadata
-- [ ] Keep high-cardinality fields out of Loki labels where possible
+### 3.3 OutSystems 11 log extraction (`outsystems_logs` collector kind)
+- [x] Decide the ingest path and where the queries live ([ADR 0008](docs/architecture/decisions/0008-outsystems-11-log-extraction.md)); query contract in [`services/db-collector/internal/probes/outsystems/queries/`](services/db-collector/internal/probes/outsystems/queries/README.md)
+- [ ] Write the log-type queries (`general`, `error`, `screen`, `integration`, `extension`, `mobile_request`, `request_event`, `cyclic_job`, as needed) for Traditional and Reactive apps; review each with the probe checklist
+- [ ] SQL Server fixture with the `oslog_*` tables from the real DDL and representative rows; answer the [open questions](docs/architecture/application-observability.md#open-questions) (`Instant` start/end and time zone, `Request_Key` coverage, retention, volume)
+- [ ] Config: `outsystems_logs` kind in the schema and Go config (`probes` select log types; `poll_interval`, `lag`, `batch_limit`, `initial_lookback`, `log_timezone`)
+- [ ] Extractor: watermarked reads per target and log type, full-batch tie handling, watermark file on a persistent volume, same session settings, deadline, backoff and readiness as the `sqlserver` kind
+- [ ] Export OTLP/HTTP logs to the OTel Collector: OutSystems column names as attributes, `Message` body, severity, resource attributes `service.name`, `deployment.environment.name`, `outsystems.log_type`; `error.fingerprint` on error records; watermark moves only after delivery
+- [ ] Add `outsystems.log_type` to Loki's index labels; NetworkPolicy egress from the collector to the OTel Collector; persistent volume in the chart
+- [ ] Extraction self-metrics: rows, lag, export failures, OutSystems log delay
+- [ ] Derived metrics from the [catalog](docs/architecture/application-observability.md#derived-metrics), with bounded labels; recording rules, SLO burn-rate alerts and promtool tests
+- [ ] Decide the OTel gateway's future: remove its JSON event endpoint and alert sink, then remove the service or keep it for push sources [3.4]
 
 ### 3.4 Generic telemetry expansion
 - [ ] Harden generic OTLP ingest after OutSystems path works
 - [ ] Add MuleSoft parser later
 - [ ] Add generic JSON/plaintext normalization later
+
+### 3.5 Request traces
+
+Design: [request traces](docs/architecture/application-observability.md#request-traces).
+
+- [ ] Step A: request timeline dashboard across log types by `Request_Key`; measure how reliably each log type carries it
+- [ ] Step B, after step A: decide trace storage (ADR; Grafana Tempo is the natural fit), then synthesize OTLP spans from `Request_Key` in the extractor, with trace IDs derived from the key and logs ↔ traces links
 
 ---
 
