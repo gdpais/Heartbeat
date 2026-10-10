@@ -79,3 +79,5 @@ func boolEnv(key string, fallback bool) bool {
 		return fallback
 	}
 }
+
+// CI scenario: db-collector only
