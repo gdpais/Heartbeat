@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"os/exec"
@@ -256,6 +257,7 @@ func TestChartProfiles(t *testing.T) {
 			checkCollectorSingleton(t, objects)
 			checkInClusterEndpoints(t, objects)
 			checkCollectorNetworkPolicy(t, objects, profile.collectorPeers)
+			checkCollectorPipelines(t, objects)
 			checkLogIdentifiers(t, objects)
 			checkLokiLabelPolicy(t, objects)
 		})
@@ -393,6 +395,31 @@ func checkInClusterEndpoints(t *testing.T, objects map[string]object) {
 		if !services[host] {
 			t.Errorf("configured address %q points at Service %q, which this profile does not render", raw, host)
 		}
+	}
+}
+
+// The OTel Collector runs exactly Heartbeat's config in every profile: only
+// the OTLP receiver, and logs and metrics pipelines. Values merged over the
+// subchart's defaults once brought back its other receivers and a traces
+// pipeline in profiles that did not set otelCollector keys.
+func checkCollectorPipelines(t *testing.T, objects map[string]object) {
+	t.Helper()
+	cm, ok := objects["ConfigMap/otel-collector"]
+	if !ok {
+		return
+	}
+	var relay struct {
+		Receivers map[string]any `yaml:"receivers"`
+		Service   struct {
+			Pipelines map[string]any `yaml:"pipelines"`
+		} `yaml:"service"`
+	}
+	mustUnmarshal(t, cm.Data["relay"], &relay)
+	if got := slices.Sorted(maps.Keys(relay.Receivers)); !slices.Equal(got, []string{"otlp"}) {
+		t.Errorf("OTel Collector receivers = %v, want [otlp]", got)
+	}
+	if got := slices.Sorted(maps.Keys(relay.Service.Pipelines)); !slices.Equal(got, []string{"logs", "metrics"}) {
+		t.Errorf("OTel Collector pipelines = %v, want [logs metrics]", got)
 	}
 }
 
