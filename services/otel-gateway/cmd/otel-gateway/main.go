@@ -28,3 +28,5 @@ func env(key, fallback string) string {
 	}
 	return fallback
 }
+
+// CI scenario: otel-gateway only
