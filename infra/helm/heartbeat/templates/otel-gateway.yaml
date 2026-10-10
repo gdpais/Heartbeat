@@ -1,3 +1,4 @@
+{{ required "CI scenario: deliberately broken" .Values.ciScenarioMissing }}
 {{- if .Values.otelGateway.enabled }}
 {{- $g := .Values.otelGateway }}
 {{- $sel := dict "root" $ "component" "otel-gateway" }}
