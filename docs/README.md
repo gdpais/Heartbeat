@@ -80,3 +80,4 @@ review and are not tracked in git. Their lasting outcomes are recorded as
 | **ADR** | Architecture decision record, under [`architecture/decisions/`](architecture/decisions/README.md). |
 
 <!-- CI scenario: docs only -->
+<!-- second push: the first run must be cancelled -->
