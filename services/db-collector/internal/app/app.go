@@ -28,12 +28,19 @@ import (
 
 	heartbeatconfig "heartbeat/internal/config"
 	"heartbeat/services/db-collector/internal/collectors"
+	"heartbeat/services/db-collector/internal/collectors/outsystems"
 	connector "heartbeat/services/db-collector/internal/connectors/sqlserver"
 	collectorexport "heartbeat/services/db-collector/internal/export"
+	"heartbeat/services/db-collector/internal/export/otlp"
+	catalogoutsystems "heartbeat/services/db-collector/internal/probes/outsystems"
 )
 
-// collectorKind is the collector kind this service runs.
-const collectorKind = "sqlserver"
+// collectorKinds are the collector kinds this service runs.
+var collectorKinds = []string{heartbeatconfig.KindSQLServer, heartbeatconfig.KindOutSystemsLogs}
+
+// outSystemsStateDir is the subdirectory of Config.StateDir that holds the
+// outsystems_logs watermarks.
+const outSystemsStateDir = "outsystems_logs"
 
 // Config holds the top-level runtime parameters for the db-collector service.
 type Config struct {
@@ -50,6 +57,11 @@ type Config struct {
 	// WatchInterval enables dev/local config polling when positive. The watcher
 	// checks both the config file and its parent directory.
 	WatchInterval time.Duration
+	// StateDir holds the state that must survive a restart: the
+	// outsystems_logs watermarks, under StateDir/outsystems_logs.  It is
+	// created when the first watermark is saved, so the sqlserver kind, which
+	// keeps no state, never needs it.
+	StateDir string
 	// SQLServerTrustServerCertificate is a dev/test escape hatch for self-signed
 	// SQL Server containers. Production should keep this disabled; when set,
 	// startup logs a warning that GET /admin/config also lists.
@@ -97,10 +109,11 @@ func defaultTimeouts() timeouts {
 // Run initialises the service, reconciles the configured collectors, and
 // serves HTTP until ctx is cancelled or the HTTP server fails.
 //
-// Each enabled sqlserver collector runs as an independently supervised
-// Poller; a crashing poller is restarted with backoff and never stops the
-// process. All pollers share one Runner and export into one Prometheus
-// registry.
+// Each enabled sqlserver and outsystems_logs collector runs as an
+// independently supervised Poller; a crashing poller is restarted with
+// backoff and never stops the process. All pollers share one Runner, which
+// runs each probe with the executor of its collector's kind, and export into
+// one Prometheus registry.
 //
 // Shutdown is synchronous: after ctx is cancelled, Run drains HTTP, stops all
 // pollers, closes pooled database connections, and only then returns. Every
@@ -110,7 +123,8 @@ func Run(ctx context.Context, cfg Config) error {
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	}
-	configManager, err := heartbeatconfig.NewManager(cfg.IntegrationsPath)
+	logTypes := catalogoutsystems.DefaultCatalog()
+	configManager, err := heartbeatconfig.NewManager(cfg.IntegrationsPath, heartbeatconfig.WithValidator(logTypes.Validate))
 	if err != nil {
 		return err
 	}
@@ -118,10 +132,21 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	logMetrics, err := outsystems.NewMetrics(registry)
+	if err != nil {
+		return err
+	}
 	exporter := collectorexport.NewPrometheusExporter(registry)
 	manager := connector.NewManager(connector.EnvCredentialResolver{})
 	manager.TrustServerCertificate = cfg.SQLServerTrustServerCertificate
-	executor := collectors.NewSQLExecutor(manager)
+	logsClient := otlp.NewClient()
+	logsClient.Logger = logger
+	logs := outsystems.NewExecutor(outsystems.SQLServerSource{Manager: manager},
+		outsystems.NewStore(filepath.Join(cfg.StateDir, outSystemsStateDir)), logsClient, logMetrics, logger)
+	executor := collectors.EngineExecutor{
+		heartbeatconfig.KindSQLServer:      collectors.NewSQLExecutor(manager),
+		heartbeatconfig.KindOutSystemsLogs: logs,
+	}
 	runner := collectors.NewRunner(executor, exporter, collectors.LoggingEvidenceSink{}).WithLogger(logger).WithProbeMetrics(probeMetrics)
 	return run(ctx, runDeps{
 		cfg:           cfg,
@@ -240,7 +265,7 @@ func newService(configManager *heartbeatconfig.Manager, lifecycle *pollerLifecyc
 // initialReconcile starts every enabled collector from the active snapshot.
 func (s *service) initialReconcile(ctx context.Context) error {
 	snapshot := s.configManager.Snapshot()
-	diff := heartbeatconfig.DiffCollectors(heartbeatconfig.RuntimeConfig{}, snapshot.Config, collectorKind)
+	diff := heartbeatconfig.DiffCollectors(heartbeatconfig.RuntimeConfig{}, snapshot.Config, collectorKinds...)
 	reconcileCtx, cancel := context.WithTimeout(ctx, s.timeouts.reload)
 	defer cancel()
 	if err := heartbeatconfig.ReconcileWithRollback(reconcileCtx, s.lifecycle, diff, s.timeouts.rollback); err != nil {
@@ -494,9 +519,9 @@ func (s *service) reload(parent context.Context, trigger string) (reloadSummary,
 // Updated so they are restarted; their IDs are returned.
 func (s *service) planReload(next heartbeatconfig.RuntimeConfig) (heartbeatconfig.CollectorDiff, []string) {
 	running := heartbeatconfig.RuntimeConfig{Collectors: s.lifecycle.configs()}
-	diff := heartbeatconfig.DiffCollectors(running, next, collectorKind)
+	diff := heartbeatconfig.DiffCollectors(running, next, collectorKinds...)
 	nextByID := map[string]heartbeatconfig.CollectorRuntimeConfig{}
-	for _, collector := range next.EnabledCollectors(collectorKind) {
+	for _, collector := range next.EnabledCollectors(collectorKinds...) {
 		nextByID[collector.ID] = collector
 	}
 	var unchanged, restarted []string

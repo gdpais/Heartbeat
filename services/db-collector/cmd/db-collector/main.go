@@ -11,6 +11,9 @@
 //	HEARTBEAT_ADMIN_TOKEN               Bearer token for the admin endpoints
 //	                                    (GET /admin/config, POST /admin/config/reload);
 //	                                    unset disables them
+//	HEARTBEAT_STATE_DIR                 Writable directory for state that must
+//	                                    survive restarts: the outsystems_logs
+//	                                    watermarks (default "/var/lib/heartbeat")
 package main
 
 import (
@@ -32,6 +35,7 @@ func main() {
 		ListenAddr:                      env("HEARTBEAT_DB_COLLECTOR_LISTEN_ADDR", ":8082"),
 		IntegrationsPath:                env("HEARTBEAT_INTEGRATIONS_PATH", "config/integrations.yaml"),
 		AdminToken:                      os.Getenv("HEARTBEAT_ADMIN_TOKEN"),
+		StateDir:                        env("HEARTBEAT_STATE_DIR", "/var/lib/heartbeat"),
 		WatchInterval:                   durationEnv("HEARTBEAT_CONFIG_WATCH_INTERVAL", 0),
 		SQLServerTrustServerCertificate: boolEnv("HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE", false),
 		Logger:                          logger,
