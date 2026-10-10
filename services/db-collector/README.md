@@ -162,6 +162,11 @@ in the [metrics reference](../../docs/reference/metrics-and-endpoints.md#sql-ser
 If a collector overrides `query_template` for a probe, the runtime uses that
 SQL instead of the catalog default.
 
+`go run ./services/db-collector/cmd/probe-catalog` lists every probe's
+metrics, and `-sql <probe>` prints the batch the collector sends, session
+settings included; the [live demo](../../docs/guides/live-demo.md#1-extract-what-the-collector-asks-sql-server)
+runs it as the collector's login.
+
 ## How Rows Become Metrics
 
 `internal/collectors/runner.go` contains the row decoding path:

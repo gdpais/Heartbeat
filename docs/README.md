@@ -20,10 +20,15 @@ which is not committed.
 
 **Developers**
 
-- [Walkthrough](guides/kind-walkthrough.md): a guided first run on kind, from
-  installing the tools to breaking the database on purpose
-- [Local development](guides/local-development.md): run the stack on kind, the
-  SQL Server sandbox, tests, image builds
+- [Local development](guides/local-development.md): **how to run the app**
+  (one command sequence), the SQL Server sandbox, tests, image builds,
+  troubleshooting
+- [Walkthrough](guides/kind-walkthrough.md) (optional): a guided first run of
+  the same commands, from installing the tools to breaking the database on
+  purpose
+- [Live demo](guides/live-demo.md) (optional): every implemented feature on a
+  running stack, stage by stage, from the collector's SQL to Grafana and
+  Alertmanager, with what to judge
 - [Kubernetes delivery](guides/kubernetes-local.md): the Helm chart, values,
   images and the kind cluster
 - [Data model](architecture/data-model.md): PostgreSQL schema and ownership rules
