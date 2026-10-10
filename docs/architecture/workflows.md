@@ -110,11 +110,11 @@ Prometheus) and API → Alertmanager routes. Who renders `generated/` (the API o
 a build step) is an [open question](overview.md#open-questions).
 
 **Current state:** `infra/helm/heartbeat/files/prometheus/rules/heartbeat.rules.yml` holds hand-written
-rules. Prometheus has no `alerting` block, so alerts do not reach Alertmanager
-yet. Alertmanager routes everything to the gateway's
-`POST /v1/heartbeat/alerts` endpoint, which only counts deliveries. The SQL
-Server recording rules reference metric names the collector no longer emits;
-see [metrics reference](../reference/metrics-and-endpoints.md#known-gaps).
+rules; `make rules-check` validates them and runs their unit tests. Prometheus
+sends alerts to Alertmanager. Alertmanager routes the always-firing `Watchdog`
+alert to a dead-man's switch and everything else to the gateway's
+`POST /v1/heartbeat/alerts` endpoint, which only counts deliveries; see
+[known gaps](../reference/metrics-and-endpoints.md#known-gaps).
 
 **Adaptive telemetry (later):** escalation profiles that raise collection
 detail during anomalies or incidents, without ever amplifying database load
