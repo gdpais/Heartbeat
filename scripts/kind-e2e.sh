@@ -65,8 +65,6 @@ fail() { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
 
 # GET through the API server's service proxy: no port-forwards or host ports.
 svc_get() { k get --raw "/api/v1/namespaces/$NAMESPACE/services/$1/proxy$2"; }
-# svc_post <service:port> <path> <file>: POSTs the file as application/json.
-svc_post() { k create --raw "/api/v1/namespaces/$NAMESPACE/services/$1/proxy$2" -f "$3"; }
 prom() { svc_get prometheus:9090 "/api/v1/query?query=$(printf '%s' "$1" | jq -sRr @uri)"; }
 # Prints the first sample value of a PromQL query, or nothing.
 prom_value() { prom "$1" | jq -r '.data.result[0].value[1] // empty'; }
@@ -279,7 +277,11 @@ cat >"$WORK/otlp-log.json" <<EOF
   }]}]
 }]}
 EOF
-svc_post otel-collector:4318 /v1/logs "$WORK/otlp-log.json" >/dev/null || fail "the Collector rejected the OTLP log record"
+# Sent from the Prometheus pod: `kubectl create --raw` through the service
+# proxy does not send the body as application/json, so the receiver answers 415.
+k -n "$NAMESPACE" exec deployment/prometheus -c prometheus-server -- wget -q -T 10 -O /dev/null \
+	--header 'Content-Type: application/json' --post-data "$(cat "$WORK/otlp-log.json")" \
+	http://otel-collector:4318/v1/logs || fail "the Collector rejected the OTLP log record"
 log_query="{service_name=\"e2e-identifiers\"} | user_id=\"$user_id\""
 wait_for 120 "log line in Loki" log_found "$log_query"
 stream=$(loki_query "$log_query" | jq -c '.data.result[0].stream')
