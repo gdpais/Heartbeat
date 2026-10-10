@@ -505,6 +505,9 @@ func validate(cfg RuntimeConfig) error {
 	if err := validateUniqueSQLServerTargets(cfg.Collectors); err != nil {
 		return err
 	}
+	if err := validateUniqueOutSystemsLogSources(cfg.Collectors); err != nil {
+		return err
+	}
 	notificationIDs := map[string]struct{}{}
 	for _, channel := range cfg.NotificationChannels {
 		if channel.ID == "" {
@@ -625,6 +628,47 @@ func validateUniqueSQLServerTargets(collectors []CollectorRuntimeConfig) error {
 				return fmt.Errorf("target %q in environment %q is scraped by collectors %s and %s; enable it in one collector only", target.Name, target.EnvironmentSlug, owner, collector.ID)
 			}
 			owners[key] = collector.ID
+		}
+	}
+	return nil
+}
+
+// validateUniqueOutSystemsLogSources rejects a log type of one logging
+// database, identified by host, port and database name, that more than one
+// enabled outsystems_logs collector extracts.  Each keeps its own watermark,
+// so every row would reach Loki twice and be counted twice.
+func validateUniqueOutSystemsLogSources(collectors []CollectorRuntimeConfig) error {
+	type sourceKey struct {
+		host     string
+		port     int
+		database string
+		logType  string
+	}
+	owners := map[sourceKey]string{}
+	for _, collector := range collectors {
+		if !collector.Enabled || collector.Kind != KindOutSystemsLogs {
+			continue
+		}
+		selected := map[string]bool{}
+		for _, name := range collector.TargetNames {
+			selected[name] = true
+		}
+		for _, target := range collector.Targets {
+			if len(selected) > 0 && !selected[target.Name] {
+				continue
+			}
+			for _, probe := range target.Probes {
+				key := sourceKey{
+					host:     strings.ToLower(target.Host),
+					port:     target.Port,
+					database: strings.ToLower(target.DatabaseName),
+					logType:  probe.Name,
+				}
+				if owner, exists := owners[key]; exists && owner != collector.ID {
+					return fmt.Errorf("log type %q of database %s on %s:%d is extracted by collectors %s and %s; enable it in one collector only", probe.Name, target.DatabaseName, target.Host, target.Port, owner, collector.ID)
+				}
+				owners[key] = collector.ID
+			}
 		}
 	}
 	return nil

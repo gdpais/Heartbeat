@@ -824,6 +824,61 @@ func TestUniqueSQLServerTargetsIgnoresOutSystemsLogs(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsLogTypeExtractedByTwoOutSystemsLogsCollectors(t *testing.T) {
+	target := func(host, database string, logTypes ...string) TargetRuntimeConfig {
+		probes := make([]ProbeRuntimeConfig, len(logTypes))
+		for i, logType := range logTypes {
+			probes[i] = ProbeRuntimeConfig{Name: logType}
+		}
+		return TargetRuntimeConfig{Name: "logging-db", Host: host, Port: 1433, DatabaseName: database, Probes: probes}
+	}
+	collector := func(id string, enabled bool, targets ...TargetRuntimeConfig) CollectorRuntimeConfig {
+		return CollectorRuntimeConfig{
+			ID: id, Kind: KindOutSystemsLogs, Enabled: enabled, ScrapeInterval: time.Minute, Targets: targets,
+			OutSystemsLogs: OutSystemsLogsConfig{Lag: time.Minute, InitialLookback: time.Minute, BatchLimit: 100, LogTimezone: "UTC"},
+		}
+	}
+	tests := []struct {
+		name       string
+		collectors []CollectorRuntimeConfig
+		wantErr    bool
+	}{
+		{"same log type of the same database", []CollectorRuntimeConfig{
+			collector("a", true, target("sql.prod.local", "OSLogging", "error")),
+			collector("b", true, target("SQL.prod.local", "oslogging", "general", "error")),
+		}, true},
+		{"different log types", []CollectorRuntimeConfig{
+			collector("a", true, target("sql.prod.local", "OSLogging", "error")),
+			collector("b", true, target("sql.prod.local", "OSLogging", "general")),
+		}, false},
+		{"another database", []CollectorRuntimeConfig{
+			collector("a", true, target("sql.prod.local", "OSLogging", "error")),
+			collector("b", true, target("sql.prod.local", "OSLoggingArchive", "error")),
+		}, false},
+		{"second collector disabled", []CollectorRuntimeConfig{
+			collector("a", true, target("sql.prod.local", "OSLogging", "error")),
+			collector("b", false, target("sql.prod.local", "OSLogging", "error")),
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validate(RuntimeConfig{
+				Grafana:       Endpoint{BaseURL: "http://grafana:3000"},
+				Loki:          Endpoint{BaseURL: "http://loki:3100"},
+				Alertmanager:  Endpoint{BaseURL: "http://alertmanager:9093"},
+				OpenTelemetry: Endpoint{Endpoint: "http://otel-collector:4318"},
+				Collectors:    tt.collectors,
+			})
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("wantErr %v, got %v", tt.wantErr, err)
+			}
+			if err != nil && !strings.Contains(err.Error(), `log type "error" of database oslogging on SQL.prod.local:1433 is extracted by collectors a and b`) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestDiffCollectorsAcrossKinds(t *testing.T) {
 	logs := CollectorRuntimeConfig{ID: "a", Kind: KindOutSystemsLogs, Enabled: true, OutSystemsLogs: OutSystemsLogsConfig{LogsEndpoint: "http://otel-a:4318"}}
 	sql := CollectorRuntimeConfig{ID: "b", Kind: KindSQLServer, Enabled: true}

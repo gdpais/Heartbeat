@@ -177,6 +177,9 @@ Rules:
 - A log type with no query file is rejected when the file is loaded or
   reloaded, and so is a log type listed twice for one target (each has one
   watermark).
+- A log type of one logging database (same host, port and database name,
+  compared case-insensitively) can be extracted by one enabled collector
+  only; two would send every row twice.
 - `lag`, `batch_limit`, `initial_lookback` and `log_timezone` are rejected on
   other kinds.
 - The watermark of each collector, target and log type is a file under
