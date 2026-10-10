@@ -121,7 +121,7 @@ certificate.
 | `make vet` | Go static checks | Go |
 | `make rules-check` | promtool rule validation and unit tests | Docker |
 | `make test-integration` | PostgreSQL migration and index tests (`-tags=integration`) | Docker (`postgres:17`) |
-| `make test-sqlserver` | Every built-in probe against a disposable SQL Server, as a login with only the documented grants; fails on duplicate series or padded label values; checks the session settings and the sysadmin-equivalence flag for that login, `sa` and a `CONTROL SERVER` login (`-tags=sqlserver`) | Docker (SQL Server 2022) |
+| `make test-sqlserver` | Every built-in probe against a disposable SQL Server, as a login with only the documented grants; fails on duplicate series or padded label values; checks the session settings and the sysadmin-equivalence flag for that login, `sa` and a `CONTROL SERVER` login. Every OutSystems log query against its fixture tables, as a login with only `SELECT` on them, and the extraction of `oslog_Error` to a fake OTel Collector across cycles and a restart, each row exactly once (`-tags=sqlserver`) | Docker (SQL Server 2022) |
 | `make chart-check` | `helm lint`, then renders every values profile and checks it (below) | Helm, `make chart-deps` |
 | `make kind-e2e` | Acceptance checks on a temporary kind cluster (below) | Docker, kind, kubectl, Helm, jq |
 
@@ -132,9 +132,10 @@ affect them ([CONTRIBUTING.md](../../CONTRIBUTING.md#ci)).
 `make chart-check` renders the chart for each profile (defaults, kind,
 minimal, SQL Server sandbox, production example) and fails if rendering is not
 deterministic, an object is cluster-scoped or a Helm hook, the rendered
-`integrations.yaml` fails the Go loader, the collector is not a single replica,
-or Prometheus, Alertmanager or Grafana points at a Service the profile does not
-deploy.
+`integrations.yaml` fails the Go loader, the collector is not a single replica
+with a writable state volume at `HEARTBEAT_STATE_DIR` and a read-only root
+filesystem, or Prometheus, Alertmanager or Grafana points at a Service the
+profile does not deploy.
 
 `make kind-e2e` creates its own cluster (`heartbeat-e2e-<id>`, private
 kubeconfig, no host ports) and SQL Server container, so it runs next to your

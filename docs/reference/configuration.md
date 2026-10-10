@@ -45,7 +45,7 @@ loads each profile's rendered file with the Go loader.
 | `loki.endpoint` | no | Absolute URL (push API) |
 | `alertmanager.base_url` | yes | Absolute URL |
 | `alertmanager.endpoint` | no | Absolute URL (alerts API) |
-| `opentelemetry.endpoint` | no | Absolute URL of the OTel Collector (OTLP HTTP) |
+| `opentelemetry.endpoint` | for `outsystems_logs` | Absolute base URL of the OTel Collector's OTLP/HTTP receiver, e.g. `http://otel-collector:4318`; logs go to `<endpoint>/v1/logs` |
 
 No URL may embed credentials (`https://user:password@host`): the loader rejects
 userinfo in every `base_url`, `endpoint`, dashboard and deep-link template, and
@@ -81,7 +81,7 @@ are never stored in the file.
 ```yaml
 collectors:
   - id: sqlserver-default        # required, unique; stable ID used for reload diffs
-    kind: sqlserver              # required; sqlserver is the only implemented kind
+    kind: sqlserver              # required; sqlserver or outsystems_logs (below)
     enabled: true
     credential_ref: kv/sqlserver-default   # default for targets without their own
     config:
@@ -127,6 +127,66 @@ against the
 [probe review checklist](../architecture/database-observability.md#probe-review-checklist)
 and with the DBAs; see the
 [login permissions](../guides/database-targets.md#collector-login-permissions).
+
+#### `outsystems_logs` collectors
+
+An `outsystems_logs` collector extracts OutSystems 11 logs from the logging
+database and sends them to the OTel Collector as OTLP logs
+([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)).
+It uses the same document as `sqlserver`: `environment`, `credential_ref`,
+`target_names`, `targets` (the logging databases) and `probes`. Each probe is
+a log type, named after its query file in
+[`queries/`](../../services/db-collector/internal/probes/outsystems/queries/README.md)
+(`error.sql` is `error`). `query_template` replaces that query for one
+collector, under the same contract; `timeout_ms` works as for SQL Server
+probes. `scrape_interval` is the poll interval.
+
+```yaml
+collectors:
+  - id: outsystems-prod
+    kind: outsystems_logs
+    enabled: true
+    credential_ref: env/oslog-prod
+    config:
+      environment: prod
+      scrape_interval: 30s     # poll interval; default 30s
+      lag: 60s                 # read up to now minus lag; default 60s
+      batch_limit: 5000        # rows per query, 1–50000; default 5000
+      initial_lookback: 15m    # where a log type without a watermark starts; default 15m
+      log_timezone: UTC        # IANA time zone Instant is stored in; default UTC
+      probes:
+        - name: error
+      targets:
+        - name: oslogging-prod
+          host: oslog-sql.internal
+          port: 1433
+          database_name: OSLogging
+```
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `lag` | `60s` | Go duration, > 0. Rows the log service commits later than this after their `Instant` are missed |
+| `batch_limit` | `5000` | 1–50000. A full batch is followed at once by the next, up to 10 per cycle. If every row of a full batch has the same `Instant`, the cycle fails and `heartbeat_outsystems_extract_stuck_batches_total` grows: raise `batch_limit` |
+| `initial_lookback` | `15m` | Go duration, > 0. Also used when the stored watermark is unreadable or belongs to another database |
+| `log_timezone` | `UTC` | IANA name such as `Europe/Lisbon`; `Local` is rejected. With a zone that has daylight saving time, rows logged in the hour that repeats when clocks go back can be missed: `Instant` itself is ambiguous then |
+
+Rules:
+
+- `opentelemetry.endpoint` is required while the collector is enabled.
+  Changing it restarts every `outsystems_logs` collector.
+- A log type with no query file is rejected when the file is loaded or
+  reloaded, and so is a log type listed twice for one target (each has one
+  watermark).
+- `lag`, `batch_limit`, `initial_lookback` and `log_timezone` are rejected on
+  other kinds.
+- The watermark of each collector, target and log type is a file under
+  `HEARTBEAT_STATE_DIR` (`outsystems_logs/<collector>.<target>.<log type>.json`).
+  It moves only after the OTel Collector accepted the batch, so delivery is at
+  least once. Removing a collector leaves its files; a collector re-added with
+  the same `id` resumes from them.
+- The login needs `SELECT` on the `oslog_*` tables the queries read and
+  nothing else; see
+  [database targets](../guides/database-targets.md#outsystems-logging-database).
 
 ### Validation and reload behavior
 
@@ -177,6 +237,7 @@ environment variable. Changing it requires restarting the collector
 | `HEARTBEAT_INTEGRATIONS_PATH` | `config/integrations.yaml` | Integrations file path |
 | `HEARTBEAT_ADMIN_TOKEN` | unset | Bearer token for `GET /admin/config` and `POST /admin/config/reload`; both answer 401 without it, and startup logs a warning. Surrounding whitespace is ignored |
 | `HEARTBEAT_CONFIG_WATCH_INTERVAL` | unset (off) | Go duration; poll the config file for changes (the chart sets `5s`, `dbCollector.configWatchInterval`) |
+| `HEARTBEAT_STATE_DIR` | `/var/lib/heartbeat` | Writable directory for state that must survive a restart: the `outsystems_logs` watermarks. Created on the first save; the `sqlserver` kind never uses it. The chart mounts the `dbCollector.persistence` volume there |
 | `HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE` | `false` | Skip TLS certificate verification. **Local dev container only**; applies to every target. When set, startup logs a warning and `GET /admin/config` lists it under `warnings` |
 | `HEARTBEAT_CREDENTIAL_<REF>` | — | Target credentials, see above |
 

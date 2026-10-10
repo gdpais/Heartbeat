@@ -48,7 +48,7 @@ help:
 		'  make rules-check         Validate Prometheus rules and run their promtool unit tests (requires Docker)' \
 		'  make test                Run all Go tests without Docker integration tests' \
 		'  make test-integration    Run isolated PostgreSQL integration tests (requires Docker)' \
-		'  make test-sqlserver      Run every SQL Server probe against a disposable SQL Server container (requires Docker)' \
+		'  make test-sqlserver      Run every SQL Server probe and OutSystems log query against a disposable SQL Server container (requires Docker)' \
 		'  make test-race           Run all Docker-free tests with the race detector' \
 		'  make vet                 Run Go static checks' \
 		'  make docs-site           Build the HTML docs site into docs/site (not committed; CI publishes it)'

@@ -51,6 +51,15 @@ needs a certificate the collector trusts.
 dev container only; it applies to every target, and the collector logs a
 warning at startup and lists it in `GET /admin/config`.
 
+### OutSystems logging database
+
+An `outsystems_logs` collector reads the OutSystems 11 logging database with
+its own login, which needs `SELECT` on the `oslog_*` tables its log-type
+queries read, access to that database, and nothing else: no server
+permission. `make test-sqlserver` runs every log-type query as such a login.
+It runs the same login check and session settings as below. Settings are in
+the [configuration reference](../reference/configuration.md#outsystems_logs-collectors).
+
 ### What the collector runs on the server
 
 - At most 2 sessions per target, with the application name
