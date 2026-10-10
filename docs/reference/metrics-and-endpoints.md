@@ -237,7 +237,6 @@ Rules ([`heartbeat.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules
 | `heartbeat:sqlserver_wait_seconds:rate5m` | Recording: wait seconds per second by `wait_type`, `rate()` of `heartbeat_sqlserver_wait_seconds_total` |
 | `heartbeat:sqlserver_blocked_requests:sum` | Recording: blocked requests per target; 0 when the target's last cycle succeeded and nothing is blocked |
 | `heartbeat:sqlserver_sessions:sum` | Recording: sessions per target, all statuses |
-| `heartbeat:outsystems_events:rate5m` | Recording |
 | `HeartbeatServiceDown` | Alert: `up == 0` for the collector, gateway or OTel Collector |
 | `HeartbeatCollectorLoginElevated` | Alert (warning): `heartbeat_collector_target_login_sysadmin == 1` for 15m, the collector's login for a target is sysadmin-equivalent |
 | `Watchdog` | Alert: always firing. Alertmanager routes it to the `deadmans-switch` receiver (healthchecks.io in production, ADR 0005), which notifies when it stops arriving |
