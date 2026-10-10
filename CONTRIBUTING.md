@@ -110,13 +110,39 @@ Then:
 - Target `master`. Title: what the change does, with the TODO numbers in
   brackets, for example `db-collector: secure the collector endpoints [2.7]`.
 - Description: what changed, why, and how it was tested.
-- Required checks: `test`, `Helm chart` and `kind end-to-end`.
+- Required check: `ci-ok` (see [CI](#ci)).
 - Merge with a merge commit; squash and rebase merging are disabled. The
   branch is deleted on merge.
 
 With `git config fetch.prune true`, every fetch also removes the
 `origin/*` copies of deleted branches; `git branch -vv` then shows merged local
 branches as `gone`, ready for `git branch -d`.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every pull request and every push to
+`master`. The reasons are in
+[ADR 0007](docs/architecture/decisions/0007-change-based-ci-with-one-required-check.md).
+
+| Job | Runs |
+| --- | --- |
+| `Detect changes` | Always. Lists the paths the pull request changes; [`scripts/ci-changes.sh`](scripts/ci-changes.sh) decides which of the jobs below they need |
+| `test` | Always: Go tests, race checks, vet, Prometheus rules, docs site, PostgreSQL integration tests |
+| `SQL Server probes` | When `services/db-collector` or its test scripts change |
+| `Helm chart` | When the chart, its values or its tests change |
+| `kind end-to-end` | When a service, the chart or the kind setup changes |
+| `ci-ok` | Always. Passes only if every job did what the change detection asked for; the only required check |
+
+Any path the script does not list (`go.mod`, `internal/`, `packages/config-schema`,
+the Makefile, workflows, new directories) runs every job, and so does every
+push to `master`. To force a full run on a pull request, run the `ci` workflow
+by hand on its branch (Actions → ci → Run workflow).
+
+Adding a job: give it `needs: changes` and an `if:` on a flag, add the flag to
+`scripts/ci-changes.sh` and to `tests/ci_scripts_test.go`, and add the job to
+`ci-ok`'s `needs` and arguments. Never add `paths:` to the workflow's
+triggers: a required check whose workflow never starts is never reported, and
+the pull request waits forever.
 
 ## Releases
 
@@ -134,7 +160,7 @@ to release. release-please then tags the merge commit and creates the GitHub
 release, and the tag starts `.github/workflows/release.yml`, which:
 
 1. checks the tag is on `master`, matches the chart version and passed the
-   required CI checks;
+   required CI check (`ci-ok`);
 2. builds `ghcr.io/gdpais/heartbeat/db-collector` and
    `ghcr.io/gdpais/heartbeat/otel-gateway` for `linux/amd64` and `linux/arm64`,
    and pushes the chart to `oci://ghcr.io/gdpais/charts/heartbeat`;

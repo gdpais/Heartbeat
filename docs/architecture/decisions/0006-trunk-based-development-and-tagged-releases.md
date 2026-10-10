@@ -2,7 +2,8 @@
 
 - Status: Accepted. In effect from 2026-10-05, after phase 1 merged to
   `master`. Release workflows built; the release app, tag ruleset and first
-  release are set up by hand ([TODO 0.5](../../../TODO.md)).
+  release are set up by hand ([TODO 0.5](../../../TODO.md)). The required
+  checks are replaced by `ci-ok` ([ADR 0007](0007-change-based-ci-with-one-required-check.md)).
 - Date: 2026-10-05
 
 ## Context

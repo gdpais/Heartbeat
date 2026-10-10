@@ -110,11 +110,13 @@ scaffold directories hold `.gitkeep` files until their service is implemented.
 
 ## CI
 
-GitHub Actions (`.github/workflows/db-collector-ci.yml`) runs `make test`,
-`make test-race`, `make vet`, `make rules-check`, `make docs-site`,
-`make test-integration` and `make test-sqlserver`;
-`make chart-check` with Helm 4 and Helm 3; and `make kind-e2e`, the acceptance
-checks on a fresh kind cluster. `.github/workflows/docs-pages.yml` publishes the
+GitHub Actions (`.github/workflows/ci.yml`) runs `make test`,
+`make test-race`, `make vet`, `make rules-check`, `make docs-site` and
+`make test-integration` on every change; `make test-sqlserver`,
+`make chart-check` with Helm 4 and Helm 3, and `make kind-e2e`, the acceptance
+checks on a fresh kind cluster, run when the change can affect them, and on
+every push to `master`. `ci-ok` is the one required check
+([CONTRIBUTING.md](CONTRIBUTING.md#ci)). `.github/workflows/docs-pages.yml` publishes the
 HTML docs to GitHub Pages from `master`. `release-please.yml` and `release.yml`
 publish tagged releases to GitHub Container Registry
 ([CONTRIBUTING.md](CONTRIBUTING.md#releases)).
