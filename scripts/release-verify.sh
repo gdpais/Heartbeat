@@ -3,8 +3,10 @@
 # - it is a vX.Y.Z tag;
 # - its commit is on master;
 # - the chart version at that commit matches the tag;
-# - the required CI checks passed on that commit. A release tag is usually
-#   pushed together with its merge commit, so this waits for running checks.
+# - the required CI checks passed on that commit: ci-ok (ADR 0007), or for a
+#   commit from before ci-ok existed, the three checks master required then.
+#   A release tag is usually pushed together with its merge commit, so this
+#   waits for running checks.
 #
 # Usage: GH_TOKEN=... GITHUB_REPOSITORY=owner/repo scripts/release-verify.sh <tag>
 # Writes version= and sha= to $GITHUB_OUTPUT when it is set.
@@ -12,7 +14,6 @@ set -eu
 
 tag=${1:?usage: scripts/release-verify.sh <tag>}
 : "${GITHUB_REPOSITORY:?}"
-required_checks="test|Helm chart|kind end-to-end"
 timeout_seconds=${RELEASE_VERIFY_TIMEOUT:-5400}
 
 if ! printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
@@ -33,6 +34,14 @@ chart_version=$(git show "$sha:infra/helm/heartbeat/Chart.yaml" | sed -n 's/^ver
 if [ "$chart_version" != "$version" ]; then
 	echo "Chart.yaml at $tag says version $chart_version, expected $version" >&2
 	exit 1
+fi
+
+# ci-ok gives CI's verdict in one check. On master every job runs, so it
+# covers the full suite.
+if git cat-file -e "$sha:.github/workflows/ci.yml" 2>/dev/null; then
+	required_checks="ci-ok"
+else
+	required_checks="test|Helm chart|kind end-to-end"
 fi
 
 deadline=$(($(date +%s) + timeout_seconds))
