@@ -8,9 +8,10 @@
 //     query at a time.  A probe error only affects its own target: every
 //     other probe and target still runs and records samples.  Samples are
 //     recorded per probe through a [collectorexport.ScopedRecorder] when the
-//     exporter supports it, so series that disappear from a probe result (or
-//     belong to a failed probe) are deleted instead of going stale.  Evidence
-//     is forwarded to an [EvidenceSink] as soon as each target finishes.
+//     exporter supports it, so series that disappear from a probe result,
+//     belong to a failed probe, or belong to a target skipped while it backs
+//     off are deleted instead of going stale.  Evidence is forwarded to an
+//     [EvidenceSink] as soon as each target finishes.
 //
 //   - Poller wraps a Runner and runs a cycle on a fixed interval driven by
 //     [CollectorRuntimeConfig.ScrapeInterval].  It owns the per-target
@@ -262,6 +263,8 @@ type targetState struct {
 	consecutiveFailures int
 	lastSuccess         time.Time
 	nextAttempt         time.Time
+	// lastErr is the error of the last failed cycle, nil after a success.
+	lastErr error
 }
 
 // targetTracker holds per-target backoff state for one collector across
@@ -296,13 +299,15 @@ func (t *targetTracker) succeed(target string, at time.Time) (previous, current 
 	return previous, current
 }
 
-// fail records a failed cycle that started at cycleStart and schedules the
-// next attempt.  It returns the new state and the chosen backoff.
-func (t *targetTracker) fail(target string, cycleStart time.Time, interval time.Duration) (targetState, time.Duration) {
+// fail records a cycle that started at cycleStart and failed with err, and
+// schedules the next attempt.  It returns the new state and the chosen
+// backoff.
+func (t *targetTracker) fail(target string, cycleStart time.Time, interval time.Duration, err error) (targetState, time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	state := t.targets[target]
 	state.consecutiveFailures++
+	state.lastErr = err
 	backoff := backoffFor(interval, state.consecutiveFailures, t.jitter())
 	state.nextAttempt = cycleStart.Add(backoff)
 	t.targets[target] = state
@@ -376,16 +381,23 @@ func cycleContext(ctx context.Context, interval time.Duration) (context.Context,
 	return context.WithCancel(ctx)
 }
 
-// skipTarget reports a target that is still backing off.
+// skipTarget reports a target that is still backing off, with the error of
+// its last failed cycle.  It runs none of the target's probes and clears
+// their series: the probes that succeeded in the failed cycle would otherwise
+// keep exporting their last values, unchanged, for the whole backoff.
 func (r Runner) skipTarget(collectorID string, group targetGroup, state targetState) TargetResult {
 	r.log().Debug("target skipped during backoff",
 		"collector", collectorID,
 		"target", group.name,
 		"consecutive_failures", state.consecutiveFailures,
 		"next_attempt", state.nextAttempt)
+	for _, item := range group.items {
+		r.clearScope(collectorexport.Scope{Collector: collectorID, Target: item.Target.Name, Probe: item.Definition.Name})
+	}
 	result := TargetResult{
 		Target:              group.name,
 		State:               TargetBackoff,
+		Err:                 state.lastErr,
 		ConsecutiveFailures: state.consecutiveFailures,
 		LastSuccess:         state.lastSuccess,
 		NextAttempt:         state.nextAttempt,
@@ -727,7 +739,7 @@ func (r Runner) finishTarget(collector collectorconfig.CollectorRuntimeConfig, g
 		r.recordHealth(collector.ID, group, result)
 		return result
 	}
-	state, backoff := tracker.fail(group.name, cycleStart, collector.ScrapeInterval)
+	state, backoff := tracker.fail(group.name, cycleStart, collector.ScrapeInterval, err)
 	r.log().Warn("target failed",
 		"collector", collector.ID,
 		"target", group.name,

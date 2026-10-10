@@ -94,8 +94,11 @@ succeeds.
   the next cycle; repeated failures back off exponentially (capped at 5m, with
   jitter). Every probe failure is logged as structured JSON with collector,
   target, and probe.
-- A failed probe clears its series instead of exporting stale values, and a
-  removed collector's series are deleted.
+- A failed probe clears its series instead of exporting stale values. While
+  a target backs off none of its probes run, so all its probe series are
+  cleared, those of the probes that succeeded in the failed cycle included;
+  only its `heartbeat_collector_target_*` series stay. A removed collector's
+  series are deleted.
 - Self-observability series: `heartbeat_collector_target_up`,
   `heartbeat_collector_target_consecutive_failures`,
   `heartbeat_collector_target_last_success_timestamp_seconds`,
@@ -113,7 +116,8 @@ succeeds.
   when the runtime diverged after a failed rollback. A monitored database
   being down does not make the pod unready; it shows as a failed target in
   metrics and in the authenticated `GET /admin/config`, which also carries the
-  raw driver error. The `/readyz` body is only the status.
+  raw driver error of the target's last failed cycle, kept while it backs off.
+  The `/readyz` body is only the status.
 - The admin endpoints (`GET /admin/config`, `POST /admin/config/reload`) need
   `HEARTBEAT_ADMIN_TOKEN` as a bearer token, compared in constant time, and are
   disabled without it. Startup warns when certificate verification is off

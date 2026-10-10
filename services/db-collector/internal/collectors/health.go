@@ -27,9 +27,10 @@ const (
 type TargetResult struct {
 	Target string
 	State  TargetState
-	// Err joins every probe error for the target in this cycle; nil when State
-	// is TargetOK. It is for logs and in-process decisions only and must not be
-	// served on unauthenticated endpoints.
+	// Err joins every probe error for the target in this cycle when State is
+	// TargetFailed, and in its last failed cycle when State is TargetBackoff;
+	// nil when State is TargetOK. It is for logs and in-process decisions only
+	// and must not be served on unauthenticated endpoints.
 	Err                 error
 	ConsecutiveFailures int
 	LastSuccess         time.Time
