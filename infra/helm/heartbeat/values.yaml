@@ -381,13 +381,24 @@ loki:
           index:
             prefix: index_
             period: 24h
-    # Low-cardinality labels; investigation fields stay in structured metadata.
     limits_config:
       allow_structured_metadata: true
       max_label_names_per_series: 15
       max_label_value_length: 256
       reject_old_samples: true
       reject_old_samples_max_age: 168h
+      # OTLP label policy: only these resource attributes become index labels.
+      # Everything else, including user, session and request IDs, is kept as
+      # structured metadata, which is queryable but not indexed.
+      otlp_config:
+        resource_attributes:
+          ignore_defaults: true
+          attributes_config:
+            - action: index_label
+              attributes:
+                - service.name
+                - service.namespace
+                - deployment.environment.name
   # Namespaced RBAC only.
   rbac:
     namespaced: true
@@ -459,21 +470,11 @@ otelCollector:
           - key: heartbeat.source
             value: otel-collector
             action: upsert
-      attributes/low_cardinality_logs:
-        actions:
-          - key: user_id
-            action: delete
-          - key: session_id
-            action: delete
-          - key: request_id
-            action: delete
-          - key: client_ip
-            action: delete
     exporters:
       prometheus:
         endpoint: ${env:MY_POD_IP}:8889
-      # Loki's native OTLP ingestion; resource attributes such as service.name
-      # become index labels and the rest structured metadata.
+      # Loki's native OTLP ingestion; loki.limits_config.otlp_config decides
+      # which resource attributes become index labels.
       otlp_http/loki:
         endpoint: http://loki:3100/otlp
     service:
@@ -485,5 +486,5 @@ otelCollector:
           exporters: [prometheus, debug]
         logs:
           receivers: [otlp]
-          processors: [memory_limiter, resource, attributes/low_cardinality_logs, batch]
+          processors: [memory_limiter, resource, batch]
           exporters: [otlp_http/loki, debug]
