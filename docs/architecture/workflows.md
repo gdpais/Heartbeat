@@ -39,10 +39,11 @@ All four workflows follow the same pattern:
    processors.
 3. The gateway normalizes OutSystems-specific fields into the
    [application event contract](../../packages/telemetry-contracts/src/application_event.schema.json).
-4. Logs land in Loki with controlled labels: environment, application,
-   component, severity, event type. The Collector already deletes `user_id`,
-   `session_id`, `request_id` and `client_ip` from log attributes so they cannot
-   become labels.
+4. Logs land in Loki through its OTLP endpoint. Loki's `otlp_config` limits
+   index labels to three resource attributes (see the
+   [OTel Collector notes](overview.md#component-details)). Everything else,
+   including user, session and request IDs and client IP, is kept as
+   structured metadata, so investigations can filter and correlate on it.
 5. Derived metrics (latency, throughput, errors, availability, saturation) land
    in Prometheus.
 6. Grafana shows application health and links to Loki log views.

@@ -516,6 +516,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Provision Loki for app logs
 - [x] Enforce low-cardinality label strategy
 - [x] Keep high-cardinality investigation fields in log body/payload
+- [x] Keep user, session and request IDs and client IP as structured metadata: the Collector no longer deletes them; Loki indexes only service.name, service.namespace and deployment.environment.name
 
 ### 9.3 Grafana
 - [x] Provision datasources as code
