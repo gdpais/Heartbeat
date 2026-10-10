@@ -86,7 +86,11 @@
             "additionalProperties": false,
             "properties": {
               "environment": {"type": "string"},
-              "scrape_interval": {"type": "string"},
+              "scrape_interval": {"type": "string", "description": "How often the collector runs a cycle (Go duration, default 30s). For outsystems_logs it is the poll interval."},
+              "lag": {"type": "string", "description": "outsystems_logs only: how far behind now a read stops (Go duration, default 60s)."},
+              "batch_limit": {"type": "integer", "minimum": 1, "maximum": 50000, "description": "outsystems_logs only: most rows one log-type query returns (default 5000)."},
+              "initial_lookback": {"type": "string", "description": "outsystems_logs only: where a log type without a watermark starts, back from now (Go duration, default 15m)."},
+              "log_timezone": {"type": "string", "description": "outsystems_logs only: IANA time zone the Instant column is stored in (default UTC)."},
               "target_names": {
                 "type": "array",
                 "items": {"type": "string"}
