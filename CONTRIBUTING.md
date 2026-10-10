@@ -188,8 +188,11 @@ a bad release is fixed by the next patch release.
 2. In the repository's Settings → Secrets and variables → Actions, add the
    variable `RELEASE_APP_CLIENT_ID` (the app's client ID) and the secret
    `RELEASE_APP_PRIVATE_KEY` (a private key generated on the app's page).
-3. Add a tag ruleset (Settings → Rules → Rulesets → New tag ruleset) targeting
-   `v*`, with *Restrict creations*, *Restrict updates* and *Restrict
-   deletions*, and the release app in the bypass list.
+3. Add a tag ruleset (Settings → Rules → Rulesets → New tag ruleset) that
+   targets all tags (*Include all tags*), with *Restrict updates* and
+   *Restrict deletions*. Every tag here is a release tag, so all tags rather
+   than `v*`: per-component tags such as `db-collector-v1.2.0` would not match
+   `v*`. After the first release is tagged by hand, add *Restrict creations*
+   with the release app in the bypass list.
 4. After the first release, make each package public (your profile →
    Packages → package → Package settings → Change visibility).

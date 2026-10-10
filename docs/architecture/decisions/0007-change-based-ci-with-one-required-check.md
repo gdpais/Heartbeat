@@ -1,7 +1,6 @@
 # 0007. Change-based CI with one required check
 
-- Status: Accepted. Workflow built; the `master` ruleset is switched to
-  require `ci-ok` by hand ([TODO 0.5](../../../TODO.md)).
+- Status: Accepted. In effect from 2026-10-10: `master` requires `ci-ok`.
 - Date: 2026-10-10
 
 ## Context
