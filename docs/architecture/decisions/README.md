@@ -13,6 +13,7 @@ one; mark the old record *Superseded by ADR NNNN*.
 | [0005](0005-production-delivery-and-operations-defaults.md) | Production on AWS EKS via Argo CD GitOps; ECR; AWS Secrets Manager + ESO; pinned latest-stable versions; Discord → Slack/Teams/WhatsApp alerts; healthchecks.io dead-man's switch; Grafana admin auth | Accepted; chart side implemented (version pins, Watchdog route, production example values); production not built |
 | [0006](0006-trunk-based-development-and-tagged-releases.md) | Trunk-based development on `master`; one SemVer version per release; `vX.Y.Z` tags from release-please publish multi-arch images and the chart to GHCR; changelog from Conventional Commits; no moving tags | Accepted; in effect from 2026-10-05; workflows built, release app and first release pending; required checks replaced by ADR 0007 |
 | [0007](0007-change-based-ci-with-one-required-check.md) | One CI workflow; slow jobs run only when a change can affect them, everything runs on `master`; `ci-ok` is the only required check and fails unless each job ran or was skipped as intended | Accepted; in effect from 2026-10-10 |
+| [0008](0008-outsystems-11-log-extraction.md) | OutSystems 11 self-managed logs are extracted from the logging database by a new db-collector kind, `outsystems_logs`: one reviewed `.sql` file per log type, watermarked reads, OTLP to the OTel Collector and Loki, derived metrics on the collector's `/metrics` | Proposed |
 
 Template:
 
