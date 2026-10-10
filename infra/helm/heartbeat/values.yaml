@@ -487,3 +487,5 @@ otelCollector:
           receivers: [otlp]
           processors: [memory_limiter, resource, attributes/low_cardinality_logs, batch]
           exporters: [otlp_http/loki, debug]
+
+# CI scenario: chart only
