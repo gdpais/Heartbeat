@@ -178,6 +178,10 @@ request.
 
 ## 10. Clean up
 
+Before you clean up, the [live demo](live-demo.md) goes deeper on the same
+cluster: the collector's exact SQL, raw rows against exported samples,
+blocking, a frozen server and the parts that are not implemented yet.
+
 ```bash
 make sqlserver-dev-down   # removes the SQL Server container and its data, redeploys without it
 make kind-down            # deletes the cluster
@@ -185,13 +189,5 @@ make kind-down            # deletes the cluster
 
 ## Troubleshooting
 
-| Symptom | Cause and fix |
-| --- | --- |
-| `make tools-check` reports a wrong kubectl | Another kubectl (often Docker Desktop's) is earlier in `PATH`; put Homebrew's first |
-| `make kind-up` fails with `port is already allocated` | Something else holds one of the ports above (often an old Compose stack: `docker compose ls`). Stop it and rerun |
-| kind node fails with a cgroup v1 error | kubelet 1.36 needs cgroup v2. Docker Desktop has it; on Linux, use a distribution with cgroup v2 |
-| Pods stay `ErrImageNeverPull` | The images were not loaded into this cluster (for example after recreating it by hand). Run `make kind-images kind-deploy` |
-| `make health` or the browser get "connection reset" right after Docker or the laptop restarts | kube-proxy inside the node is still starting. Wait a minute and retry |
-| Image pulls fail with `429 Too Many Requests` | Docker Hub's anonymous rate limit. `docker login`, wait, and rerun |
-| SQL Server never becomes healthy on Apple silicon | Rosetta emulation is off in Docker Desktop, or Docker has too little memory |
-| `helm upgrade` fails with a field-manager conflict | Something was edited by hand with `kubectl`. See [Kubernetes delivery](kubernetes-local.md#working-with-it) |
+See [troubleshooting](local-development.md#troubleshooting) in the local
+development guide.

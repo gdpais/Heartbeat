@@ -30,6 +30,7 @@ var referenceFilePatterns = append([]string{
 	"scripts/*.sh",
 	"docs/reference/*.md",
 	"docs/architecture/*.md",
+	"docs/guides/*.md",
 	"services/db-collector/README.md",
 }, queryFilePatterns...)
 

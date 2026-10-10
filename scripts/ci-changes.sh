@@ -23,10 +23,11 @@ while IFS= read -r path; do
 	[ -n "$path" ] || continue
 	case $path in
 	# Checked by the always-run job only: docs, the docs generator, release
-	# bookkeeping and migrations (the PostgreSQL integration tests).
+	# bookkeeping, migrations (the PostgreSQL integration tests) and the live
+	# demo's shell helpers, which only the docs use.
 	*.md | docs/* | tools/docsite/* | LICENSE | .gitignore | renovate.json | \
 		version.txt | release-please-config.json | .release-please-manifest.json | \
-		db/migrations/*) ;;
+		db/migrations/* | scripts/demo-helpers.sh) ;;
 	services/db-collector/*)
 		db_collector=true
 		kind_e2e=true

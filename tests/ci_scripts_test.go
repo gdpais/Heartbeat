@@ -28,6 +28,7 @@ func TestCIChangesFlags(t *testing.T) {
 		{"docs and markdown anywhere", []string{"docs/guides/kind-walkthrough.md", "TODO.md", "services/db-collector/README.md", "docs/architecture/diagrams/a b.svg"}, false, none},
 		{"docs generator", []string{"tools/docsite/internal/site/site.go"}, false, none},
 		{"release bookkeeping", []string{"CHANGELOG.md", "version.txt", ".release-please-manifest.json", "release-please-config.json"}, false, none},
+		{"demo helpers", []string{"scripts/demo-helpers.sh"}, false, none},
 		{"migrations", []string{"db/migrations/0002_targets.up.sql"}, false, none},
 		{"db-collector code", []string{"services/db-collector/internal/probes/sqlserver/waits.go"}, false, dbOnly},
 		{"db-collector Dockerfile", []string{"services/db-collector/Dockerfile"}, false, dbOnly},

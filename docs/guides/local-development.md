@@ -1,15 +1,35 @@
 # Local Development
 
-Run the Heartbeat stack on a local kind cluster, test it, and point the DB
-collector at a throwaway SQL Server.
+How to run Heartbeat: the Heartbeat stack on a local kind cluster, the DB
+collector pointed at a throwaway SQL Server, and the tests. This is the only
+page you need to run the app. Two optional guides build on it:
 
-First time? Follow the [walkthrough](kind-walkthrough.md): it installs the
-tools, starts everything and shows what each step should look like.
+| Guide | For |
+| --- | --- |
+| [Walkthrough](kind-walkthrough.md) | Your first run: installs the tools and shows what each step should look like |
+| [Live demo](live-demo.md) | Reviewing what each feature does on a running stack, stage by stage |
 
 Prerequisites: Docker, Go 1.27+, and kind, kubectl and Helm at the pinned
 versions (kind v0.33, kubectl within one minor of Kubernetes 1.36, Helm 4.2+).
 `make tools-check` verifies all of them and says how to fix any mismatch. Run
 `make help` for the full target list.
+
+## Run everything
+
+From the repository root, the whole stack collecting from a local SQL Server:
+
+```bash
+make tools-check        # every line should start with ok
+make chart-deps         # once, and after Chart.lock changes
+make kind-up            # cluster, images, chart
+make sqlserver-dev-init # once: random SA and collector passwords in .env.sqlserver-dev
+make sqlserver-dev-up   # SQL Server container, collector login, redeploy against it
+make health
+```
+
+Grafana is then at http://localhost:3000 (`admin`/`admin`). The sections
+below explain each step; [Troubleshooting](#troubleshooting) covers the usual
+failures. To stop: `make sqlserver-dev-down` and `make kind-down`.
 
 ## Start the platform
 
@@ -181,3 +201,17 @@ curl -X POST -H "Authorization: Bearer local-admin-token" http://localhost:8082/
 Credential variables are read at startup; restart the collector
 (`kubectl -n heartbeat rollout restart statefulset/db-collector`) when they
 change. See the [configuration reference](../reference/configuration.md).
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `make tools-check` reports a wrong kubectl | Another kubectl (often Docker Desktop's) is earlier in `PATH`; put Homebrew's first |
+| `make kind-up` fails with `port is already allocated` | Something else holds one of the ports in the [port list](../reference/metrics-and-endpoints.md#local-ports-kind) (often an old Compose stack: `docker compose ls`, or a Homebrew Grafana on 3000: `lsof -nP -iTCP:3000 -sTCP:LISTEN`). Stop it and rerun, or move that port: delete the half-created cluster (`make kind-down`), then `sed 's/hostPort: 3000,/hostPort: 3001,/' infra/kind/cluster.yaml > .tmp/kind-cluster.yaml` and `KIND_CONFIG=.tmp/kind-cluster.yaml make kind-up`. Grafana is then on 3001, and `make health` still checks 3000, so check Grafana with `curl localhost:3001/api/health` |
+| kind node fails with a cgroup v1 error | kubelet 1.36 needs cgroup v2. Docker Desktop has it; on Linux, use a distribution with cgroup v2 |
+| Pods stay `ErrImageNeverPull` | The images were not loaded into this cluster (for example after recreating it by hand). Run `make kind-images kind-deploy` |
+| `make health` or the browser get "connection reset" or `Empty reply from server` right after Docker or the laptop restarts, or right after `make sqlserver-dev-up` | kube-proxy inside the node is still starting, or still routing the host port to the collector pod that was just replaced. Wait a few seconds (up to a minute after a restart) and rerun |
+| Image pulls fail with `429 Too Many Requests` | Docker Hub's anonymous rate limit. `docker login`, wait, and rerun |
+| SQL Server never becomes healthy on Apple silicon | Rosetta emulation is off in Docker Desktop, or Docker has too little memory |
+| `make sqlserver-dev-up` says the credential must be a dedicated login, not `sa` | `.env.sqlserver-dev` predates the least-privilege login. Run `make sqlserver-dev-init` (it adds the login and keeps the SA password), then `make sqlserver-dev-up` again |
+| `helm upgrade` fails with a field-manager conflict | Something was edited by hand with `kubectl`. See [Kubernetes delivery](kubernetes-local.md#working-with-it) |
