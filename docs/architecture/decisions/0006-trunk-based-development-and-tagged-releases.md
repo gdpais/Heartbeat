@@ -4,6 +4,8 @@
   `master`. Release workflows built; the release app, tag ruleset and first
   release are set up by hand ([TODO 0.5](../../../TODO.md)). The required
   checks are replaced by `ci-ok` ([ADR 0007](0007-change-based-ci-with-one-required-check.md)).
+  Tag protection covers all tags, not only `v*`, so tags with other names
+  cannot be moved either.
 - Date: 2026-10-05
 
 ## Context

@@ -12,7 +12,7 @@ one; mark the old record *Superseded by ADR NNNN*.
 | [0004](0004-core-technology-choices.md) | Core stack: Go, React, Prometheus, Loki, Grafana, Alertmanager, OTel Collector, PostgreSQL, Redis | Accepted |
 | [0005](0005-production-delivery-and-operations-defaults.md) | Production on AWS EKS via Argo CD GitOps; ECR; AWS Secrets Manager + ESO; pinned latest-stable versions; Discord → Slack/Teams/WhatsApp alerts; healthchecks.io dead-man's switch; Grafana admin auth | Accepted; chart side implemented (version pins, Watchdog route, production example values); production not built |
 | [0006](0006-trunk-based-development-and-tagged-releases.md) | Trunk-based development on `master`; one SemVer version per release; `vX.Y.Z` tags from release-please publish multi-arch images and the chart to GHCR; changelog from Conventional Commits; no moving tags | Accepted; in effect from 2026-10-05; workflows built, release app and first release pending; required checks replaced by ADR 0007 |
-| [0007](0007-change-based-ci-with-one-required-check.md) | One CI workflow; slow jobs run only when a change can affect them, everything runs on `master`; `ci-ok` is the only required check and fails unless each job ran or was skipped as intended | Accepted; workflow built; ruleset switch pending |
+| [0007](0007-change-based-ci-with-one-required-check.md) | One CI workflow; slow jobs run only when a change can affect them, everything runs on `master`; `ci-ok` is the only required check and fails unless each job ran or was skipped as intended | Accepted; in effect from 2026-10-10 |
 
 Template:
 
