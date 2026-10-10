@@ -148,6 +148,16 @@ type SysadminReporter interface {
 	TargetSysadmin(target collectormetadata.DatabaseTarget) (sysadmin, ok bool)
 }
 
+// CollectorObserver is an optional extension of [ProbeExecutor] for executors
+// that keep series or state per collector.  A [Poller] calls InitCollector
+// when it starts and ForgetCollector when it stops, after its last cycle, so
+// a reload that changes or removes a collector leaves no stale series.  Both
+// must not block.
+type CollectorObserver interface {
+	InitCollector(collectorconfig.CollectorRuntimeConfig)
+	ForgetCollector(collectorID string)
+}
+
 // EvidenceSink receives structured evidence produced by probes in categories
 // such as "blocking" or "sessions" for downstream processing or alerting.
 type EvidenceSink interface {
@@ -846,11 +856,25 @@ func (r Runner) clearScope(scope collectorexport.Scope) {
 	_ = r.protect("clear samples", scopeAttrs(scope), func() { scoped.ClearScope(scope) })
 }
 
+// initCollector creates the probe error counters of collector and tells an
+// executor that implements [CollectorObserver].
+func (r Runner) initCollector(collector collectorconfig.CollectorRuntimeConfig) {
+	attrs := []any{"collector", collector.ID}
+	_ = r.protect("init probe metrics", attrs, func() { r.metrics.initCollector(collector) })
+	if observer, ok := r.executor.(CollectorObserver); ok {
+		_ = r.protect("init executor", attrs, func() { observer.InitCollector(collector) })
+	}
+}
+
 // forgetCollector deletes every probe metric series of collectorID, and
-// every exported series of it when the exporter supports scopes.
+// every exported series of it when the exporter supports scopes, and tells an
+// executor that implements [CollectorObserver].
 func (r Runner) forgetCollector(collectorID string) {
 	attrs := []any{"collector", collectorID}
 	_ = r.protect("forget probe metrics", attrs, func() { r.metrics.forgetCollector(collectorID) })
+	if observer, ok := r.executor.(CollectorObserver); ok {
+		_ = r.protect("forget executor", attrs, func() { observer.ForgetCollector(collectorID) })
+	}
 	scoped, ok := r.exporter.(collectorexport.ScopedRecorder)
 	if !ok {
 		return
@@ -1187,6 +1211,7 @@ func scheduledProbes(collector collectorconfig.CollectorRuntimeConfig) []collect
 				Assignment: collectormetadata.ProbeAssignment{
 					IntervalSeconds: int(collector.ScrapeInterval / time.Second),
 				},
+				OutSystemsLogs: collector.OutSystemsLogs,
 			})
 		}
 	}
@@ -1208,7 +1233,9 @@ func contains(values []string, needle string) bool {
 // never stop the poller: they are logged, reported, and handled by per-target
 // backoff.  Start creates the collector's probe error counters at 0, returns
 // ctx.Err() once ctx is cancelled, after deleting every series the collector
-// exported, and an error only if the scrape interval is not positive.
+// exported, and an error only if the scrape interval is not positive.  It
+// tells an executor that implements [CollectorObserver] when it starts and
+// stops.
 func (p Poller) Start(ctx context.Context) error {
 	interval := p.Collector.ScrapeInterval
 	if interval <= 0 {
@@ -1216,7 +1243,7 @@ func (p Poller) Start(ctx context.Context) error {
 	}
 	tracker := newTargetTracker()
 	defer p.Runner.forgetCollector(p.Collector.ID)
-	_ = p.Runner.protect("init probe metrics", []any{"collector", p.Collector.ID}, func() { p.Runner.metrics.initCollector(p.Collector) })
+	p.Runner.initCollector(p.Collector)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {

@@ -7,6 +7,8 @@
 // execute without additional lookups.
 package metadata
 
+import collectorconfig "heartbeat/internal/config"
+
 // QueryFilter constrains which scheduled probes are returned by
 // [Repository.ListScheduledProbes].
 type QueryFilter struct {
@@ -77,6 +79,9 @@ type ScheduledProbe struct {
 	Target      DatabaseTarget
 	Definition  ProbeDefinition
 	Assignment  ProbeAssignment
+	// OutSystemsLogs holds the collector's log extraction settings when its
+	// kind is outsystems_logs (Target.Engine), and the zero value otherwise.
+	OutSystemsLogs collectorconfig.OutSystemsLogsConfig
 }
 
 // Evidence is a structured observation produced by certain probe categories
