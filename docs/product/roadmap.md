@@ -10,7 +10,7 @@ shared validation inventory [16] throughout rather than as a final stage.
 | --- | --- | --- |
 | 0 | Foundations, including kind + Helm delivery | Done |
 | 1 | DB collector (SQL Server) | Done |
-| 2 | OTel gateway (OutSystems ingest) | Not started (gateway scaffold done) |
+| 2 | OutSystems ingest (OutSystems 11 log extraction) | Designed ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)); not built |
 | 3 | API / control plane | Not started |
 | 4 | Web UI | Not started |
 | 5 | Production delivery (EKS + Argo CD) | Not started; decisions recorded |
@@ -68,17 +68,28 @@ versioning with them [4.5], and evidence publication in phase 7 [12.4]. One
 failing probe still fails its whole target for that cycle; per-probe failure
 isolation is a follow-up.
 
-## Phase 2 — OTel gateway (OutSystems ingest)
+## Phase 2 — OutSystems ingest
 
-- OutSystems parsers and normalization (Traditional and Reactive); the gateway
-  forwards normalized events to the OTel Collector [3.3]
-- Deliver the prerequisites with it: event envelope and representative
-  OutSystems field mappings, Loki label conventions, Collector routing [9, 10.2–10.3]
+OutSystems 11 self-managed first. Its logs are read from the logging database
+by a new db-collector kind, not pushed to the gateway
+([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md);
+design in [application observability](../architecture/application-observability.md)).
+
+- One reviewed `.sql` query per log type (error, screen, integration, ...),
+  watermarked incremental reads, OTLP to the OTel Collector and Loki with
+  OutSystems field names kept [3.3]
+- User, session and request IDs and client IP stay searchable as Loki
+  structured metadata, never labels [9.2]
+- Derived SRE, infrastructure and business metrics on the collector's
+  `/metrics`; recording rules and SLO burn-rate alerts [3.3]
+- OutSystems overview, errors, latency and request-timeline dashboards [10.4, 3.5]
 - Use configured application/environment identities until API inventory exists
-- Later: MuleSoft and generic JSON/plaintext sources [3.4]
+- Later: synthesized request traces from `Request_Key` [3.5]; MuleSoft and
+  generic sources [3.4]; OutSystems Cloud and ODC through their OTLP streams
 
-Exit: representative parser fixtures and OTLP → normalized Loki logs and
-Prometheus metrics.
+Exit: every query tested against a SQL Server fixture with the `oslog_*`
+tables; logging database → collector → Loki and Prometheus → Grafana on kind,
+including restarts and outages without gaps.
 
 ## Phase 3 — API / control plane
 

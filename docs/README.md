@@ -55,7 +55,7 @@ which is not committed.
 | Folder | Contents |
 | --- | --- |
 | [`product/`](product/) | [Overview](product/overview.md), [roadmap](product/roadmap.md) |
-| [`architecture/`](architecture/) | [Overview](architecture/overview.md), [data model](architecture/data-model.md), [database observability](architecture/database-observability.md), [operator workflows](architecture/workflows.md), [decisions](architecture/decisions/README.md) |
+| [`architecture/`](architecture/) | [Overview](architecture/overview.md), [data model](architecture/data-model.md), [database observability](architecture/database-observability.md), [application observability](architecture/application-observability.md), [operator workflows](architecture/workflows.md), [decisions](architecture/decisions/README.md) |
 | [`guides/`](guides/) | Task-oriented how-tos |
 | [`reference/`](reference/) | Lookup tables for configuration, metrics and endpoints |
 | [`archive/`](archive/README.md) | Superseded planning documents, kept for history |
