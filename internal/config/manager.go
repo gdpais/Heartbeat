@@ -46,23 +46,52 @@ type Snapshot struct {
 // Manager owns the active runtime config. Reloads are fail-closed: an invalid
 // candidate never replaces the current snapshot.
 type Manager struct {
-	path   string
-	active atomic.Value
+	path       string
+	validators []func(RuntimeConfig) error
+	active     atomic.Value
 	// reloadLock serialises reloads. It is a one-slot semaphore rather than a
 	// sync.Mutex so waiting for it can honour a context deadline.
 	reloadLock chan struct{}
 }
 
+// ManagerOption configures a [Manager].
+type ManagerOption func(*Manager)
+
+// WithValidator adds a check that every loaded config, initial or candidate,
+// must pass after [LoadRuntimeConfig]'s own validation. A service uses it for
+// rules only it knows, such as the names of its embedded queries. A candidate
+// that fails it is rejected like any invalid candidate (ErrInvalidCandidate).
+func WithValidator(validate func(RuntimeConfig) error) ManagerOption {
+	return func(m *Manager) { m.validators = append(m.validators, validate) }
+}
+
 // NewManager loads the initial config and stores it as the active snapshot.
-func NewManager(path string) (*Manager, error) {
-	cfg, err := LoadRuntimeConfig(path)
+func NewManager(path string, opts ...ManagerOption) (*Manager, error) {
+	manager := &Manager{path: path, reloadLock: make(chan struct{}, 1)}
+	for _, opt := range opts {
+		opt(manager)
+	}
+	cfg, err := manager.load()
 	if err != nil {
 		return nil, err
 	}
-	manager := &Manager{path: path, reloadLock: make(chan struct{}, 1)}
 	now := time.Now().UTC()
 	manager.active.Store(Snapshot{Config: cfg, LoadedAt: now, LastReloadAt: now})
 	return manager, nil
+}
+
+// load reads and validates the config file, running every extra validator.
+func (m *Manager) load() (RuntimeConfig, error) {
+	cfg, err := LoadRuntimeConfig(m.path)
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	for _, validate := range m.validators {
+		if err := validate(cfg); err != nil {
+			return RuntimeConfig{}, err
+		}
+	}
+	return cfg, nil
 }
 
 // Snapshot returns the current immutable active snapshot. It never blocks on
@@ -107,7 +136,7 @@ func (m *Manager) ReloadApplyingContext(ctx context.Context, apply func(previous
 
 	current := m.Snapshot()
 	now := time.Now().UTC()
-	next, err := LoadRuntimeConfig(m.path)
+	next, err := m.load()
 	if err != nil {
 		current.LastReloadAt = now
 		current.LastReloadErr = err.Error()
@@ -152,10 +181,12 @@ type CollectorDiff struct {
 	Previous map[string]CollectorRuntimeConfig
 }
 
-// DiffCollectors compares two configs for one collector kind.
-func DiffCollectors(previous, next RuntimeConfig, kind string) CollectorDiff {
-	oldByID := collectorsByID(previous.EnabledCollectors(kind))
-	newByID := collectorsByID(next.EnabledCollectors(kind))
+// DiffCollectors compares the enabled collectors of kinds in two configs.
+// Collector IDs are unique across kinds, so a collector whose kind changed is
+// Updated when both kinds are given.
+func DiffCollectors(previous, next RuntimeConfig, kinds ...string) CollectorDiff {
+	oldByID := collectorsByID(previous.EnabledCollectors(kinds...))
+	newByID := collectorsByID(next.EnabledCollectors(kinds...))
 	diff := CollectorDiff{Previous: oldByID}
 	for id, nextCollector := range newByID {
 		oldCollector, exists := oldByID[id]

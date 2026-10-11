@@ -9,11 +9,40 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+	// Embeds the IANA time zone database, so log_timezone validates the same
+	// way in a distroless image as on a developer machine.
+	_ "time/tzdata"
 
 	"gopkg.in/yaml.v3"
+)
+
+// Collector kinds.
+const (
+	// KindSQLServer collects SQL Server health metrics with the probe catalog.
+	KindSQLServer = "sqlserver"
+	// KindOutSystemsLogs extracts OutSystems 11 logs from the logging
+	// database and sends them as OTLP logs (ADR 0008).
+	KindOutSystemsLogs = "outsystems_logs"
+)
+
+// Defaults and limits of the outsystems_logs settings.
+const (
+	// DefaultLogLag is how far behind now an outsystems_logs read stops, so
+	// rows the platform's log service commits late are not skipped.
+	DefaultLogLag = 60 * time.Second
+	// DefaultLogBatchLimit is the most rows one log-type query returns.
+	DefaultLogBatchLimit = 5000
+	// MaxLogBatchLimit is the largest batch_limit accepted.
+	MaxLogBatchLimit = 50000
+	// DefaultLogInitialLookback is how far back extraction starts for a log
+	// type with no stored watermark.
+	DefaultLogInitialLookback = 15 * time.Minute
+	// DefaultLogTimezone is the time zone OutSystems Instant values are read in.
+	DefaultLogTimezone = "UTC"
 )
 
 // Endpoint holds the connection details for an external service integration.
@@ -59,6 +88,11 @@ type collectorConfigDocument struct {
 	TargetNames    []string         `yaml:"target_names"`
 	Targets        []targetDocument `yaml:"targets"`
 	Probes         []probeDocument  `yaml:"probes"`
+	// outsystems_logs settings.
+	Lag             string `yaml:"lag"`
+	BatchLimit      *int   `yaml:"batch_limit"`
+	InitialLookback string `yaml:"initial_lookback"`
+	LogTimezone     string `yaml:"log_timezone"`
 }
 
 type targetDocument struct {
@@ -89,6 +123,27 @@ type CollectorRuntimeConfig struct {
 	ScrapeInterval time.Duration
 	Targets        []TargetRuntimeConfig
 	Probes         []ProbeRuntimeConfig
+	// OutSystemsLogs holds the settings of an outsystems_logs collector; it is
+	// the zero value for every other kind.
+	OutSystemsLogs OutSystemsLogsConfig
+}
+
+// OutSystemsLogsConfig holds the settings of an outsystems_logs collector.
+// Each cycle (every ScrapeInterval) reads every selected log type of every
+// target from its watermark to now minus Lag.
+type OutSystemsLogsConfig struct {
+	// Lag is how far behind now a read stops.
+	Lag time.Duration
+	// BatchLimit is the most rows one query returns.
+	BatchLimit int
+	// InitialLookback is how far back a log type without a stored watermark
+	// starts.
+	InitialLookback time.Duration
+	// LogTimezone is the IANA name of the time zone Instant is stored in.
+	LogTimezone string
+	// LogsEndpoint is opentelemetry.endpoint, the OTLP/HTTP base URL the logs
+	// are sent to. It is copied here so a change restarts the collector.
+	LogsEndpoint string
 }
 
 // TargetRuntimeConfig holds the connection parameters and probe assignments
@@ -155,6 +210,9 @@ func LoadRuntimeConfig(path string) (RuntimeConfig, error) {
 		if err != nil {
 			return RuntimeConfig{}, err
 		}
+		if runtimeCfg.Kind == KindOutSystemsLogs {
+			runtimeCfg.OutSystemsLogs.LogsEndpoint = cfg.OpenTelemetry.Endpoint
+		}
 		cfg.Collectors = append(cfg.Collectors, runtimeCfg)
 	}
 	if err := validate(cfg); err != nil {
@@ -164,11 +222,11 @@ func LoadRuntimeConfig(path string) (RuntimeConfig, error) {
 }
 
 // EnabledCollectors returns a deterministically sorted slice of enabled
-// collectors matching kind.
-func (c RuntimeConfig) EnabledCollectors(kind string) []CollectorRuntimeConfig {
+// collectors of any of kinds.
+func (c RuntimeConfig) EnabledCollectors(kinds ...string) []CollectorRuntimeConfig {
 	var out []CollectorRuntimeConfig
 	for _, collector := range c.Collectors {
-		if collector.Enabled && collector.Kind == kind {
+		if collector.Enabled && slices.Contains(kinds, collector.Kind) {
 			out = append(out, collector)
 		}
 	}
@@ -293,6 +351,11 @@ func normalizeCollector(doc collectorDocument) (CollectorRuntimeConfig, error) {
 		}
 		cfg.ScrapeInterval = interval
 	}
+	logs, err := normalizeOutSystemsLogs(doc)
+	if err != nil {
+		return CollectorRuntimeConfig{}, err
+	}
+	cfg.OutSystemsLogs = logs
 	for _, target := range doc.Config.Targets {
 		runtimeTarget := TargetRuntimeConfig{
 			Name:            strings.TrimSpace(target.Name),
@@ -314,6 +377,58 @@ func normalizeCollector(doc collectorDocument) (CollectorRuntimeConfig, error) {
 			runtimeTarget.Probes = append(runtimeTarget.Probes, cfg.Probes...)
 		}
 		cfg.Targets = append(cfg.Targets, runtimeTarget)
+	}
+	return cfg, nil
+}
+
+// normalizeOutSystemsLogs parses the outsystems_logs settings of doc and
+// fills in their defaults. Other kinds must not set them.
+func normalizeOutSystemsLogs(doc collectorDocument) (OutSystemsLogsConfig, error) {
+	c := doc.Config
+	if strings.TrimSpace(doc.Kind) != KindOutSystemsLogs {
+		for _, field := range []struct {
+			name string
+			set  bool
+		}{
+			{"lag", c.Lag != ""},
+			{"batch_limit", c.BatchLimit != nil},
+			{"initial_lookback", c.InitialLookback != ""},
+			{"log_timezone", c.LogTimezone != ""},
+		} {
+			if field.set {
+				return OutSystemsLogsConfig{}, fmt.Errorf("collector %s: %s applies only to %s collectors", doc.ID, field.name, KindOutSystemsLogs)
+			}
+		}
+		return OutSystemsLogsConfig{}, nil
+	}
+	cfg := OutSystemsLogsConfig{
+		Lag:             DefaultLogLag,
+		BatchLimit:      DefaultLogBatchLimit,
+		InitialLookback: DefaultLogInitialLookback,
+		LogTimezone:     DefaultLogTimezone,
+	}
+	for _, field := range []struct {
+		name  string
+		value string
+		out   *time.Duration
+	}{
+		{"lag", c.Lag, &cfg.Lag},
+		{"initial_lookback", c.InitialLookback, &cfg.InitialLookback},
+	} {
+		if field.value == "" {
+			continue
+		}
+		parsed, err := time.ParseDuration(field.value)
+		if err != nil {
+			return OutSystemsLogsConfig{}, fmt.Errorf("invalid %s for collector %s: %w", field.name, doc.ID, err)
+		}
+		*field.out = parsed
+	}
+	if c.BatchLimit != nil {
+		cfg.BatchLimit = *c.BatchLimit
+	}
+	if tz := strings.TrimSpace(c.LogTimezone); tz != "" {
+		cfg.LogTimezone = tz
 	}
 	return cfg, nil
 }
@@ -381,8 +496,16 @@ func validate(cfg RuntimeConfig) error {
 		if err := validateTargets(collector); err != nil {
 			return err
 		}
+		if collector.Kind == KindOutSystemsLogs {
+			if err := validateOutSystemsLogs(collector, cfg.OpenTelemetry.Endpoint); err != nil {
+				return err
+			}
+		}
 	}
 	if err := validateUniqueSQLServerTargets(cfg.Collectors); err != nil {
+		return err
+	}
+	if err := validateUniqueOutSystemsLogSources(cfg.Collectors); err != nil {
 		return err
 	}
 	notificationIDs := map[string]struct{}{}
@@ -446,6 +569,40 @@ func validateTargets(collector CollectorRuntimeConfig) error {
 	return nil
 }
 
+// validateOutSystemsLogs checks the settings of an outsystems_logs
+// collector. Whether its log types exist is checked by the db-collector,
+// which embeds the queries (see WithValidator).
+func validateOutSystemsLogs(collector CollectorRuntimeConfig, logsEndpoint string) error {
+	logs := collector.OutSystemsLogs
+	if collector.Enabled && logsEndpoint == "" {
+		return fmt.Errorf("collector %s: opentelemetry.endpoint is required for %s collectors", collector.ID, KindOutSystemsLogs)
+	}
+	if logs.Lag <= 0 {
+		return fmt.Errorf("collector %s lag must be positive", collector.ID)
+	}
+	if logs.InitialLookback <= 0 {
+		return fmt.Errorf("collector %s initial_lookback must be positive", collector.ID)
+	}
+	if logs.BatchLimit < 1 || logs.BatchLimit > MaxLogBatchLimit {
+		return fmt.Errorf("collector %s batch_limit must be between 1 and %d", collector.ID, MaxLogBatchLimit)
+	}
+	if _, err := time.LoadLocation(logs.LogTimezone); err != nil || logs.LogTimezone == "Local" {
+		return fmt.Errorf("collector %s log_timezone %q must be an IANA time zone name such as UTC or Europe/Lisbon", collector.ID, logs.LogTimezone)
+	}
+	// Each log type of a target has one watermark, so it can be listed only
+	// once.
+	for _, target := range collector.Targets {
+		seen := map[string]bool{}
+		for _, probe := range target.Probes {
+			if seen[probe.Name] {
+				return fmt.Errorf("collector %s target %s lists log type %q more than once", collector.ID, target.Name, probe.Name)
+			}
+			seen[probe.Name] = true
+		}
+	}
+	return nil
+}
+
 // validateUniqueSQLServerTargets rejects a target, identified by environment
 // and name, that more than one enabled sqlserver collector scrapes.  Probe
 // series carry only environment and target labels, so two collectors would
@@ -455,7 +612,7 @@ func validateUniqueSQLServerTargets(collectors []CollectorRuntimeConfig) error {
 	type targetKey struct{ environment, name string }
 	owners := map[targetKey]string{}
 	for _, collector := range collectors {
-		if !collector.Enabled || collector.Kind != "sqlserver" {
+		if !collector.Enabled || collector.Kind != KindSQLServer {
 			continue
 		}
 		selected := map[string]bool{}
@@ -471,6 +628,47 @@ func validateUniqueSQLServerTargets(collectors []CollectorRuntimeConfig) error {
 				return fmt.Errorf("target %q in environment %q is scraped by collectors %s and %s; enable it in one collector only", target.Name, target.EnvironmentSlug, owner, collector.ID)
 			}
 			owners[key] = collector.ID
+		}
+	}
+	return nil
+}
+
+// validateUniqueOutSystemsLogSources rejects a log type of one logging
+// database, identified by host, port and database name, that more than one
+// enabled outsystems_logs collector extracts.  Each keeps its own watermark,
+// so every row would reach Loki twice and be counted twice.
+func validateUniqueOutSystemsLogSources(collectors []CollectorRuntimeConfig) error {
+	type sourceKey struct {
+		host     string
+		port     int
+		database string
+		logType  string
+	}
+	owners := map[sourceKey]string{}
+	for _, collector := range collectors {
+		if !collector.Enabled || collector.Kind != KindOutSystemsLogs {
+			continue
+		}
+		selected := map[string]bool{}
+		for _, name := range collector.TargetNames {
+			selected[name] = true
+		}
+		for _, target := range collector.Targets {
+			if len(selected) > 0 && !selected[target.Name] {
+				continue
+			}
+			for _, probe := range target.Probes {
+				key := sourceKey{
+					host:     strings.ToLower(target.Host),
+					port:     target.Port,
+					database: strings.ToLower(target.DatabaseName),
+					logType:  probe.Name,
+				}
+				if owner, exists := owners[key]; exists && owner != collector.ID {
+					return fmt.Errorf("log type %q of database %s on %s:%d is extracted by collectors %s and %s; enable it in one collector only", probe.Name, target.DatabaseName, target.Host, target.Port, owner, collector.ID)
+				}
+				owners[key] = collector.ID
+			}
 		}
 	}
 	return nil

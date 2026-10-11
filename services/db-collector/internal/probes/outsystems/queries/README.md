@@ -4,9 +4,9 @@ The queries the db-collector's `outsystems_logs` collector runs against the
 OutSystems 11 logging database, one file per log type. Why they live here:
 [ADR 0008](../../../../../../docs/architecture/decisions/0008-outsystems-11-log-extraction.md).
 
-> **Status:** the extractor that runs these files is not built yet.
-> `error.sql` is an example of the contract, not a reviewed query: replace it
-> and add the other log types.
+> **Status:** the db-collector runs these files (`outsystems_logs`
+> collectors). `error.sql` is an example of the contract, not a reviewed
+> query: replace it and add the other log types.
 
 ## Files
 
@@ -27,12 +27,16 @@ OutSystems 11 logging database, one file per log type. Why they live here:
 
 | Parameter | Type | Meaning |
 | --- | --- | --- |
-| `@from` | `datetime2` | Exclusive lower bound: the last `Instant` already delivered |
-| `@to` | `datetime2` | Inclusive upper bound: now minus the configured lag, so rows the log service commits late are not skipped |
+| `@from` | `datetime2`, or `datetime` | Exclusive lower bound: the last `Instant` already delivered |
+| `@to` | `datetime2`, or `datetime` | Inclusive upper bound: now minus the configured lag, so rows the log service commits late are not skipped |
 | `@limit` | `int` | Maximum rows to return |
 
 Both bounds are in the time zone `Instant` is stored in (collector setting
-`log_timezone`, default UTC).
+`log_timezone`, default UTC). Once a query has shown that `Instant` is
+`datetime`, the bounds are sent as `datetime`: compared with a `datetime2`,
+SQL Server converts the column (`.003` becomes `.0033333`), and a watermark
+read back from it would no longer exclude its own row. Compare `Instant` with
+the parameters directly; do not cast either side.
 
 **Rows:**
 
@@ -41,6 +45,9 @@ Both bounds are in the time zone `Instant` is stored in (collector setting
   relies on this order to move its watermark; a query that returns rows out of
   order or above `@limit` is rejected at run time.
 - Return a column named exactly `Instant` (`datetime` or `datetime2`).
+- The collector checks each batch: an `Instant` column, at most `@limit`
+  rows, ascending `Instant` within (`@from`, `@to`]. A batch that breaks a
+  rule fails the cycle and sends nothing.
 
 **Columns:**
 
@@ -56,7 +63,11 @@ Both bounds are in the time zone `Instant` is stored in (collector setting
   derived metrics and request correlation look them up by name. The names the
   extractor understands are listed in
   [application observability](../../../../../../docs/architecture/application-observability.md#outsystems-fields).
-- `NULL` values are left out of the record.
+- `NULL` values are left out of the record. Other columns keep their type:
+  integers, floating point, `bit` and `decimal` become numbers and booleans,
+  other date and time columns RFC 3339 strings in UTC (read in
+  `log_timezone`), `uniqueidentifier` a GUID string, and binary columns hex
+  strings.
 - Durations stay in the unit OutSystems logs them (milliseconds); the
   extractor converts them for metrics.
 
@@ -66,5 +77,9 @@ Each query goes through the
 [probe review checklist](../../../../../../docs/architecture/database-observability.md#probe-review-checklist):
 it reads only `oslog_*` tables (and joins the extractor's login is granted),
 filters on an indexed `Instant` range, returns a bounded row count and needs
-no more than `SELECT`. CI runs every file against a SQL Server fixture with the
-`oslog_*` tables, built from the real DDL.
+no more than `SELECT`. `make test-sqlserver` runs every file against its
+fixture tables,
+[`testdata/oslog/<log type>.sql`](../../../collectors/outsystems/testdata/oslog/),
+as a login with only `SELECT` on them; a log type without a fixture fails
+`make test`. The fixtures are stand-ins until they are built from the real
+DDL.

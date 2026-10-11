@@ -6,9 +6,13 @@ correlated across logs. The decision behind the ingest path is
 [ADR 0008](decisions/0008-outsystems-11-log-extraction.md); the operator flow
 is in [workflows](workflows.md#application-telemetry-ingestion-outsystems-first).
 
-> **Status: designed, not built.** Nothing on this page runs yet. Field names
-> and log types follow OutSystems 11; they are confirmed against the SRE
-> team's queries and the logging database DDL before the extractor ships.
+> **Status: partly built.** Extraction to the OTel Collector (data path
+> steps 1, 2 and 5) runs as the db-collector's `outsystems_logs` kind,
+> switched off by default ([configuration](../reference/configuration.md#outsystems_logs-collectors)).
+> The Loki index label `outsystems.log_type`, the derived metrics and request
+> traces are designed, not built. Field names and log types follow
+> OutSystems 11; they are confirmed against the SRE team's queries and the
+> logging database DDL before the queries are reviewed.
 
 ## Scope
 

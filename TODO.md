@@ -265,11 +265,12 @@ follow the ingest path.
 - [x] Decide the ingest path and where the queries live ([ADR 0008](docs/architecture/decisions/0008-outsystems-11-log-extraction.md)); query contract in [`services/db-collector/internal/probes/outsystems/queries/`](services/db-collector/internal/probes/outsystems/queries/README.md)
 - [ ] Write the log-type queries (`general`, `error`, `screen`, `integration`, `extension`, `mobile_request`, `request_event`, `cyclic_job`, as needed) for Traditional and Reactive apps; review each with the probe checklist
 - [ ] SQL Server fixture with the `oslog_*` tables from the real DDL and representative rows; answer the [open questions](docs/architecture/application-observability.md#open-questions) (`Instant` start/end and time zone, `Request_Key` coverage, retention, volume)
-- [ ] Config: `outsystems_logs` kind in the schema and Go config (`probes` select log types; `poll_interval`, `lag`, `batch_limit`, `initial_lookback`, `log_timezone`)
-- [ ] Extractor: watermarked reads per target and log type, full-batch tie handling, watermark file on a persistent volume, same session settings, deadline, backoff and readiness as the `sqlserver` kind
-- [ ] Export OTLP/HTTP logs to the OTel Collector: OutSystems column names as attributes, `Message` body, severity, resource attributes `service.name`, `deployment.environment.name`, `outsystems.log_type`; `error.fingerprint` on error records; watermark moves only after delivery
-- [ ] Add `outsystems.log_type` to Loki's index labels; NetworkPolicy egress from the collector to the OTel Collector; persistent volume in the chart
-- [ ] Extraction self-metrics: rows, lag, export failures, OutSystems log delay
+- [x] Config: `outsystems_logs` kind in the schema and Go config (`probes` select log types; `scrape_interval` is the poll interval; `lag`, `batch_limit`, `initial_lookback`, `log_timezone`)
+- [x] Extractor: watermarked reads per target and log type, full-batch tie handling, watermark file on a persistent volume, same session settings, deadline, backoff and readiness as the `sqlserver` kind
+- [x] Export OTLP/HTTP logs to the OTel Collector: OutSystems column names as attributes, `Message` body, severity, resource attributes `service.name`, `deployment.environment.name`, `outsystems.log_type`; `error.fingerprint` on error records; watermark moves only after delivery
+- [x] Persistent volume for the collector in the chart; NetworkPolicy egress from the collector to the OTel Collector (none needed: the collector's policy restricts ingress only)
+- [ ] Add `outsystems.log_type` to Loki's index labels
+- [x] Extraction self-metrics: rows, lag, export failures, OutSystems log delay
 - [ ] Derived metrics from the [catalog](docs/architecture/application-observability.md#derived-metrics), with bounded labels; recording rules, SLO burn-rate alerts and promtool tests
 - [ ] Decide the OTel gateway's future: remove its JSON event endpoint and alert sink, then remove the service or keep it for push sources [3.4]
 

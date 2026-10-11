@@ -2,7 +2,9 @@
 
 `db-collector` is the runtime service that connects to SQL Server targets,
 runs configured probes on an interval, and exports the results as Prometheus
-metrics.
+metrics. Its `outsystems_logs` collectors also extract OutSystems 11 logs from
+the logging database and send them to the OTel Collector as OTLP logs (see
+[OutSystems log extraction](#outsystems-log-extraction)).
 
 The current implementation is intentionally narrow:
 
@@ -230,6 +232,33 @@ Current behavior:
   [onboarding guide](../../docs/guides/database-targets.md#what-the-collector-runs-on-the-server)
 - probe execution uses a per-probe timeout
 
+## OutSystems Log Extraction
+
+The `outsystems_logs` kind
+([ADR 0008](../../docs/architecture/decisions/0008-outsystems-11-log-extraction.md))
+runs on the same `Runner`, through `collectors.EngineExecutor`, which picks
+the executor of each collector's kind. Its probes are log types, so it gets
+the same per-target isolation, backoff, hard deadline, readiness and probe
+self-metrics as SQL Server probes.
+
+- `internal/probes/outsystems` embeds the log-type queries,
+  [`queries/*.sql`](internal/probes/outsystems/queries/README.md), one per
+  log type, and rejects configs that name a log type without one.
+- `internal/collectors/outsystems` is the executor. Each call reads
+  `Instant` in (watermark, now − `lag`] through `SQLServerSource` (the same
+  connector, pools and session settings), checks the query contract, turns
+  the rows into OTLP records, sends them, and only then saves the watermark
+  (`Store`, one file per collector, target and log type under
+  `HEARTBEAT_STATE_DIR`). A full batch leaves its last `Instant` for the
+  next batch, read at once up to 10 times per call.
+- `internal/export/otlp` posts the records to
+  `<opentelemetry.endpoint>/v1/logs` (protobuf, gzip, retries).
+
+Settings: [configuration reference](../../docs/reference/configuration.md#outsystems_logs-collectors).
+Metrics: [OutSystems log extraction](../../docs/reference/metrics-and-endpoints.md#outsystems-log-extraction).
+`go run ./services/db-collector/cmd/probe-catalog -sql error` prints a log
+type's batch with its parameters declared.
+
 ## Configuration and Endpoints
 
 - `integrations.yaml` keys, credential resolution and environment variables:
@@ -253,11 +282,18 @@ To add a new SQL Server probe:
    [probe review checklist](../../docs/architecture/database-observability.md#probe-review-checklist)
    and run `make test-sqlserver`.
 
+To add an OutSystems log type, add `internal/probes/outsystems/queries/<log
+type>.sql` under the [query contract](internal/probes/outsystems/queries/README.md)
+and the CREATE TABLE statements of the tables it reads to
+`internal/collectors/outsystems/testdata/oslog/<log type>.sql`, then run
+`make test-sqlserver`.
+
 To add a new collector:
 
 1. Declare it in the environment's `integrations` values (or
    `config/integrations.yaml` when running the binary directly).
-2. Ensure the collector kind is `sqlserver`.
+2. Set the collector kind: `sqlserver`, or `outsystems_logs` for OutSystems
+   logs.
 3. Provide target credentials through the configured credential reference.
 4. Confirm the collector appears under `readiness.collectors` in
    `GET /admin/config` and exports metrics on `/metrics`.
@@ -267,7 +303,9 @@ To add a new collector:
 - `services/db-collector/internal/app/app.go`
 - `services/db-collector/internal/app/lifecycle.go`
 - `services/db-collector/internal/collectors/runner.go`
+- `services/db-collector/internal/collectors/outsystems/extractor.go`
 - `services/db-collector/internal/connectors/sqlserver/connector.go`
 - `services/db-collector/internal/export/exporter.go`
 - `services/db-collector/internal/metadata/types.go`
 - `services/db-collector/internal/probes/sqlserver/catalog.go`
+- `services/db-collector/internal/probes/outsystems/catalog.go`

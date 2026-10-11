@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Heartbeat chart values",
-  "description": "Validates the embedded integrations.yaml and the db-collector NetworkPolicy settings. properties.integrations is a copy of packages/config-schema/src/integrations.schema.json (without $schema); tests/chart_schema_test.go fails when they differ.",
+  "description": "Validates the embedded integrations.yaml and the db-collector NetworkPolicy and state volume settings. properties.integrations is a copy of packages/config-schema/src/integrations.schema.json (without $schema); tests/chart_schema_test.go fails when they differ.",
   "type": "object",
   "required": [
     "integrations"
@@ -46,6 +46,27 @@
               "items": {
                 "$ref": "#/$defs/networkPolicyPeer"
               }
+            }
+          }
+        },
+        "persistence": {
+          "description": "State volume for the outsystems_logs watermarks, mounted at /var/lib/heartbeat. Disabled means an emptyDir.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "size"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "size": {
+              "type": "string",
+              "minLength": 1
+            },
+            "storageClassName": {
+              "type": "string"
             }
           }
         }
@@ -205,7 +226,26 @@
                     "type": "string"
                   },
                   "scrape_interval": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "How often the collector runs a cycle (Go duration, default 30s). For outsystems_logs it is the poll interval."
+                  },
+                  "lag": {
+                    "type": "string",
+                    "description": "outsystems_logs only: how far behind now a read stops (Go duration, default 60s)."
+                  },
+                  "batch_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50000,
+                    "description": "outsystems_logs only: most rows one log-type query returns (default 5000)."
+                  },
+                  "initial_lookback": {
+                    "type": "string",
+                    "description": "outsystems_logs only: where a log type without a watermark starts, back from now (Go duration, default 15m)."
+                  },
+                  "log_timezone": {
+                    "type": "string",
+                    "description": "outsystems_logs only: IANA time zone the Instant column is stored in (default UTC)."
                   },
                   "target_names": {
                     "type": "array",

@@ -26,3 +26,19 @@ func TestIntegrationsSchemaProbeTimeoutMatchesConfigLimit(t *testing.T) {
 		t.Fatalf("schema timeout_ms maximum = %v, want %d (config.MaxProbeTimeout)", maximum, want)
 	}
 }
+
+// The schema's batch_limit maximum must match the limit the collector
+// enforces, for the same reason.
+func TestIntegrationsSchemaBatchLimitMatchesConfigLimit(t *testing.T) {
+	schema := mustReadJSONSchema(t, filepath.Join(repoRoot(t), "packages/config-schema/src/integrations.schema.json"))
+	collectors, _ := schema["properties"].(map[string]any)["collectors"].(map[string]any)
+	items, _ := collectors["items"].(map[string]any)
+	collectorConfig, _ := items["properties"].(map[string]any)["config"].(map[string]any)
+	batch, ok := collectorConfig["properties"].(map[string]any)["batch_limit"].(map[string]any)
+	if !ok {
+		t.Fatal("integrations schema has no collector config batch_limit")
+	}
+	if maximum, _ := batch["maximum"].(float64); int(maximum) != config.MaxLogBatchLimit {
+		t.Fatalf("schema batch_limit maximum = %v, want %d (config.MaxLogBatchLimit)", batch["maximum"], config.MaxLogBatchLimit)
+	}
+}

@@ -212,6 +212,27 @@ scheduled probe, 13 histogram series (10 buckets, `+Inf`, sum, count) and 4
 error counters: 157 series for a target with the 9 built-in probes. Probe
 metric series are listed in the table above.
 
+### OutSystems log extraction
+
+`outsystems_logs` collectors
+([configuration](configuration.md#outsystems_logs-collectors)) report these
+on the same `/metrics`, labelled `collector`, `environment`, `target` and
+`log_type`. Their targets also get the self-observability series above, with
+the log type as the `probe` label: one probe execution reads, delivers and
+acknowledges up to 10 batches.
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `heartbeat_outsystems_extract_rows_total` | counter | Rows extracted and accepted by the OTel Collector |
+| `heartbeat_outsystems_extract_lag_seconds` | gauge | How far the watermark trails now, in real time: about `lag` plus the poll interval when extraction keeps up; it grows while extraction fails or falls behind |
+| `heartbeat_outsystems_export_failures_total` | counter | Batches the OTel Collector did not accept after retries (network errors, 429 and 5xx are retried with backoff, up to 4 attempts within the probe timeout). The watermark stays, so the rows are read again |
+| `heartbeat_outsystems_extract_stuck_batches_total` | counter | Cycles that failed because every row of a full batch had the same `Instant`. The log type does not move until `batch_limit` is raised |
+| `heartbeat_outsystems_log_delay_seconds` | gauge | Now minus the newest `Instant` extracted, set when rows arrive: how far behind OutSystems' own log service is. Absent until the first row |
+
+The counters are created at 0 when a collector starts and, like the probe
+series, deleted when it stops. Error text (contract violations, login and
+query errors) is logged and reported per target in `GET /admin/config`.
+
 ### OTel gateway
 
 | Metric | Meaning |

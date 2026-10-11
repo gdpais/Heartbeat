@@ -645,3 +645,284 @@ collectors:
 		t.Fatalf("error echoes the host value: %v", err)
 	}
 }
+
+// outSystemsLogsConfig is an integrations file with one outsystems_logs
+// collector; settings is indented under its config and otel is the
+// opentelemetry section.
+func outSystemsLogsConfig(t *testing.T, otel, settings string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "integrations.yaml")
+	content := `grafana:
+  base_url: http://grafana:3000
+  dashboard_templates: {}
+loki:
+  base_url: http://loki:3100
+alertmanager:
+  base_url: http://alertmanager:9093
+` + otel + `
+collectors:
+  - id: sql
+    kind: sqlserver
+    enabled: true
+    config:
+      environment: prod
+      probes: [{name: waits}]
+      targets:
+        - {name: logging-db, host: sql.prod.local, port: 1433, database_name: master, credential_ref: env/sql}
+  - id: oslogs
+    kind: outsystems_logs
+    enabled: true
+    config:
+      environment: prod
+      probes: [{name: error}, {name: general, timeout_ms: 20000}]
+      targets:
+        - {name: logging-db, host: sql.prod.local, port: 1433, database_name: OSLogging, credential_ref: env/oslog}
+` + settings
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+const otelSection = "opentelemetry:\n  endpoint: http://otel-collector:4318\n"
+
+func TestLoadRuntimeConfigOutSystemsLogsDefaults(t *testing.T) {
+	cfg, err := LoadRuntimeConfig(outSystemsLogsConfig(t, otelSection, ""))
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig: %v", err)
+	}
+	collectors := cfg.EnabledCollectors(KindOutSystemsLogs)
+	if len(collectors) != 1 {
+		t.Fatalf("got %d outsystems_logs collectors, want 1", len(collectors))
+	}
+	got := collectors[0]
+	want := OutSystemsLogsConfig{
+		Lag: time.Minute, BatchLimit: 5000, InitialLookback: 15 * time.Minute,
+		LogTimezone: "UTC", LogsEndpoint: "http://otel-collector:4318",
+	}
+	if got.OutSystemsLogs != want {
+		t.Fatalf("settings = %+v, want %+v", got.OutSystemsLogs, want)
+	}
+	if got.ScrapeInterval != 30*time.Second {
+		t.Fatalf("poll interval (scrape_interval) = %s, want the 30s default", got.ScrapeInterval)
+	}
+	target := got.Targets[0]
+	if target.Engine != KindOutSystemsLogs || target.EnvironmentSlug != "prod" || len(target.Probes) != 2 {
+		t.Fatalf("unexpected target: %+v", target)
+	}
+	// The SQL Server collector keeps the zero value.
+	if sql := cfg.EnabledCollectors(KindSQLServer)[0]; sql.OutSystemsLogs != (OutSystemsLogsConfig{}) {
+		t.Fatalf("sqlserver collector has outsystems_logs settings: %+v", sql.OutSystemsLogs)
+	}
+	if both := cfg.EnabledCollectors(KindSQLServer, KindOutSystemsLogs); len(both) != 2 || both[0].ID != "oslogs" || both[1].ID != "sql" {
+		t.Fatalf("EnabledCollectors of both kinds = %v", both)
+	}
+}
+
+func TestLoadRuntimeConfigOutSystemsLogsSettings(t *testing.T) {
+	cfg, err := LoadRuntimeConfig(outSystemsLogsConfig(t, otelSection,
+		"      scrape_interval: 10s\n      lag: 2m\n      batch_limit: 50000\n      initial_lookback: 1h\n      log_timezone: Europe/Lisbon\n"))
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig: %v", err)
+	}
+	got := cfg.EnabledCollectors(KindOutSystemsLogs)[0]
+	want := OutSystemsLogsConfig{
+		Lag: 2 * time.Minute, BatchLimit: 50000, InitialLookback: time.Hour,
+		LogTimezone: "Europe/Lisbon", LogsEndpoint: "http://otel-collector:4318",
+	}
+	if got.OutSystemsLogs != want || got.ScrapeInterval != 10*time.Second {
+		t.Fatalf("settings = %+v every %s, want %+v every 10s", got.OutSystemsLogs, got.ScrapeInterval, want)
+	}
+}
+
+func TestLoadRuntimeConfigRejectsInvalidOutSystemsLogsSettings(t *testing.T) {
+	tests := []struct {
+		name     string
+		otel     string
+		settings string
+		// edit, when set, changes the file content.
+		edit    func(string) string
+		wantErr string
+	}{
+		{name: "zero lag", otel: otelSection, settings: "      lag: 0s\n", wantErr: "lag must be positive"},
+		{name: "negative lag", otel: otelSection, settings: "      lag: -1m\n", wantErr: "lag must be positive"},
+		{name: "unparsable lag", otel: otelSection, settings: "      lag: soon\n", wantErr: "invalid lag for collector oslogs"},
+		{name: "negative lookback", otel: otelSection, settings: "      initial_lookback: -15m\n", wantErr: "initial_lookback must be positive"},
+		{name: "zero batch", otel: otelSection, settings: "      batch_limit: 0\n", wantErr: "batch_limit must be between 1 and 50000"},
+		{name: "batch above the maximum", otel: otelSection, settings: "      batch_limit: 50001\n", wantErr: "batch_limit must be between 1 and 50000"},
+		{name: "unknown time zone", otel: otelSection, settings: "      log_timezone: Mars/Olympus\n", wantErr: `log_timezone "Mars/Olympus" must be an IANA time zone name`},
+		{name: "host time zone", otel: otelSection, settings: "      log_timezone: Local\n", wantErr: `log_timezone "Local" must be an IANA time zone name`},
+		{name: "zero interval", otel: otelSection, settings: "      scrape_interval: 0s\n", wantErr: "must have positive scrape interval"},
+		{name: "no OTLP endpoint", wantErr: "opentelemetry.endpoint is required for outsystems_logs collectors"},
+		{
+			name: "log type listed twice", otel: otelSection,
+			edit: func(s string) string {
+				return strings.Replace(s, "{name: general, timeout_ms: 20000}", "{name: error}", 1)
+			},
+			wantErr: `collector oslogs target logging-db lists log type "error" more than once`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := outSystemsLogsConfig(t, tt.otel, tt.settings)
+			if tt.edit != nil {
+				content, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(tt.edit(string(content))), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := LoadRuntimeConfig(path)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// The outsystems_logs settings belong to that kind only; on a SQL Server
+// collector they would be silently ignored.
+func TestLoadRuntimeConfigRejectsOutSystemsLogsSettingsOnOtherKinds(t *testing.T) {
+	for _, setting := range []string{"lag: 1m", "batch_limit: 10", "initial_lookback: 1m", "log_timezone: UTC"} {
+		t.Run(setting, func(t *testing.T) {
+			path := outSystemsLogsConfig(t, otelSection, "")
+			content, _ := os.ReadFile(path)
+			content = []byte(strings.Replace(string(content), "      environment: prod\n      probes: [{name: waits}]", "      environment: prod\n      "+setting+"\n      probes: [{name: waits}]", 1))
+			if err := os.WriteFile(path, content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			name, _, _ := strings.Cut(setting, ":")
+			_, err := LoadRuntimeConfig(path)
+			if want := "collector sql: " + name + " applies only to outsystems_logs collectors"; err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+// A log collector and a SQL Server collector may read the same database: the
+// one-collector-per-target rule is about SQL Server metric series only.
+func TestUniqueSQLServerTargetsIgnoresOutSystemsLogs(t *testing.T) {
+	path := outSystemsLogsConfig(t, otelSection, "")
+	content, _ := os.ReadFile(path)
+	content = append(content, []byte(`  - id: oslogs-2
+    kind: outsystems_logs
+    enabled: true
+    config:
+      environment: prod
+      probes: [{name: error}]
+      targets:
+        - {name: logging-db, host: sql.prod.local, port: 1433, database_name: master, credential_ref: env/sql}
+`)...)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadRuntimeConfig(path); err != nil {
+		t.Fatalf("LoadRuntimeConfig: %v", err)
+	}
+}
+
+func TestValidateRejectsLogTypeExtractedByTwoOutSystemsLogsCollectors(t *testing.T) {
+	target := func(host, database string, logTypes ...string) TargetRuntimeConfig {
+		probes := make([]ProbeRuntimeConfig, len(logTypes))
+		for i, logType := range logTypes {
+			probes[i] = ProbeRuntimeConfig{Name: logType}
+		}
+		return TargetRuntimeConfig{Name: "logging-db", Host: host, Port: 1433, DatabaseName: database, Probes: probes}
+	}
+	collector := func(id string, enabled bool, targets ...TargetRuntimeConfig) CollectorRuntimeConfig {
+		return CollectorRuntimeConfig{
+			ID: id, Kind: KindOutSystemsLogs, Enabled: enabled, ScrapeInterval: time.Minute, Targets: targets,
+			OutSystemsLogs: OutSystemsLogsConfig{Lag: time.Minute, InitialLookback: time.Minute, BatchLimit: 100, LogTimezone: "UTC"},
+		}
+	}
+	tests := []struct {
+		name       string
+		collectors []CollectorRuntimeConfig
+		wantErr    bool
+	}{
+		{"same log type of the same database", []CollectorRuntimeConfig{
+			collector("a", true, target("sql.prod.local", "OSLogging", "error")),
+			collector("b", true, target("SQL.prod.local", "oslogging", "general", "error")),
+		}, true},
+		{"different log types", []CollectorRuntimeConfig{
+			collector("a", true, target("sql.prod.local", "OSLogging", "error")),
+			collector("b", true, target("sql.prod.local", "OSLogging", "general")),
+		}, false},
+		{"another database", []CollectorRuntimeConfig{
+			collector("a", true, target("sql.prod.local", "OSLogging", "error")),
+			collector("b", true, target("sql.prod.local", "OSLoggingArchive", "error")),
+		}, false},
+		{"second collector disabled", []CollectorRuntimeConfig{
+			collector("a", true, target("sql.prod.local", "OSLogging", "error")),
+			collector("b", false, target("sql.prod.local", "OSLogging", "error")),
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validate(RuntimeConfig{
+				Grafana:       Endpoint{BaseURL: "http://grafana:3000"},
+				Loki:          Endpoint{BaseURL: "http://loki:3100"},
+				Alertmanager:  Endpoint{BaseURL: "http://alertmanager:9093"},
+				OpenTelemetry: Endpoint{Endpoint: "http://otel-collector:4318"},
+				Collectors:    tt.collectors,
+			})
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("wantErr %v, got %v", tt.wantErr, err)
+			}
+			if err != nil && !strings.Contains(err.Error(), `log type "error" of database oslogging on SQL.prod.local:1433 is extracted by collectors a and b`) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestDiffCollectorsAcrossKinds(t *testing.T) {
+	logs := CollectorRuntimeConfig{ID: "a", Kind: KindOutSystemsLogs, Enabled: true, OutSystemsLogs: OutSystemsLogsConfig{LogsEndpoint: "http://otel-a:4318"}}
+	sql := CollectorRuntimeConfig{ID: "b", Kind: KindSQLServer, Enabled: true}
+	other := CollectorRuntimeConfig{ID: "c", Kind: "oracle", Enabled: true}
+	previous := RuntimeConfig{Collectors: []CollectorRuntimeConfig{logs, sql, other}}
+
+	moved := logs
+	moved.OutSystemsLogs.LogsEndpoint = "http://otel-b:4318"
+	changedKind := sql
+	changedKind.Kind = KindOutSystemsLogs
+	next := RuntimeConfig{Collectors: []CollectorRuntimeConfig{moved, changedKind, other}}
+
+	diff := DiffCollectors(previous, next, KindSQLServer, KindOutSystemsLogs)
+	if len(diff.Updated) != 2 || diff.Updated[0].ID != "a" || diff.Updated[1].ID != "b" {
+		t.Fatalf("Updated = %v, want a (new OTLP endpoint) and b (new kind)", diff.Updated)
+	}
+	if len(diff.Added)+len(diff.Removed)+len(diff.Unchanged) != 0 {
+		t.Fatalf("unexpected diff %+v; collector c is of another kind", diff)
+	}
+}
+
+func TestManagerRunsExtraValidators(t *testing.T) {
+	path := outSystemsLogsConfig(t, otelSection, "")
+	reject := errors.New("unknown log type")
+	var fail bool
+	validator := WithValidator(func(cfg RuntimeConfig) error {
+		if fail {
+			return reject
+		}
+		return nil
+	})
+	manager, err := NewManager(path, validator)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	version := manager.Snapshot().Config.Version
+	fail = true
+	if _, err := manager.Reload(); !errors.Is(err, ErrInvalidCandidate) || !strings.Contains(err.Error(), "unknown log type") {
+		t.Fatalf("Reload error = %v, want an invalid candidate", err)
+	}
+	if got := manager.Snapshot().Config.Version; got != version {
+		t.Fatal("a candidate that failed the validator replaced the active config")
+	}
+	if _, err := NewManager(path, validator); !errors.Is(err, reject) {
+		t.Fatalf("NewManager error = %v, want the validator's error", err)
+	}
+}

@@ -139,6 +139,13 @@ has_value() { [ -n "$(prom_value "$1")" ]; }
 probe_pod_phase() { k -n "$NAMESPACE" get pod np-probe -o jsonpath='{.status.phase}'; }
 probe_pod_exit() { k -n "$NAMESPACE" get pod np-probe -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}'; }
 probe_pod_done() { case "$(probe_pod_phase)" in Succeeded | Failed) true ;; *) false ;; esac; }
+# Lines Loki returns for a LogQL query over the last hour.
+loki_count() {
+	svc_get loki:3100 "/loki/api/v1/query_range?limit=1000&query=$(printf '%s' "$1" | jq -sRr @uri)" |
+		jq '[.data.result[].values[]] | length'
+}
+loki_count_is() { [ "$(loki_count "$1")" = "$2" ]; }
+value_is() { [ "$(prom_value "$1")" = "$2" ]; }
 target_fresh() {
 	age=$(prom_value "time() - heartbeat_collector_target_last_success_timestamp_seconds{target=\"$1\"}")
 	[ -n "$age" ] && [ "$(printf '%.0f' "$age")" -lt 60 ]
@@ -298,6 +305,50 @@ case ",$labels," in
 esac
 
 # ----------------------------------------------------------------------------
+step "OutSystems logs are extracted to Loki (outsystems_logs)"
+# A fixture oslog_Error table in its own database, readable by the collector's
+# login through SELECT on that table only, with rows from a few minutes ago.
+oslog_login=$(sed -n 's/^HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV=\([^:]*\):.*/\1/p' "$SQLSERVER_ENV_FILE")
+{
+	printf 'CREATE DATABASE heartbeat_oslog_e2e;\nGO\nUSE heartbeat_oslog_e2e;\nGO\n'
+	cat services/db-collector/internal/collectors/outsystems/testdata/oslog/error.sql
+	printf '\nGO\nCREATE USER [%s] FOR LOGIN [%s];\nGRANT SELECT ON dbo.oslog_Error TO [%s];\n' "$oslog_login" "$oslog_login" "$oslog_login"
+	printf '%s\n' "INSERT INTO dbo.oslog_Error (Instant, Message, Module_Name, Request_Key) VALUES" \
+		"(DATEADD(SECOND, -180, GETUTCDATE()), N'e2e order 1 failed', N'E2eShop', 'e2e-1')," \
+		"(DATEADD(SECOND, -120, GETUTCDATE()), N'e2e order 2 failed', N'E2eShop', 'e2e-2')," \
+		"(DATEADD(SECOND, -120, GETUTCDATE()), N'e2e order 3 failed', N'E2eShop', 'e2e-3');" GO
+} | SQLCMDPASSWORD=$password docker exec -i -e SQLCMDPASSWORD "$SQL_CONTAINER" \
+	/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b >/dev/null
+cp "$WORK/e2e.yaml" "$WORK/e2e-oslogs.yaml"
+cat >>"$WORK/e2e-oslogs.yaml" <<EOF
+    - id: oslogs-e2e
+      kind: outsystems_logs
+      enabled: true
+      config:
+        environment: local-dev
+        scrape_interval: 10s
+        lag: 10s
+        probes:
+          - name: error
+        targets:
+          - name: logging-db
+            host: $SQL_CONTAINER
+            port: 1433
+            database_name: heartbeat_oslog_e2e
+            credential_ref: env/sqlserver-dev
+EOF
+EXTRA_VALUES="$WORK/e2e-oslogs.yaml ${E2E_EXTRA_VALUES:-}" scripts/kind.sh deploy >/dev/null
+# kubelet propagates the ConfigMap, then the collector hot-reloads it.
+wait_for 240 "3 rows extracted" value_is 'sum(heartbeat_outsystems_extract_rows_total{collector="oslogs-e2e"})' 3
+wait_for 120 "3 log lines in Loki" loki_count_is '{service_name="E2eShop"}' 3
+loki_count_is '{service_name="E2eShop"} | Request_Key="e2e-2"' 1 ||
+	fail "Loki has no line with the Request_Key attribute e2e-2 as structured metadata"
+target_up logging-db 1 || fail "the logging-db target is not up"
+[ -n "$(prom_value 'heartbeat_outsystems_extract_lag_seconds{collector="oslogs-e2e"}')" ] ||
+	fail "no heartbeat_outsystems_extract_lag_seconds for oslogs-e2e"
+pass "3 OutSystems error rows in Loki as {service_name=\"E2eShop\"}, attributes as structured metadata"
+
+# ----------------------------------------------------------------------------
 step "unauthenticated endpoints expose no diagnostics"
 readyz=$(pod_get /readyz)
 [ "$(printf '%s' "$readyz" | jq -c keys)" = '["status"]' ] || fail "/readyz serves more than its status: $readyz"
@@ -382,8 +433,10 @@ pass "outage reported, recovered, restartCount unchanged ($restarts_before)"
 # ----------------------------------------------------------------------------
 step "a collector update drains the old pod before the new one polls"
 # Samples, every second: running collector containers in the cluster, and
-# collector sessions on SQL Server. One collector holds at most 2 connections
-# per target (defaultMaxOpenConns), so more than 2 means two collectors
+# collector sessions in SQL Server's master database, the sqlserver-dev
+# target's (the outsystems_logs step's pool, in its own database, may still
+# hold idle connections). One collector holds at most 2 connections per
+# target (defaultMaxOpenConns), so more than 2 means two collectors
 # overlapped. Pod names and NATed addresses cannot tell old and new apart.
 sample_concurrency() {
 	max_pods=0
@@ -392,7 +445,7 @@ sample_concurrency() {
 		pods=$(k -n "$NAMESPACE" get pods -l app.kubernetes.io/name=db-collector -o json |
 			jq '[.items[] | select(.status.containerStatuses[0].state.running != null)] | length')
 		sql=$(SQLCMDPASSWORD=$password docker exec -e SQLCMDPASSWORD "$SQL_CONTAINER" /opt/mssql-tools18/bin/sqlcmd \
-			-S localhost -U sa -C -h -1 -W -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE program_name = 'HeartbeatDBCollector'" 2>/dev/null | tr -dc '0-9')
+			-S localhost -U sa -C -h -1 -W -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE program_name = 'HeartbeatDBCollector' AND database_id = DB_ID(N'master')" 2>/dev/null | tr -dc '0-9')
 		[ "${pods:-0}" -gt "$max_pods" ] && max_pods=$pods
 		[ "${sql:-0}" -gt "$max_sql" ] && max_sql=$sql
 		printf '%s %s\n' "$max_pods" "$max_sql" >"$WORK/concurrency"

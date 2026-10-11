@@ -4,6 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -214,5 +217,70 @@ func TestAdminReloadBusyWhenLockHeldPastDeadline(t *testing.T) {
 	<-done
 	if code != http.StatusServiceUnavailable || body.Result != "busy" {
 		t.Fatalf("expected busy 503, got %d %+v", code, body)
+	}
+}
+
+// appendLogsCollector adds an outsystems_logs collector extracting logType,
+// and the OTLP endpoint it needs, to the config at path.
+func appendLogsCollector(t *testing.T, path, logType string) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content = append(content, []byte(`  - id: oslogs
+    kind: outsystems_logs
+    enabled: true
+    config:
+      environment: prod
+      probes: [{name: `+logType+`}]
+      targets:
+        - {name: logging-db, host: sql.example.internal, port: 1433, database_name: OSLogging, credential_ref: env/oslog}
+opentelemetry:
+  endpoint: http://otel-collector:4318
+`)...)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// outsystems_logs collectors are reconciled with the sqlserver ones.
+func TestReloadStartsAndStopsOutSystemsLogsCollectors(t *testing.T) {
+	pollers := newFakePollers()
+	svc, _, path := newReloadFixture(t, pollers, testCollector{id: "sql-a", env: "prod"})
+
+	writeTestConfig(t, path, testCollector{id: "sql-a", env: "prod"})
+	appendLogsCollector(t, path, "error")
+	summary, err := svc.reload(context.Background(), "test")
+	if err != nil || summary.Added != 1 || summary.Unchanged != 1 {
+		t.Fatalf("reload = %+v, %v; want oslogs added, sql-a unchanged", summary, err)
+	}
+	eventually(t, time.Second, func() bool { return pollers.startCount("oslogs") == 1 }, "oslogs poller did not start")
+	pollers.mu.Lock()
+	started := pollers.configs["oslogs"][0]
+	pollers.mu.Unlock()
+	if started.Kind != heartbeatconfig.KindOutSystemsLogs || started.OutSystemsLogs.LogsEndpoint != "http://otel-collector:4318" {
+		t.Fatalf("oslogs started with %+v", started)
+	}
+
+	writeTestConfig(t, path, testCollector{id: "sql-a", env: "prod"})
+	summary, err = svc.reload(context.Background(), "test")
+	if err != nil || summary.Removed != 1 || summary.Unchanged != 1 {
+		t.Fatalf("reload = %+v, %v; want oslogs removed", summary, err)
+	}
+}
+
+// Run rejects a config that selects a log type with no embedded query.
+func TestRunRejectsUnknownLogTypes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "integrations.yaml")
+	writeTestConfig(t, path)
+	content, _ := os.ReadFile(path)
+	if err := os.WriteFile(path, []byte(strings.Replace(string(content), "collectors: []\n", "collectors:\n", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appendLogsCollector(t, path, "screen_typo")
+	err := Run(context.Background(), Config{ListenAddr: "127.0.0.1:0", IntegrationsPath: path, StateDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), `unknown OutSystems log type "screen_typo"`) {
+		t.Fatalf("Run error = %v", err)
 	}
 }
