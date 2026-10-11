@@ -40,7 +40,7 @@ is still pending.
 | Component | Endpoints | Notes |
 | --- | --- | --- |
 | DB collector | `:8082` — `/metrics`, `/healthz`, `/readyz`, `/admin/config`, `POST /admin/config/reload` | Reload also on SIGHUP, and on file change when `HEARTBEAT_CONFIG_WATCH_INTERVAL` is set. Credentials resolved from `HEARTBEAT_CREDENTIAL_*`. |
-| OTel Collector | OTLP `:4317` gRPC / `:4318` HTTP; Prometheus export `:8889`; health `:13133` | Drops `user_id`, `session_id`, `request_id`, `client_ip` from log attributes. |
+| OTel Collector | OTLP `:4317` gRPC / `:4318` HTTP; Prometheus export `:8889`; health `:13133` | Exports logs to Loki's OTLP endpoint. Loki indexes only `service.name`, `service.namespace` and `deployment.environment.name` as labels; every other attribute, including user, session and request IDs and client IP, is kept as structured metadata. |
 | OTel gateway | `:8083` — `/metrics`, `/healthz`, `/readyz`, `POST /v1/heartbeat/events`, `POST /v1/heartbeat/alerts` | Events are normalized and returned to the caller, not exported. Alerts are counted, not stored or delivered. |
 | Prometheus | `:9090` | 15s scrape. Rule files `heartbeat.rules.yml` and `generated/` (currently empty). Sends alerts to Alertmanager. |
 | Alertmanager | `:9093` | `default` webhook receiver pointing at the gateway, `send_resolved: true`; the always-firing `Watchdog` alert routes to a `deadmans-switch` receiver (no integration on kind). |
@@ -84,7 +84,7 @@ current evidence sink does not retain them.
 | PostgreSQL | Inventory, policy intent, investigation summaries, evidence links, baseline versions, report-run metadata | No raw telemetry, raw sessions, audit streams, or report binaries |
 | YAML / Kubernetes | Integration endpoints, Grafana URL templates, collector desired runtime state, credential references | Active collector targets/probes come from config, not PostgreSQL |
 | Prometheus | Metric time series and executable recording/alert rules | Metrics are scraped from collectors; no SQL metric buffering in Redis/PostgreSQL |
-| Loki | Logs and queryable operational evidence | High-cardinality investigation identifiers belong in payloads rather than index labels |
+| Loki | Logs and queryable operational evidence | High-cardinality investigation identifiers are kept as structured metadata, never index labels |
 | Redis | Transient job queues, retries, locks, short-lived caches | Not the durable source of investigation or report state |
 | Artifact storage (planned) | Generated report files | PostgreSQL retains the artifact URI only; backend is undecided |
 
@@ -117,7 +117,7 @@ Heartbeat is organized into four planes, the same four groups as the
 
 | Plane | Components | Status | Details |
 | --- | --- | --- | --- |
-| Telemetry | Collection (DB collector, OpenTelemetry Collector, OTel gateway), storage and evaluation (Prometheus, Loki), alert routing (Alertmanager) | Implemented; gateway partial; Prometheus → Alertmanager not connected | [Current runtime](#current-runtime), [database observability](database-observability.md), [metrics and endpoints](../reference/metrics-and-endpoints.md) |
+| Telemetry | Collection (DB collector, OpenTelemetry Collector, OTel gateway), storage and evaluation (Prometheus, Loki), alert routing (Alertmanager) | Implemented; gateway partial | [Current runtime](#current-runtime), [database observability](database-observability.md), [metrics and endpoints](../reference/metrics-and-endpoints.md) |
 | Analysis jobs | Session analyzer (correlation, adaptive baselines), reporting, report storage | Planned | [Operator workflows](workflows.md) |
 | Control plane | Go API, PostgreSQL (durable metadata), Redis (queues, locks, retries), YAML/Kubernetes config | Schema and config manager implemented; API planned | [Data model](data-model.md), [configuration](../reference/configuration.md), [decisions](decisions/README.md) |
 | Presentation | Grafana dashboards, React web UI with Grafana deep links | Grafana implemented; UI planned | [Operator workflows](workflows.md) |
@@ -132,7 +132,7 @@ Rules every subsystem follows. The reasoning is recorded in the
 - Redis is never the system of record. Durable job and request state lives in
   PostgreSQL (`investigation_jobs`, `report_runs`); workers must be idempotent.
 - Loki labels stay low-cardinality. User, session, request and IP identifiers go
-  in the log body, never in labels.
+  in structured metadata or the log body, never in labels.
 - Adaptive alert math is not computed in Grafana dashboards. Services compute and
   version baselines; executable rules are rendered to Prometheus.
 - Custom parsers never bypass the shared telemetry contract in

@@ -39,10 +39,11 @@ All four workflows follow the same pattern:
    processors.
 3. The gateway normalizes OutSystems-specific fields into the
    [application event contract](../../packages/telemetry-contracts/src/application_event.schema.json).
-4. Logs land in Loki with controlled labels: environment, application,
-   component, severity, event type. The Collector already deletes `user_id`,
-   `session_id`, `request_id` and `client_ip` from log attributes so they cannot
-   become labels.
+4. Logs land in Loki through its OTLP endpoint. Loki's `otlp_config` limits
+   index labels to three resource attributes (see the
+   [OTel Collector notes](overview.md#component-details)). Everything else,
+   including user, session and request IDs and client IP, is kept as
+   structured metadata, so investigations can filter and correlate on it.
 5. Derived metrics (latency, throughput, errors, availability, saturation) land
    in Prometheus.
 6. Grafana shows application health and links to Loki log views.
@@ -109,11 +110,11 @@ Prometheus) and API → Alertmanager routes. Who renders `generated/` (the API o
 a build step) is an [open question](overview.md#open-questions).
 
 **Current state:** `infra/helm/heartbeat/files/prometheus/rules/heartbeat.rules.yml` holds hand-written
-rules. Prometheus has no `alerting` block, so alerts do not reach Alertmanager
-yet. Alertmanager routes everything to the gateway's
-`POST /v1/heartbeat/alerts` endpoint, which only counts deliveries. The SQL
-Server recording rules reference metric names the collector no longer emits;
-see [metrics reference](../reference/metrics-and-endpoints.md#known-gaps).
+rules; `make rules-check` validates them and runs their unit tests. Prometheus
+sends alerts to Alertmanager. Alertmanager routes the always-firing `Watchdog`
+alert to a dead-man's switch and everything else to the gateway's
+`POST /v1/heartbeat/alerts` endpoint, which only counts deliveries; see
+[known gaps](../reference/metrics-and-endpoints.md#known-gaps).
 
 **Adaptive telemetry (later):** escalation profiles that raise collection
 detail during anomalies or incidents, without ever amplifying database load

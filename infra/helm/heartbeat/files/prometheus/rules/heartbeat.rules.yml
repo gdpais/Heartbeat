@@ -20,11 +20,6 @@ groups:
       - record: heartbeat:sqlserver_sessions:sum
         expr: sum by (environment, target) (heartbeat_sqlserver_sessions)
 
-  - name: heartbeat-outsystems-recording
-    rules:
-      - record: heartbeat:outsystems_events:rate5m
-        expr: sum by (environment, application, severity) (rate(heartbeat_otel_gateway_normalized_events_total[5m]))
-
   - name: heartbeat-alerts
     rules:
       # Always firing. Alertmanager routes it to an external dead-man's switch,

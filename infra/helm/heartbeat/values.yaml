@@ -395,13 +395,24 @@ loki:
           index:
             prefix: index_
             period: 24h
-    # Low-cardinality labels; investigation fields stay in structured metadata.
     limits_config:
       allow_structured_metadata: true
       max_label_names_per_series: 15
       max_label_value_length: 256
       reject_old_samples: true
       reject_old_samples_max_age: 168h
+      # OTLP label policy: only these resource attributes become index labels.
+      # Everything else, including user, session and request IDs, is kept as
+      # structured metadata, which is queryable but not indexed.
+      otlp_config:
+        resource_attributes:
+          ignore_defaults: true
+          attributes_config:
+            - action: index_label
+              attributes:
+                - service.name
+                - service.namespace
+                - deployment.environment.name
   # Namespaced RBAC only.
   rbac:
     namespaced: true
@@ -448,7 +459,6 @@ otelCollector:
     requests:
       cpu: 50m
       memory: 128Mi
-    # memory_limiter is a percentage of this limit.
     limits:
       memory: 512Mi
   ports:
@@ -461,43 +471,65 @@ otelCollector:
       containerPort: 8889
       servicePort: 8889
       protocol: TCP
-  # Merged over the chart's default config; null removes a default entry.
-  config:
+  # The complete Collector config, used as is. Not `config`: as a subchart,
+  # Helm drops `null` overrides of the chart's defaults whenever another values
+  # file sets otelCollector keys, which brought back the jaeger, zipkin and
+  # prometheus receivers and a traces pipeline. The chart offers
+  # alternateConfig for this; it is never merged with the defaults.
+  alternateConfig:
+    extensions:
+      health_check:
+        endpoint: ${env:MY_POD_IP}:13133
     receivers:
-      jaeger: null
-      zipkin: null
-      prometheus: null
+      otlp:
+        protocols:
+          grpc:
+            endpoint: ${env:MY_POD_IP}:4317
+          http:
+            endpoint: ${env:MY_POD_IP}:4318
     processors:
+      # A percentage of resources.limits.memory.
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 25
       resource:
         attributes:
           - key: heartbeat.source
             value: otel-collector
             action: upsert
-      attributes/low_cardinality_logs:
-        actions:
-          - key: user_id
-            action: delete
-          - key: session_id
-            action: delete
-          - key: request_id
-            action: delete
-          - key: client_ip
-            action: delete
+      batch: {}
     exporters:
+      debug: {}
       prometheus:
         endpoint: ${env:MY_POD_IP}:8889
-      # Loki's native OTLP ingestion; resource attributes such as service.name
-      # become index labels and the rest structured metadata.
+      # Loki's native OTLP ingestion; loki.limits_config.otlp_config decides
+      # which resource attributes become index labels.
       otlp_http/loki:
         endpoint: http://loki:3100/otlp
     service:
+      extensions: [health_check]
       pipelines:
-        traces: null
         metrics:
           receivers: [otlp]
           processors: [memory_limiter, resource, batch]
           exporters: [prometheus, debug]
         logs:
           receivers: [otlp]
-          processors: [memory_limiter, resource, attributes/low_cardinality_logs, batch]
+          processors: [memory_limiter, resource, batch]
           exporters: [otlp_http/loki, debug]
+      telemetry:
+        metrics:
+          readers:
+            - pull:
+                exporter:
+                  prometheus:
+                    host: ${env:MY_POD_IP}
+                    port: 8888
+        resource:
+          host.name: ${env:OTEL_K8S_NODE_NAME}
+          k8s.namespace.name: ${env:OTEL_K8S_NAMESPACE}
+          k8s.node.ip: ${env:OTEL_K8S_NODE_IP}
+          k8s.node.name: ${env:OTEL_K8S_NODE_NAME}
+          k8s.pod.ip: ${env:OTEL_K8S_POD_IP}
+          k8s.pod.name: ${env:OTEL_K8S_POD_NAME}
