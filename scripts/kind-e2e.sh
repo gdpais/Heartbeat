@@ -143,6 +143,8 @@ target_fresh() {
 	age=$(prom_value "time() - heartbeat_collector_target_last_success_timestamp_seconds{target=\"$1\"}")
 	[ -n "$age" ] && [ "$(printf '%.0f' "$age")" -lt 60 ]
 }
+loki_query() { svc_get loki:3100 "/loki/api/v1/query_range?since=15m&limit=10&query=$(printf '%s' "$1" | jq -sRr @uri)"; }
+log_found() { loki_query "$1" | jq -e '.data.result | length > 0'; }
 
 # ----------------------------------------------------------------------------
 step "cluster $CLUSTER, images, SQL Server target"
@@ -251,6 +253,49 @@ pass "probe errors counted for the unreachable target"
 step "Prometheus alerts reach Alertmanager (Watchdog)"
 wait_for 120 "Watchdog in Alertmanager" watchdog_active
 pass "Watchdog active in Alertmanager"
+
+step "log identifiers reach Loki as structured metadata, not labels"
+# One OTLP/JSON log record into the Collector. Loki's otlp_config indexes only
+# service.name, service.namespace and deployment.environment.name.
+user_id=e2e-user-$run_id session_id=e2e-session-$run_id request_id=e2e-request-$run_id client_ip=203.0.113.42
+cat >"$WORK/otlp-log.json" <<EOF
+{"resourceLogs": [{
+  "resource": {"attributes": [
+    {"key": "service.name", "value": {"stringValue": "e2e-identifiers"}},
+    {"key": "deployment.environment.name", "value": {"stringValue": "e2e"}}
+  ]},
+  "scopeLogs": [{"logRecords": [{
+    "timeUnixNano": "$(date +%s)000000000",
+    "severityText": "INFO",
+    "body": {"stringValue": "kind-e2e identifier check"},
+    "attributes": [
+      {"key": "user_id", "value": {"stringValue": "$user_id"}},
+      {"key": "session_id", "value": {"stringValue": "$session_id"}},
+      {"key": "request_id", "value": {"stringValue": "$request_id"}},
+      {"key": "client_ip", "value": {"stringValue": "$client_ip"}}
+    ]
+  }]}]
+}]}
+EOF
+# Sent from the Prometheus pod: `kubectl create --raw` through the service
+# proxy does not send the body as application/json, so the receiver answers 415.
+k -n "$NAMESPACE" exec deployment/prometheus -c prometheus-server -- wget -q -T 10 -O /dev/null \
+	--header 'Content-Type: application/json' --post-data "$(cat "$WORK/otlp-log.json")" \
+	http://otel-collector:4318/v1/logs || fail "the Collector rejected the OTLP log record"
+log_query="{service_name=\"e2e-identifiers\"} | user_id=\"$user_id\""
+wait_for 120 "log line in Loki" log_found "$log_query"
+stream=$(loki_query "$log_query" | jq -c '.data.result[0].stream')
+printf '      %s\n' "$stream"
+printf '%s' "$stream" | jq -e --arg u "$user_id" --arg s "$session_id" --arg r "$request_id" --arg c "$client_ip" \
+	'.user_id == $u and .session_id == $s and .request_id == $r and .client_ip == $c' >/dev/null ||
+	fail "Loki did not return all four identifiers"
+pass "found by structured metadata filter; user, session and request IDs and client IP kept"
+labels=$(svc_get loki:3100 "/loki/api/v1/labels?since=15m" | jq -r '.data | sort | join(",")')
+case ",$labels," in
+*,user_id,* | *,session_id,* | *,request_id,* | *,client_ip,*) fail "an identifier became a Loki label ($labels)" ;;
+*,service_name,*) pass "Loki labels: $labels" ;;
+*) fail "service_name is not a Loki label ($labels)" ;;
+esac
 
 # ----------------------------------------------------------------------------
 step "unauthenticated endpoints expose no diagnostics"

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"os/exec"
@@ -256,6 +257,9 @@ func TestChartProfiles(t *testing.T) {
 			checkCollectorSingleton(t, objects)
 			checkInClusterEndpoints(t, objects)
 			checkCollectorNetworkPolicy(t, objects, profile.collectorPeers)
+			checkCollectorPipelines(t, objects)
+			checkLogIdentifiers(t, objects)
+			checkLokiLabelPolicy(t, objects)
 		})
 	}
 }
@@ -391,6 +395,105 @@ func checkInClusterEndpoints(t *testing.T, objects map[string]object) {
 		if !services[host] {
 			t.Errorf("configured address %q points at Service %q, which this profile does not render", raw, host)
 		}
+	}
+}
+
+// The OTel Collector runs exactly Heartbeat's config in every profile: only
+// the OTLP receiver, and logs and metrics pipelines. Values merged over the
+// subchart's defaults once brought back its other receivers and a traces
+// pipeline in profiles that did not set otelCollector keys.
+func checkCollectorPipelines(t *testing.T, objects map[string]object) {
+	t.Helper()
+	cm, ok := objects["ConfigMap/otel-collector"]
+	if !ok {
+		return
+	}
+	var relay struct {
+		Receivers map[string]any `yaml:"receivers"`
+		Service   struct {
+			Pipelines map[string]any `yaml:"pipelines"`
+		} `yaml:"service"`
+	}
+	mustUnmarshal(t, cm.Data["relay"], &relay)
+	if got := slices.Sorted(maps.Keys(relay.Receivers)); !slices.Equal(got, []string{"otlp"}) {
+		t.Errorf("OTel Collector receivers = %v, want [otlp]", got)
+	}
+	if got := slices.Sorted(maps.Keys(relay.Service.Pipelines)); !slices.Equal(got, []string{"logs", "metrics"}) {
+		t.Errorf("OTel Collector pipelines = %v, want [logs metrics]", got)
+	}
+}
+
+// logIdentifiers are the log attributes session investigations correlate on.
+var logIdentifiers = []string{"user_id", "session_id", "request_id", "client_ip"}
+
+// The OTel Collector must pass the log identifiers through to Loki: no
+// processor action may delete or hash them.
+func checkLogIdentifiers(t *testing.T, objects map[string]object) {
+	t.Helper()
+	cm, ok := objects["ConfigMap/otel-collector"]
+	if !ok {
+		return
+	}
+	type action struct {
+		Key    string `yaml:"key"`
+		Action string `yaml:"action"`
+	}
+	var relay struct {
+		Processors map[string]struct {
+			Actions    []action `yaml:"actions"`
+			Attributes []action `yaml:"attributes"`
+		} `yaml:"processors"`
+	}
+	mustUnmarshal(t, cm.Data["relay"], &relay)
+	for name, processor := range relay.Processors {
+		for _, a := range append(processor.Actions, processor.Attributes...) {
+			if slices.Contains(logIdentifiers, a.Key) && (a.Action == "delete" || a.Action == "hash") {
+				t.Errorf("OTel Collector processor %s %ss %s; Loki keeps it as structured metadata, not a label", name, a.Action, a.Key)
+			}
+		}
+	}
+}
+
+// Loki indexes only the agreed OTLP resource attributes; everything else,
+// including the log identifiers, stays structured metadata.
+func checkLokiLabelPolicy(t *testing.T, objects map[string]object) {
+	t.Helper()
+	cm, ok := objects["ConfigMap/loki"]
+	if !ok {
+		return
+	}
+	var config struct {
+		LimitsConfig struct {
+			AllowStructuredMetadata bool `yaml:"allow_structured_metadata"`
+			OTLPConfig              struct {
+				ResourceAttributes struct {
+					IgnoreDefaults   bool `yaml:"ignore_defaults"`
+					AttributesConfig []struct {
+						Action     string   `yaml:"action"`
+						Attributes []string `yaml:"attributes"`
+					} `yaml:"attributes_config"`
+				} `yaml:"resource_attributes"`
+			} `yaml:"otlp_config"`
+		} `yaml:"limits_config"`
+	}
+	mustUnmarshal(t, cm.Data["config.yaml"], &config)
+	limits := config.LimitsConfig
+	if !limits.AllowStructuredMetadata {
+		t.Error("Loki limits_config.allow_structured_metadata is not true")
+	}
+	resource := limits.OTLPConfig.ResourceAttributes
+	if !resource.IgnoreDefaults {
+		t.Error("Loki otlp_config.resource_attributes.ignore_defaults is not true; Loki's default label list would apply")
+	}
+	var labels []string
+	for _, entry := range resource.AttributesConfig {
+		if entry.Action == "index_label" {
+			labels = append(labels, entry.Attributes...)
+		}
+	}
+	sort.Strings(labels)
+	if want := []string{"deployment.environment.name", "service.name", "service.namespace"}; !reflect.DeepEqual(labels, want) {
+		t.Errorf("Loki OTLP index labels = %q, want %q", labels, want)
 	}
 }
 

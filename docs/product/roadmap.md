@@ -35,8 +35,9 @@ shared validation inventory [16] throughout rather than as a final stage.
   ([ADR 0003](../architecture/decisions/0003-helm-on-kind-and-production.md)) [0.4]
 
 Open housekeeping: install the Renovate app and agree the local loop's time and
-resource budget [0.4]; set up tagged releases and retire the `db-collectors`
-branch ([ADR 0006](../architecture/decisions/0006-trunk-based-development-and-tagged-releases.md)) [0.5].
+resource budget [0.4]; create the release GitHub App, tag `v0.1.0`, then add
+*Restrict creations* to the tag ruleset
+([ADR 0006](../architecture/decisions/0006-trunk-based-development-and-tagged-releases.md)) [0.5].
 
 ## Phase 1 — DB collector (done)
 
