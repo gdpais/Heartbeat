@@ -79,11 +79,12 @@ the rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Release workflows: release-please keeps a release pull request (`CHANGELOG.md`, `version.txt`, chart `version`/`appVersion`); a `vX.Y.Z` tag on `master` that passed CI publishes multi-arch images and the chart to GHCR and lists their digests in the GitHub release
 - [x] Change-based CI: slow jobs run only when a change can affect them, every job on `master`; one required check, `ci-ok` ([ADR 0007](docs/architecture/decisions/0007-change-based-ci-with-one-required-check.md))
 - [x] Switch the `master` ruleset's required checks from `test`, `Helm chart` and `kind end-to-end` to `ci-ok`
-- [ ] Create the release GitHub App; set `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY` ([setup](CONTRIBUTING.md#releases))
+- [ ] At the end of phase 2: create the release GitHub App; set `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY` ([setup](CONTRIBUTING.md#releases)). Until then the release-please job is skipped and no releases are cut, not even by hand; the first release pull request then covers every Conventional Commit since `v0.1.0`
 - [ ] At `1.0.0`, the first production release: remove `"prerelease": true` from `release-please-config.json`
 - [x] Tag ruleset on all tags (not only `v*`, so later component tags are covered): no updates or deletions
-- [ ] Once the release app exists and `v0.1.0` is tagged: add a second tag ruleset on all tags, `Heartbeat-tag-creation`, with only *Restrict creations* and the release app in its bypass list, so the app can create tags but not move or delete them ([setup](CONTRIBUTING.md#releases))
-- [ ] First release, `v0.1.0`: tag the phase 1 merge commit `64ac1b6`, run the `release` workflow by hand for it, check the release notes list three digests, and make the GHCR packages public
+- [ ] Right after the release app exists: add a second tag ruleset on all tags, `Heartbeat-tag-creation`, with only *Restrict creations* and the release app in its bypass list, so the app can create tags but not move or delete them ([setup](CONTRIBUTING.md#releases))
+- [x] First release, `v0.1.0`: tag the phase 1 merge commit `64ac1b6`, run the `release` workflow by hand for it, check the release notes list three digests
+- [ ] Make the GHCR packages public: `heartbeat/db-collector`, `heartbeat/otel-gateway`, `charts/heartbeat`
 
 ---
 

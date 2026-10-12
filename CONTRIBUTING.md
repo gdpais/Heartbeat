@@ -180,7 +180,11 @@ There are no `latest` or `stable` tags.
 **Tags** are created only by the release app and are never moved or deleted;
 a bad release is fixed by the next patch release.
 
-**One-time setup** ([TODO 0.5](TODO.md)):
+**One-time setup** ([TODO 0.5](TODO.md)), done at the end of phase 2. Until
+the app exists the release-please job is skipped and no release is cut, not
+even by hand: a hand release would have to bump the chart, `version.txt`,
+`CHANGELOG.md` and the release-please manifest itself. Nothing is lost while
+waiting; the first release pull request covers every commit since `v0.1.0`.
 
 1. Create a GitHub App (Settings → Developer settings → GitHub Apps → New):
    webhook off; repository permissions *Contents*, *Pull requests* and

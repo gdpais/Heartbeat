@@ -1,8 +1,9 @@
 # 0006. Trunk-based development and tagged releases
 
 - Status: Accepted. In effect from 2026-10-05, after phase 1 merged to
-  `master`. Release workflows built; the release app, tag ruleset and first
-  release are set up by hand ([TODO 0.5](../../../TODO.md)). The required
+  `master`. Release workflows built; `v0.1.0` was tagged and published by
+  hand on 2026-10-12, and the release app and tag-creation ruleset follow at
+  the end of phase 2 ([TODO 0.5](../../../TODO.md)). The required
   checks are replaced by `ci-ok` ([ADR 0007](0007-change-based-ci-with-one-required-check.md)).
   Tag protection covers all tags, not only `v*`, so tags with other names
   cannot be moved either, and is split into two rulesets so the release
