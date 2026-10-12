@@ -313,7 +313,7 @@ func TestExtractionAgainstSQLServer(t *testing.T) {
 	// week's cycle table) or into a cycle table by name.
 	insertInto := func(object, key string, offset time.Duration) {
 		t.Helper()
-		exec(t, sa, `DECLARE @sql nvarchar(max) = N'INSERT INTO dbo.' + QUOTENAME(@object) + N' (Instant, Message, Module_Name, Request_Key, User_Id, Stack)
+		exec(t, sa, `DECLARE @sql nvarchar(max) = N'INSERT INTO dbo.' + QUOTENAME(@object) + N' (Instant, Message, Espace_Name, Request_Key, User_Id, Stack)
 VALUES (@instant, @message, N''ShopCore'', @key, 7, N''at Shop.Checkout()'')';
 EXEC sys.sp_executesql @sql, N'@instant datetime, @message nvarchar(2000), @key char(36)', @instant, @message, @key;`,
 			sql.Named("object", object), sql.Named("instant", mssql.DateTime1(base.Add(offset))), sql.Named("message", "Order failed: "+key), sql.Named("key", key))

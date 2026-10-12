@@ -6,6 +6,8 @@
 -- oslog_Screen_Previous over last week's; the platform switches them every
 -- Friday at 23:45 (database time). Reading both keeps the rows logged just
 -- before a rotation and lets initial_lookback reach back a week.
+-- Columns that differ between the log views are returned under the standard
+-- names of README.md (Standard columns).
 -- Instant is when the request STARTED and the row is written when it ends:
 -- give this log type its own lag (probes[].lag) above the longest request.
 -- Duration is milliseconds. No Error_Id on this view, so every row is INFO;
@@ -15,18 +17,18 @@ SELECT TOP (@limit)
     CONCAT(r.Screen_Type, N' request ', r.Screen) AS Message,
     r.Duration,
     r.Screen,
+    r.Action_Name,
     r.Screen_Type,
     r.Access_Mode,
     r.Application_Name,
     r.Espace_Name,
-    r.Action_Name,
     r.Request_Key,
     r.Session_Id,
     r.User_Id,
     r.Username,
     r.Tenant_Id,
     r.Client_IP,
-    r.Executed_By,
+    r.Executed_By AS Server,
     r.Session_Bytes,
     r.Viewstate_Bytes,
     r.Session_Requests,

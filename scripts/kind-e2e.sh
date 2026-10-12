@@ -314,7 +314,7 @@ oslog_login=$(sed -n 's/^HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV=\([^:]*\):.*/\1/
 	printf 'CREATE DATABASE heartbeat_oslog_e2e;\nGO\nUSE heartbeat_oslog_e2e;\nGO\n'
 	cat services/db-collector/internal/collectors/outsystems/testdata/oslog/error.sql
 	printf '\nGO\nCREATE USER [%s] FOR LOGIN [%s];\nGRANT SELECT ON dbo.oslog_Error TO [%s];\nGRANT SELECT ON dbo.oslog_Error_Previous TO [%s];\n' "$oslog_login" "$oslog_login" "$oslog_login" "$oslog_login"
-	printf '%s\n' "INSERT INTO dbo.oslog_Error (Instant, Message, Module_Name, Request_Key) VALUES" \
+	printf '%s\n' "INSERT INTO dbo.oslog_Error (Instant, Message, Espace_Name, Request_Key) VALUES" \
 		"(DATEADD(SECOND, -180, GETUTCDATE()), N'e2e order 1 failed', N'E2eShop', 'e2e-1')," \
 		"(DATEADD(SECOND, -120, GETUTCDATE()), N'e2e order 2 failed', N'E2eShop', 'e2e-2')," \
 		"(DATEADD(SECOND, -120, GETUTCDATE()), N'e2e order 3 failed', N'E2eShop', 'e2e-3');" GO

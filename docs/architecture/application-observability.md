@@ -46,18 +46,24 @@ columns up by name. Other columns pass through unchanged.
 | Column | Meaning | In Heartbeat |
 | --- | --- | --- |
 | `Instant` | When the screen request or timer **started** (`screen`, `cyclic_job`), when the integration or mobile request **completed** (`integration`, `mobile_request`), or when the row was logged (`error`, `general`, `extension`, `request_event`), in the platform servers' time zone | Record timestamp; watermark. Start-stamped types need their own `lag` |
-| `Application_Name`, `Module_Name` (eSpace) | Owning application and module | `service.name` (application); `Module_Name` attribute and metric label |
+| `Application_Name`, `Espace_Name` | Owning application and module | `service.name` (application); `Espace_Name` attribute and metric label |
+| `Module_Name` (error and general logs) | The free text the row was logged with; `SLOWSQL` marks the platform's slow-query messages | Attribute; selects slow-SQL rows |
 | `Request_Key` | One request handled by a front-end server; shared by the rows that request logs, across log types and modules | Request correlation key |
-| `Session_Id`, `User_Id` | Platform session and user | Investigation filters; distinct counts for active users |
-| `Client_IP` | Caller address | Investigation filter |
+| `Session_Id`, `User_Id`, `Username` | Platform session and user (`Login_Id` on mobile requests is returned as `Session_Id`) | Investigation filters; distinct counts for active users |
+| `Client_IP` | Caller address (`Source` on mobile requests and exposed integrations is returned as `Client_IP`) | Investigation filter |
 | `Tenant_Id` | Multi-tenant apps | Attribute; optional business breakdown |
-| `Server` / `Executed_By` | Front-end server that handled the request | `front_end` metric label |
-| `Duration` | Elapsed time of screens, server calls, integrations, extensions and timers, in milliseconds (the queries convert the log types the platform logs in seconds) | Latency metrics; span duration |
-| `Screen`, `Action_Name`, `Entrypoint_Name`, `Endpoint`, `Action` | What ran | `operation` metric label (capped); span name |
+| `Server` | Front-end server that handled the request (`Executed_By` on most views is returned as `Server`) | `front_end` metric label |
+| `Duration` | Elapsed time of screens, server calls, integrations, extensions, timers and slow queries, in milliseconds (the queries convert the log types the platform logs in seconds and parse the `SLOWSQL` message) | Latency metrics; span duration |
+| `Screen`, `Action_Name` | The entry point and the operation that ran; the queries map each view's own column (`Entrypoint_Name`, `Endpoint`, `Action`, `Cyclic_Job_Name`, the event name) to these two | `operation` metric label (capped); span name |
 | `Error_Id` | Links a row to its error log entry | Outcome `error` |
 | `Message`, `Stack` | Error text and stack | Body; `error.fingerprint` |
 | `Session_Bytes`, `Viewstate_Bytes` | Traditional web screen state sizes | Size histograms |
+| `Endpoint`, `Type`, `Is_Expose` | Integration URL, protocol and direction | Attributes; dependency breakdown |
 | `Should_Have_Run_At` | Timer schedule | Timer delay |
+
+The mapping from each view's own columns to these names is the
+[standard columns](../../services/db-collector/internal/probes/outsystems/queries/README.md#standard-columns)
+table of the queries README.
 
 Identifiers are never Loki labels or metric labels. They stay structured
 metadata, queryable with `| User_Id="…"`. Whether to hash user IDs and client
@@ -147,7 +153,10 @@ build request timelines from that key, in OutSystems terms, without any agent.
   find.
 
 This needs no new storage and proves whether `Request_Key` is reliably
-present in each log type.
+present in each log type. Until the dashboard exists,
+[`scripts/outsystems-log-queries.sql`](../../scripts/outsystems-log-queries.sql)
+holds the SQL the SRE team runs against the logging database for the same
+timelines.
 
 ### Step B: synthesized OTLP traces (after step A)
 

@@ -6,8 +6,11 @@
 -- oslog_Error_Previous over last week's; the platform switches them every
 -- Friday at 23:45 (database time). Reading both keeps the rows logged just
 -- before a rotation and lets initial_lookback reach back a week.
--- The Error view spells the key Request_key; it is aliased so the attribute
--- is Request_Key on every log type.
+-- Columns that differ between the log views are returned under the standard
+-- names of README.md (Standard columns).
+-- Request_key is the key, Entrypoint_Name the entry point (standard names
+-- Request_Key and Screen). Module_Name is the free text the error was logged
+-- with, Espace_Name the module.
 SELECT TOP (@limit)
     r.Instant,
     r.Message,
@@ -15,7 +18,7 @@ SELECT TOP (@limit)
     r.Application_Name,
     r.Espace_Name,
     r.Module_Name,
-    r.Entrypoint_Name,
+    r.Entrypoint_Name AS Screen,
     r.Action_Name,
     r.Request_key AS Request_Key,
     r.Session_Id,

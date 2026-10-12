@@ -6,8 +6,12 @@
 -- oslog_General_Previous over last week's; the platform switches them every
 -- Friday at 23:45 (database time). Reading both keeps the rows logged just
 -- before a rotation and lets initial_lookback reach back a week.
--- No Severity column: every row is INFO. Message_Type is the free text the
--- app passed as the module name. An empty Error_Id is dropped (NULL).
+-- Columns that differ between the log views are returned under the standard
+-- names of README.md (Standard columns).
+-- No Severity column: every row is INFO. Module_Name is the free text the
+-- app passed to LogMessage; the platform's own slow-query rows use SLOWSQL
+-- and a Message of the form '<statement> took <n> ms', whose n becomes
+-- Duration. An empty Error_Id is dropped (NULL).
 SELECT TOP (@limit)
     r.Instant,
     r.Message,
@@ -15,7 +19,7 @@ SELECT TOP (@limit)
     r.Application_Name,
     r.Espace_Name,
     r.Module_Name,
-    r.Entrypoint_Name,
+    r.Entrypoint_Name AS Screen,
     r.Action_Name,
     r.Request_Key,
     r.Session_Id,
@@ -23,7 +27,11 @@ SELECT TOP (@limit)
     r.Username,
     r.Tenant_Id,
     r.Client_IP,
-    NULLIF(r.Error_Id, '') AS Error_Id
+    NULLIF(r.Error_Id, '') AS Error_Id,
+    CASE WHEN r.Module_Name = 'SLOWSQL' AND r.Message LIKE '%took [0-9]% ms%'
+         THEN TRY_CAST(SUBSTRING(r.Message, PATINDEX('%took [0-9]%', r.Message) + 5,
+                                 CHARINDEX(' ms', r.Message, PATINDEX('%took [0-9]%', r.Message)) - PATINDEX('%took [0-9]%', r.Message) - 5) AS int)
+    END AS Duration
 FROM (
     SELECT * FROM dbo.oslog_General
     WHERE Instant > @from AND Instant <= @to

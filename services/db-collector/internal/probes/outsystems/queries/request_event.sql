@@ -6,16 +6,20 @@
 -- oslog_RequestEvent_Previous over last week's; the platform switches them every
 -- Friday at 23:45 (database time). Reading both keeps the rows logged just
 -- before a rotation and lets initial_lookback reach back a week.
+-- Columns that differ between the log views are returned under the standard
+-- names of README.md (Standard columns).
 -- This view names its columns in upper case without underscores; they are
--- aliased to the names the other log types use.
+-- aliased to the standard names. The event name is the operation
+-- (Action_Name).
 SELECT TOP (@limit)
     r.INSTANT AS Instant,
     CONCAT(r.REQUESTEVENTNAME, N': ', r.EVENTDETAILS) AS Message,
-    r.REQUESTEVENTNAME AS Request_Event_Name,
+    r.REQUESTEVENTNAME AS Action_Name,
+    r.EVENTDETAILS AS Event_Details,
     r.REQUESTKEY AS Request_Key,
     r.APPLICATIONNAME AS Application_Name,
     r.APPLICATIONKEY AS Application_Key,
-    r.MODULENAME AS Module_Name,
+    r.MODULENAME AS Espace_Name,
     r.MODULEKEY AS Module_Key
 FROM (
     SELECT * FROM dbo.oslog_RequestEvent

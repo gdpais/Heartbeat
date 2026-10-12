@@ -74,13 +74,14 @@ the parameters directly; do not cast either side.
 | `Instant` | yes | The log record's timestamp |
 | `Message` | no | The log body. Without it the body is empty |
 | `Severity` | no | The log severity: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR` or `FATAL` (case-insensitive). Without it, `error` rows are `ERROR` and all others `INFO`. Derive it in SQL with a `CASE` when a log type mixes levels |
-| `Application_Name` | recommended | The Loki stream's `service.name`. Without it, `Module_Name` is used, then `unknown` |
-| any other column | no | A log attribute named exactly like the column, for example `Request_Key`, `Session_Id`, `User_Id`, `Client_IP`, `Module_Name`, `Duration` |
+| `Application_Name` | recommended | The Loki stream's `service.name`. Without it, `Espace_Name` is used, then `Module_Name`, then `unknown` |
+| any other column | no | A log attribute named exactly like the column, for example `Request_Key`, `Session_Id`, `User_Id`, `Client_IP`, `Espace_Name`, `Duration` |
 
-- Keep OutSystems' own column names: SREs search Loki with them, and the
-  derived metrics and request correlation look them up by name. The names the
-  extractor understands are listed in
-  [application observability](../../../../../../docs/architecture/application-observability.md#outsystems-fields).
+- Keep OutSystems' own column name where the views agree on it, and use the
+  [standard name](#standard-columns) where they do not. The derived metrics
+  and the request correlation look the standard names up; SREs search Loki
+  with one name per concept. The names the extractor understands are listed
+  in [application observability](../../../../../../docs/architecture/application-observability.md#outsystems-fields).
 - `NULL` values are left out of the record. Other columns keep their type:
   integers, floating point, `bit` and `decimal` become numbers and booleans,
   other date and time columns RFC 3339 strings in UTC (read in
@@ -93,6 +94,29 @@ the parameters directly; do not cast either side.
   Duration`). The extractor converts milliseconds for metrics.
 - The Error view spells the key `Request_key` and the Request event view
   `REQUESTKEY`: alias them `AS Request_Key`.
+
+## Standard columns
+
+The log views name the same thing differently. Each query returns it under
+one name (alias in SQL); columns the views agree on keep their OutSystems
+name.
+
+| Standard column | Meaning | View columns it replaces |
+| --- | --- | --- |
+| `Request_Key` | The request the row belongs to | `Request_key` (error), `REQUESTKEY` (request event) |
+| `Screen` | The entry point: the screen of a Traditional or Reactive request, the entry point an error or message was logged under | `Screen` (screen, mobile request), `Entrypoint_Name` (error, general) |
+| `Action_Name` | The operation that ran: a screen action, a server or data action, an integration action, an extension action, a timer, an event | `Action_Name` (screen, extension, error, general), `Endpoint` (mobile request), `Action` (integration), `Cyclic_Job_Name` (cyclic job), `REQUESTEVENTNAME` (request event) |
+| `Espace_Name` | The module | `Espace_Name`, `MODULENAME` (request event) |
+| `Server` | The front-end server that handled the request | `Executed_By` (screen, integration, extension, cyclic job, mobile request), `Server` (error) |
+| `Session_Id` | The platform session | `Session_Id`, `Login_Id` (mobile request) |
+| `Client_IP` | The caller's address | `Client_IP` (screen, general), `Source` (mobile request; integration, where it is the caller of an exposed API) |
+| `Duration` | Elapsed milliseconds | `Duration` in milliseconds (screen, integration) or seconds (extension, mobile request, cyclic job, converted); parsed from the `SLOWSQL` message (general) |
+| `Error_Id` | The related error log row, absent when there is none | `Error_Id` as text (empty for none) or integer (0 for none) |
+
+Not standardized, on purpose: `Module_Name` on the error and general logs
+is the free text the app logged with (`SLOWSQL` for the platform's slow
+queries), not the module, which is `Espace_Name`. `Endpoint` stays the
+consumed URL on the integration log only.
 
 ## Review and tests
 

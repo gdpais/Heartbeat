@@ -38,7 +38,7 @@ func TestBuildLogsMapsRowsToRecords(t *testing.T) {
 	observed := time.Date(2026, 7, 1, 12, 5, 0, 0, time.UTC)
 	batch := Batch{Columns: []Column{
 		{"Instant", "DATETIME"}, {"Message", "NVARCHAR"}, {"Severity", "VARCHAR"},
-		{"Application_Name", "NVARCHAR"}, {"Module_Name", "NVARCHAR"}, {"Request_Key", "CHAR"},
+		{"Application_Name", "NVARCHAR"}, {"Espace_Name", "NVARCHAR"}, {"Request_Key", "CHAR"},
 		{"User_Id", "INT"}, {"Duration", "BIGINT"}, {"Ratio", "FLOAT"}, {"Is_Expose", "BIT"},
 		{"Amount", "DECIMAL"}, {"Session_Guid", "UNIQUEIDENTIFIER"}, {"Payload", "VARBINARY"},
 		{"Should_Have_Run_At", "DATETIME"}, {"Day", "DATE"}, {"Stack", "NVARCHAR"}, {"Tenant_Id", "INT"},
@@ -102,7 +102,7 @@ func TestBuildLogsMapsRowsToRecords(t *testing.T) {
 	got := attributes(first.Attributes)
 	want := map[string]any{
 		"Application_Name":   "Shop",
-		"Module_Name":        "ShopCore",
+		"Espace_Name":        "ShopCore",
 		"Request_Key":        "ab12",
 		"User_Id":            int64(7),
 		"Duration":           int64(1500),
