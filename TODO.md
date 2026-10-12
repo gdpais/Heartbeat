@@ -82,7 +82,7 @@ the rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 - [ ] Create the release GitHub App; set `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY` ([setup](CONTRIBUTING.md#releases))
 - [ ] At `1.0.0`, the first production release: remove `"prerelease": true` from `release-please-config.json`
 - [x] Tag ruleset on all tags (not only `v*`, so later component tags are covered): no updates or deletions
-- [ ] Once the release app exists and `v0.1.0` is tagged: add *Restrict creations* to the tag ruleset, with the release app in its bypass list
+- [ ] Once the release app exists and `v0.1.0` is tagged: add a second tag ruleset on all tags, `Heartbeat-tag-creation`, with only *Restrict creations* and the release app in its bypass list, so the app can create tags but not move or delete them ([setup](CONTRIBUTING.md#releases))
 - [ ] First release, `v0.1.0`: tag the phase 1 merge commit `64ac1b6`, run the `release` workflow by hand for it, check the release notes list three digests, and make the GHCR packages public
 
 ---

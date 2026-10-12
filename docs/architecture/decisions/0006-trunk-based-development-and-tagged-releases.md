@@ -5,7 +5,8 @@
   release are set up by hand ([TODO 0.5](../../../TODO.md)). The required
   checks are replaced by `ci-ok` ([ADR 0007](0007-change-based-ci-with-one-required-check.md)).
   Tag protection covers all tags, not only `v*`, so tags with other names
-  cannot be moved either.
+  cannot be moved either, and is split into two rulesets so the release
+  app's bypass covers only tag creation.
 - Date: 2026-10-05
 
 ## Context
@@ -50,7 +51,7 @@ pinned by the chart.
 | Registry | **GitHub Container Registry** (`ghcr.io/gdpais/...`) is the release registry. Production pulls from **Amazon ECR** (ADR 0005), which receives the same images when production delivery [18] is built | The repository and its artifacts are public; GHCR sits next to the code and the releases, needs no cloud account, and is pullable from kind, which makes the Argo CD rehearsal on kind [18] realistic. Copying an image keeps its digest, so both registries serve the identical build. |
 | Pre-releases | Every `0.y.z` release is marked *Pre-release* on GitHub (release-please `prerelease`), so none is shown as *Latest*. The setting is removed for `1.0.0`, the first production release | Heartbeat is a prototype until then; releasing early still tests the release path and gives real artifacts for the Argo CD rehearsal. |
 | Moving tags | None: no `latest` or `stable` Git tags or image tags. GitHub marks the newest release as *Latest* by itself | Moving tags make "what is deployed" ambiguous, which digest pinning (ADR 0005) exists to prevent. Promotion between environments is what says a release is stable. |
-| Tag protection | A tag ruleset on `v*`: only the release app may create tags; nobody may update or delete them | A release cannot be moved or removed; a bad release is fixed by the next patch release. |
+| Tag protection | Two tag rulesets on all tags: one forbids updates and deletions with no bypass; the other forbids creation, with the release app as its only bypass | A release cannot be moved or removed; a bad release is fixed by the next patch release. A bypass covers a whole ruleset, so a single ruleset would also let the app move and delete tags. |
 | Promotion | Argo CD deploys from `heartbeat-deploy` (ADR 0005). Promoting a release is a commit there that sets the image digests for an environment: dev, then staging, then production | Every deploy is a reviewed commit that names an exact build; rollback is `git revert`. |
 | Process | Contribution rules live in [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) | One home for how to branch, commit, test, open pull requests and release, for people and agents. |
 
