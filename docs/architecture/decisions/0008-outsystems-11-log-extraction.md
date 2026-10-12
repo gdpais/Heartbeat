@@ -1,6 +1,8 @@
 # 0008. Extract OutSystems 11 logs from the logging database
 
-- Status: Proposed
+- Status: Accepted. Extraction, the eight log-type queries, the watermark
+  volume and the Loki path are built; the survey of a real logging database,
+  derived metrics and dashboards are pending ([TODO 3.3](../../../TODO.md)).
 - Date: 2026-10-10
 
 ## Context

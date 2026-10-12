@@ -565,11 +565,11 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 
 ### 10.2 Normalization contract
 - [ ] Define canonical application event envelope
-- [ ] Map OutSystems default logs faithfully first
+- [x] Map OutSystems default logs faithfully first (OutSystems column names as log attributes [3.3])
 - [ ] Validate consistent environment/application/session fields
 
 ### 10.3 Telemetry wiring
-- [ ] Route sample OutSystems telemetry into Loki
+- [x] Route sample OutSystems telemetry into Loki (`make kind-e2e`: fixture error rows → Loki)
 - [ ] Generate/derive application metrics in Prometheus
 - [ ] Validate Grafana queries against both
 

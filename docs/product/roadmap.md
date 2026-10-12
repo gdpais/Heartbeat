@@ -10,7 +10,7 @@ shared validation inventory [16] throughout rather than as a final stage.
 | --- | --- | --- |
 | 0 | Foundations, including kind + Helm delivery | Done |
 | 1 | DB collector (SQL Server) | Done |
-| 2 | OutSystems ingest (OutSystems 11 log extraction) | Designed ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)); not built |
+| 2 | OutSystems ingest (OutSystems 11 log extraction) | In progress: extraction to Loki built ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)); real-database survey, derived metrics and dashboards pending |
 | 3 | API / control plane | Not started |
 | 4 | Web UI | Not started |
 | 5 | Production delivery (EKS + Argo CD) | Not started; decisions recorded |
