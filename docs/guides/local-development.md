@@ -121,7 +121,7 @@ certificate.
 | `make vet` | Go static checks | Go |
 | `make rules-check` | promtool rule validation and unit tests | Docker |
 | `make test-integration` | PostgreSQL migration and index tests (`-tags=integration`) | Docker (`postgres:17`) |
-| `make test-sqlserver` | Every built-in probe against a disposable SQL Server, as a login with only the documented grants; fails on duplicate series or padded label values; checks the session settings and the sysadmin-equivalence flag for that login, `sa` and a `CONTROL SERVER` login. Every OutSystems log query against its fixture tables, as a login with only `SELECT` on them, and the extraction of `oslog_Error` to a fake OTel Collector across cycles and a restart, each row exactly once (`-tags=sqlserver`) | Docker (SQL Server 2022) |
+| `make test-sqlserver` | Every built-in probe against a disposable SQL Server, as a login with only the documented grants; fails on duplicate series or padded label values; checks the session settings and the sysadmin-equivalence flag for that login, `sa` and a `CONTROL SERVER` login. Every OutSystems log query against its fixture tables, views and rows, as a login with only `SELECT` on them, returning every row of the current and the previous week; and the extraction of `oslog_Error` to a fake OTel Collector across cycles, a restart and a weekly log table rotation, each row exactly once (`-tags=sqlserver`) | Docker (SQL Server 2022) |
 | `make chart-check` | `helm lint`, then renders every values profile and checks it (below) | Helm, `make chart-deps` |
 | `make kind-e2e` | Acceptance checks on a temporary kind cluster (below) | Docker, kind, kubectl, Helm, jq |
 

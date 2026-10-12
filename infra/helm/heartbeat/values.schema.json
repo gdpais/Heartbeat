@@ -289,6 +289,10 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 25000
+            },
+            "lag": {
+              "type": "string",
+              "description": "outsystems_logs only: this log type's lag, replacing the collector's (Go duration). A screen or cyclic_job row is written when the operation ends but Instant is its start, so set it above the longest screen request or timer."
             }
           }
         },

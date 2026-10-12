@@ -56,7 +56,7 @@ func logsCollector() collectorconfig.CollectorRuntimeConfig {
 		OutSystemsLogs: collectorconfig.OutSystemsLogsConfig{Lag: time.Minute, BatchLimit: 10, LogTimezone: "UTC"},
 		Targets: []collectorconfig.TargetRuntimeConfig{{
 			Name: "logging-db", EnvironmentSlug: "prod", Engine: collectorconfig.KindOutSystemsLogs,
-			Probes: []collectorconfig.ProbeRuntimeConfig{{Name: "error"}},
+			Probes: []collectorconfig.ProbeRuntimeConfig{{Name: "error", Lag: 2 * time.Minute}},
 		}},
 	}
 }
@@ -74,9 +74,13 @@ func TestEngineExecutorRoutesByCollectorKind(t *testing.T) {
 	if len(probes) != 1 || probes[0].Definition.Name != "error" {
 		t.Fatalf("outsystems executor ran %+v", probes)
 	}
-	// The collector's log settings reach the executor with the probe.
+	// The collector's log settings reach the executor with the probe, and so
+	// does the log type's own lag.
 	if got := probes[0].OutSystemsLogs; got.BatchLimit != 10 || got.Lag != time.Minute {
 		t.Fatalf("probe carries settings %+v", got)
+	}
+	if got := probes[0].Definition.Lag; got != 2*time.Minute {
+		t.Fatalf("probe lag = %s, want 2m", got)
 	}
 	if got := exporter.LastValue(MetricTargetLoginSysadmin); got != 1 {
 		t.Fatalf("%s = %v, want the outsystems executor's answer", MetricTargetLoginSysadmin, got)

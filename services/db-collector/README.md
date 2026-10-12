@@ -283,9 +283,10 @@ To add a new SQL Server probe:
    and run `make test-sqlserver`.
 
 To add an OutSystems log type, add `internal/probes/outsystems/queries/<log
-type>.sql` under the [query contract](internal/probes/outsystems/queries/README.md)
-and the CREATE TABLE statements of the tables it reads to
-`internal/collectors/outsystems/testdata/oslog/<log type>.sql`, then run
+type>.sql` under the [query contract](internal/probes/outsystems/queries/README.md),
+the CREATE TABLE and CREATE VIEW statements of the objects it reads to
+`internal/collectors/outsystems/testdata/oslog/<log type>.sql` and
+representative rows to `<log type>.rows.sql` next to it, then run
 `make test-sqlserver`.
 
 To add a new collector:

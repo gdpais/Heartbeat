@@ -109,6 +109,8 @@ type probeDocument struct {
 	Name          string `yaml:"name"`
 	QueryTemplate string `yaml:"query_template"`
 	TimeoutMS     int    `yaml:"timeout_ms"`
+	// Lag is the outsystems_logs per-log-type lag.
+	Lag string `yaml:"lag"`
 }
 
 // CollectorRuntimeConfig is the normalised, ready-to-use representation of a
@@ -170,6 +172,11 @@ type ProbeRuntimeConfig struct {
 	Name          string
 	QueryTemplate string
 	TimeoutMS     int
+	// Lag, on an outsystems_logs collector, replaces the collector's lag for
+	// this log type; 0 means the collector's.  A log type whose Instant is
+	// the start of the operation (screen, cyclic_job) is written when the
+	// operation ends, so its lag must exceed the longest operation.
+	Lag time.Duration
 }
 
 // RuntimeConfig is the fully parsed and validated integrations file.
@@ -342,8 +349,12 @@ func normalizeCollector(doc collectorDocument) (CollectorRuntimeConfig, error) {
 		ScrapeInterval: 30 * time.Second,
 		Environment:    strings.TrimSpace(doc.Config.Environment),
 		TargetNames:    append([]string(nil), doc.Config.TargetNames...),
-		Probes:         normalizeProbes(doc.Config.Probes),
 	}
+	probes, err := normalizeProbes(doc.ID, doc.Config.Probes)
+	if err != nil {
+		return CollectorRuntimeConfig{}, err
+	}
+	cfg.Probes = probes
 	if doc.Config.ScrapeInterval != "" {
 		interval, err := time.ParseDuration(doc.Config.ScrapeInterval)
 		if err != nil {
@@ -357,6 +368,10 @@ func normalizeCollector(doc collectorDocument) (CollectorRuntimeConfig, error) {
 	}
 	cfg.OutSystemsLogs = logs
 	for _, target := range doc.Config.Targets {
+		targetProbes, err := normalizeProbes(doc.ID, target.Probes)
+		if err != nil {
+			return CollectorRuntimeConfig{}, err
+		}
 		runtimeTarget := TargetRuntimeConfig{
 			Name:            strings.TrimSpace(target.Name),
 			EnvironmentSlug: strings.TrimSpace(target.Environment),
@@ -365,7 +380,7 @@ func normalizeCollector(doc collectorDocument) (CollectorRuntimeConfig, error) {
 			Port:            target.Port,
 			DatabaseName:    strings.TrimSpace(target.DatabaseName),
 			CredentialRef:   strings.TrimSpace(target.CredentialRef),
-			Probes:          normalizeProbes(target.Probes),
+			Probes:          targetProbes,
 		}
 		if runtimeTarget.EnvironmentSlug == "" {
 			runtimeTarget.EnvironmentSlug = cfg.Environment
@@ -433,19 +448,32 @@ func normalizeOutSystemsLogs(doc collectorDocument) (OutSystemsLogsConfig, error
 	return cfg, nil
 }
 
-func normalizeProbes(docs []probeDocument) []ProbeRuntimeConfig {
+// normalizeProbes parses the probes of collector collectorID.  A probe's lag
+// must be a positive duration, so a parsed Lag of 0 always means "not set".
+func normalizeProbes(collectorID string, docs []probeDocument) ([]ProbeRuntimeConfig, error) {
 	probes := make([]ProbeRuntimeConfig, 0, len(docs))
 	for _, doc := range docs {
 		if strings.TrimSpace(doc.Name) == "" {
 			continue
 		}
-		probes = append(probes, ProbeRuntimeConfig{
+		probe := ProbeRuntimeConfig{
 			Name:          strings.TrimSpace(doc.Name),
 			QueryTemplate: doc.QueryTemplate,
 			TimeoutMS:     doc.TimeoutMS,
-		})
+		}
+		if doc.Lag != "" {
+			lag, err := time.ParseDuration(doc.Lag)
+			if err != nil {
+				return nil, fmt.Errorf("invalid lag for collector %s probe %s: %w", collectorID, probe.Name, err)
+			}
+			if lag <= 0 {
+				return nil, fmt.Errorf("collector %s probe %s lag must be positive", collectorID, probe.Name)
+			}
+			probe.Lag = lag
+		}
+		probes = append(probes, probe)
 	}
-	return probes
+	return probes, nil
 }
 
 func validate(cfg RuntimeConfig) error {
@@ -558,6 +586,9 @@ func validateTargets(collector CollectorRuntimeConfig) error {
 			}
 			if maxMS := MaxProbeTimeout.Milliseconds(); int64(probe.TimeoutMS) > maxMS {
 				return fmt.Errorf("collector %s target %s probe %s timeout_ms %d exceeds the maximum of %d", collector.ID, target.Name, probe.Name, probe.TimeoutMS, maxMS)
+			}
+			if probe.Lag != 0 && collector.Kind != KindOutSystemsLogs {
+				return fmt.Errorf("collector %s target %s probe %s: lag applies only to %s collectors", collector.ID, target.Name, probe.Name, KindOutSystemsLogs)
 			}
 		}
 	}

@@ -54,9 +54,11 @@ warning at startup and lists it in `GET /admin/config`.
 ### OutSystems logging database
 
 An `outsystems_logs` collector reads the OutSystems 11 logging database with
-its own login, which needs `SELECT` on the `oslog_*` tables its log-type
-queries read, access to that database, and nothing else: no server
-permission. `make test-sqlserver` runs every log-type query as such a login.
+its own login, which needs `SELECT` on the `oslog_*` views its log-type
+queries read (`oslog_<TYPE>` and `oslog_<TYPE>_Previous`; the views and their
+cycle tables share an owner, so no grant on the tables), access to that
+database, and nothing else: no server permission. `make test-sqlserver` runs
+every log-type query as such a login.
 It runs the same login check and session settings as below. Settings are in
 the [configuration reference](../reference/configuration.md#outsystems_logs-collectors).
 

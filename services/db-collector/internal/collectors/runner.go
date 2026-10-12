@@ -1207,6 +1207,7 @@ func scheduledProbes(collector collectorconfig.CollectorRuntimeConfig) []collect
 					Name:          probe.Name,
 					QueryTemplate: probe.QueryTemplate,
 					TimeoutMS:     probe.TimeoutMS,
+					Lag:           probe.Lag,
 				},
 				Assignment: collectormetadata.ProbeAssignment{
 					IntervalSeconds: int(collector.ScrapeInterval / time.Second),

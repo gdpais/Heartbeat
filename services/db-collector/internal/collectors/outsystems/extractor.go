@@ -12,6 +12,11 @@
 // therefore at least once: a failed export or a crash before the watermark is
 // saved reads the same rows again.
 //
+// The lag is the collector's, or the log type's own when its probe sets one:
+// a screen or cyclic_job row carries the start of the operation as Instant
+// but is written when the operation ends, so its lag must cover the longest
+// screen request or timer.
+//
 // A full batch (batch_limit rows) drops its trailing rows that share the last
 // Instant, which the next batch reads with the rest of that Instant, and the
 // call reads the next batch at once, up to [DefaultMaxBatches] per call while
@@ -134,9 +139,13 @@ func (e *Executor) RunProbe(ctx context.Context, item collectormetadata.Schedule
 func (e *Executor) extractBatch(ctx context.Context, item collectormetadata.ScheduledProbe, key WatermarkKey, query string, location *time.Location, watermark *Watermark) (full bool, err error) {
 	settings := item.OutSystemsLogs
 	now := e.clock()
+	lag := settings.Lag
+	if item.Definition.Lag > 0 {
+		lag = item.Definition.Lag
+	}
 	// Whole seconds, so a datetime column's millisecond rounding can never
 	// put a row on the other side of a bound (see checkContract).
-	to := Wall(now.Add(-settings.Lag), location).Truncate(time.Second)
+	to := Wall(now.Add(-lag), location).Truncate(time.Second)
 	if !to.After(watermark.Instant) {
 		e.Metrics.setLag(item, now.Sub(Real(watermark.Instant, location)))
 		return false, nil

@@ -156,6 +156,8 @@ collectors:
       log_timezone: UTC        # IANA time zone Instant is stored in; default UTC
       probes:
         - name: error
+        - name: cyclic_job
+          lag: 25m             # this log type's lag: Instant is the timer's start
       targets:
         - name: oslogging-prod
           host: oslog-sql.internal
@@ -166,6 +168,7 @@ collectors:
 | Setting | Default | Notes |
 | --- | --- | --- |
 | `lag` | `60s` | Go duration, > 0. Rows the log service commits later than this after their `Instant` are missed |
+| `probes[].lag` | the collector's `lag` | Go duration, > 0. Replaces `lag` for one log type. A `screen` or `cyclic_job` row has the operation's start as `Instant` and is written when it ends, so set it above the longest screen request or timer (the timer timeout, 20 minutes by default) |
 | `batch_limit` | `5000` | 1–50000. A full batch is followed at once by the next, up to 10 per cycle. If every row of a full batch has the same `Instant`, the cycle fails and `heartbeat_outsystems_extract_stuck_batches_total` grows: raise `batch_limit` |
 | `initial_lookback` | `15m` | Go duration, > 0. Also used when the stored watermark is unreadable or belongs to another database |
 | `log_timezone` | `UTC` | IANA name such as `Europe/Lisbon`; `Local` is rejected. With a zone that has daylight saving time, rows logged in the hour that repeats when clocks go back can be missed: `Instant` itself is ambiguous then |
@@ -180,15 +183,15 @@ Rules:
 - A log type of one logging database (same host, port and database name,
   compared case-insensitively) can be extracted by one enabled collector
   only; two would send every row twice.
-- `lag`, `batch_limit`, `initial_lookback` and `log_timezone` are rejected on
-  other kinds.
+- `lag`, `batch_limit`, `initial_lookback`, `log_timezone` and `probes[].lag`
+  are rejected on other kinds.
 - The watermark of each collector, target and log type is a file under
   `HEARTBEAT_STATE_DIR` (`outsystems_logs/<collector>.<target>.<log type>.json`).
   It moves only after the OTel Collector accepted the batch, so delivery is at
   least once. Removing a collector leaves its files; a collector re-added with
   the same `id` resumes from them.
-- The login needs `SELECT` on the `oslog_*` tables the queries read and
-  nothing else; see
+- The login needs `SELECT` on the `oslog_*` views the queries read (the
+  current and the previous week's) and nothing else; see
   [database targets](../guides/database-targets.md#outsystems-logging-database).
 
 ### Validation and reload behavior

@@ -735,6 +735,24 @@ func TestLoadRuntimeConfigOutSystemsLogsSettings(t *testing.T) {
 	}
 }
 
+// A probe's lag replaces the collector's for that log type only.
+func TestLoadRuntimeConfigOutSystemsLogsProbeLag(t *testing.T) {
+	path := outSystemsLogsConfig(t, otelSection, "")
+	content, _ := os.ReadFile(path)
+	content = []byte(strings.Replace(string(content), "{name: general, timeout_ms: 20000}", "{name: general, timeout_ms: 20000, lag: 25m}", 1))
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadRuntimeConfig(path)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig: %v", err)
+	}
+	probes := cfg.EnabledCollectors(KindOutSystemsLogs)[0].Targets[0].Probes
+	if len(probes) != 2 || probes[0].Lag != 0 || probes[1].Lag != 25*time.Minute {
+		t.Fatalf("probes = %+v, want error without a lag and general with 25m", probes)
+	}
+}
+
 func TestLoadRuntimeConfigRejectsInvalidOutSystemsLogsSettings(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -760,6 +778,27 @@ func TestLoadRuntimeConfigRejectsInvalidOutSystemsLogsSettings(t *testing.T) {
 				return strings.Replace(s, "{name: general, timeout_ms: 20000}", "{name: error}", 1)
 			},
 			wantErr: `collector oslogs target logging-db lists log type "error" more than once`,
+		},
+		{
+			name: "zero probe lag", otel: otelSection,
+			edit: func(s string) string {
+				return strings.Replace(s, "{name: general, timeout_ms: 20000}", "{name: general, lag: 0s}", 1)
+			},
+			wantErr: "collector oslogs probe general lag must be positive",
+		},
+		{
+			name: "unparsable probe lag", otel: otelSection,
+			edit: func(s string) string {
+				return strings.Replace(s, "{name: general, timeout_ms: 20000}", "{name: general, lag: soon}", 1)
+			},
+			wantErr: "invalid lag for collector oslogs probe general",
+		},
+		{
+			name: "probe lag on a sqlserver collector", otel: otelSection,
+			edit: func(s string) string {
+				return strings.Replace(s, "probes: [{name: waits}]", "probes: [{name: waits, lag: 1m}]", 1)
+			},
+			wantErr: "collector sql target logging-db probe waits: lag applies only to outsystems_logs collectors",
 		},
 	}
 	for _, tt := range tests {
