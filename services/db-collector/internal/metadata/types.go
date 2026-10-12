@@ -7,7 +7,11 @@
 // execute without additional lookups.
 package metadata
 
-import collectorconfig "heartbeat/internal/config"
+import (
+	"time"
+
+	collectorconfig "heartbeat/internal/config"
+)
 
 // QueryFilter constrains which scheduled probes are returned by
 // [Repository.ListScheduledProbes].
@@ -59,6 +63,9 @@ type ProbeDefinition struct {
 	// TimeoutMS is the per-execution deadline in milliseconds; 0 means use the
 	// default derived from the scrape interval.
 	TimeoutMS int
+	// Lag, for an outsystems_logs log type, replaces the collector's lag
+	// ([ScheduledProbe.OutSystemsLogs]); 0 means the collector's.
+	Lag time.Duration
 }
 
 // ProbeAssignment links a [ProbeDefinition] to a [DatabaseTarget] and

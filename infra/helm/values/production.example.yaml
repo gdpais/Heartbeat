@@ -58,6 +58,7 @@ integrations:
   notification_channels: []
   credential_refs:
     sqlserver-orders: env/sqlserver-orders
+    oslog-prod: env/oslog-prod
   collectors:
     - id: sqlserver-prod
       kind: sqlserver
@@ -84,6 +85,39 @@ integrations:
             port: 1433
             database_name: master
             credential_ref: env/sqlserver-orders
+    # OutSystems 11 logs, extracted from the logging database (ADR 0008).
+    # screen and cyclic_job rows carry the start of the operation as Instant
+    # and are written when it ends, so their lag covers the longest screen
+    # request and the timer timeout (20 minutes by default).
+    - id: outsystems-prod
+      kind: outsystems_logs
+      enabled: true
+      credential_ref: env/oslog-prod
+      config:
+        environment: production
+        scrape_interval: 30s
+        lag: 60s
+        batch_limit: 5000
+        initial_lookback: 15m
+        log_timezone: UTC
+        probes:
+          - name: error
+          - name: general
+          - name: screen
+            lag: 5m
+          - name: integration
+          - name: extension
+          - name: mobile_request
+          - name: request_event
+          - name: cyclic_job
+            lag: 25m
+        targets:
+          - name: oslogging-prod
+            environment: production
+            host: oslog-sql.example.internal
+            port: 1433
+            database_name: OSLogging
+            credential_ref: env/oslog-prod
 
 prometheus:
   server:

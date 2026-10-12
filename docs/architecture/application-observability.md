@@ -45,19 +45,25 @@ columns up by name. Other columns pass through unchanged.
 
 | Column | Meaning | In Heartbeat |
 | --- | --- | --- |
-| `Instant` | When the platform logged the row | Record timestamp; watermark |
-| `Application_Name`, `Module_Name` (eSpace) | Owning application and module | `service.name` (application); `Module_Name` attribute and metric label |
+| `Instant` | When the screen request or timer **started** (`screen`, `cyclic_job`), when the integration or mobile request **completed** (`integration`, `mobile_request`), or when the row was logged (`error`, `general`, `extension`, `request_event`), in the platform servers' time zone | Record timestamp; watermark. Start-stamped types need their own `lag` |
+| `Application_Name`, `Espace_Name` | Owning application and module | `service.name` (application); `Espace_Name` attribute and metric label |
+| `Module_Name` (error and general logs) | The free text the row was logged with; `SLOWSQL` marks the platform's slow-query messages | Attribute; selects slow-SQL rows |
 | `Request_Key` | One request handled by a front-end server; shared by the rows that request logs, across log types and modules | Request correlation key |
-| `Session_Id`, `User_Id` | Platform session and user | Investigation filters; distinct counts for active users |
-| `Client_IP` | Caller address | Investigation filter |
+| `Session_Id`, `User_Id`, `Username` | Platform session and user (`Login_Id` on mobile requests is returned as `Session_Id`) | Investigation filters; distinct counts for active users |
+| `Client_IP` | Caller address (`Source` on mobile requests and exposed integrations is returned as `Client_IP`) | Investigation filter |
 | `Tenant_Id` | Multi-tenant apps | Attribute; optional business breakdown |
-| `Server` / `Executed_By` | Front-end server that handled the request | `front_end` metric label |
-| `Duration` | Elapsed milliseconds for screens, server calls, integrations, extensions and timers | Latency metrics; span duration |
-| `Screen`, `Action_Name`, `Entrypoint_Name`, `Endpoint`, `Action` | What ran | `operation` metric label (capped); span name |
+| `Server` | Front-end server that handled the request (`Executed_By` on most views is returned as `Server`) | `front_end` metric label |
+| `Duration` | Elapsed time of screens, server calls, integrations, extensions, timers and slow queries, in milliseconds (the queries convert the log types the platform logs in seconds and parse the `SLOWSQL` message) | Latency metrics; span duration |
+| `Screen`, `Action_Name` | The entry point and the operation that ran; the queries map each view's own column (`Entrypoint_Name`, `Endpoint`, `Action`, `Cyclic_Job_Name`, the event name) to these two | `operation` metric label (capped); span name |
 | `Error_Id` | Links a row to its error log entry | Outcome `error` |
 | `Message`, `Stack` | Error text and stack | Body; `error.fingerprint` |
 | `Session_Bytes`, `Viewstate_Bytes` | Traditional web screen state sizes | Size histograms |
+| `Endpoint`, `Type`, `Is_Expose` | Integration URL, protocol and direction | Attributes; dependency breakdown |
 | `Should_Have_Run_At` | Timer schedule | Timer delay |
+
+The mapping from each view's own columns to these names is the
+[standard columns](../../services/db-collector/internal/probes/outsystems/queries/README.md#standard-columns)
+table of the queries README.
 
 Identifiers are never Loki labels or metric labels. They stay structured
 metadata, queryable with `| User_Id="…"`. Whether to hash user IDs and client
@@ -147,7 +153,10 @@ build request timelines from that key, in OutSystems terms, without any agent.
   find.
 
 This needs no new storage and proves whether `Request_Key` is reliably
-present in each log type.
+present in each log type. Until the dashboard exists,
+[`scripts/outsystems-log-queries.sql`](../../scripts/outsystems-log-queries.sql)
+holds the SQL the SRE team runs against the logging database for the same
+timelines.
 
 ### Step B: synthesized OTLP traces (after step A)
 
@@ -157,7 +166,7 @@ The extractor turns rows into spans as well as log records:
 | --- | --- |
 | Trace ID | A hash of `Request_Key`, so the logs and the trace link both ways without storing a mapping |
 | Root span | The entry-point row: screen, server call, timer or exposed API, with its duration |
-| Child spans | Integration, extension and slow-SQL rows with the same `Request_Key`, timed from `Instant` and `Duration` |
+| Child spans | Integration, extension and slow-SQL rows with the same `Request_Key`, timed from `Instant` and `Duration` (`Instant` is the end for integrations and mobile requests, the start for screens and timers) |
 | Span events | Error rows |
 | Attributes | Application, module, operation, front-end, outcome; identifiers as on the logs |
 | Span links | Calls from one OutSystems app to another one's exposed API, matched by endpoint and time; marked as inferred |
@@ -180,12 +189,38 @@ It needs an agent on the platform servers and produces the same unlabelled
 
 ## Open questions
 
-Answered from the SRE team's queries and the logging database:
+Answered from the OutSystems 11 documentation ([Log data reference](https://success.outsystems.com/Documentation/11/Managing_the_Applications_Lifecycle/Monitor_and_Troubleshoot/Logging_database_and_architecture/Log_data_reference),
+[The log tables and views](https://success.outsystems.com/Documentation/11/Managing_the_Applications_Lifecycle/Monitor_and_Troubleshoot/Logging_database_and_architecture/The_log_tables_and_views)):
 
-- Is `Instant` the start or the end of the logged operation, per log type?
-- Which time zone is `Instant` stored in?
-- Does every log type carry `Request_Key`, and does every request write an
-  entry-point row (screen or server call), or only some?
-- How long does the logging database keep rows (rotation), and how many rows
-  per minute does each log type produce at peak? These set `initial_lookback`,
-  the batch size and Loki sizing.
+- **Is `Instant` the start or the end of the logged operation?** Per log
+  type: the start for `screen` and `cyclic_job`, the completion for
+  `integration` and `mobile_request`, the time of logging for `error`,
+  `general` and `extension`, the time of the event for `request_event`. The
+  start-stamped rows are written when the operation ends, hence the per-log-
+  type `lag` ([ADR 0008](decisions/0008-outsystems-11-log-extraction.md)).
+- **Which time zone?** The platform servers' own. OutSystems Cloud runs UTC;
+  a self-managed installation uses whatever its front-ends and database
+  share. `log_timezone` is set per collector.
+- **Which log types carry `Request_Key`?** All eight current ones: general,
+  error (`Request_key`), screen, integration, extension, mobile request,
+  cyclic job and request event (`REQUESTKEY`). Only the deprecated web
+  reference, web service and SMS logs and the detail tables lack it.
+- **Retention.** Ten weekly cycle tables per log type; the `oslog_<TYPE>`
+  view is the current week, `oslog_<TYPE>_Previous` the week before, switched
+  every Friday at 23:45 database time. The retention period is set in the
+  Configuration Tool (Log tab, Advanced settings); OutSystems Cloud keeps 9
+  weeks, 7 with log separation. `initial_lookback` can reach back one week at
+  most, since the queries read two weeks' views.
+
+Still to confirm against the logging database, with
+[`scripts/outsystems-log-survey.sql`](../../scripts/outsystems-log-survey.sql)
+(read-only; its output also supplies the DDL and rows for the test fixtures):
+
+- Whether every request writes an entry-point row (screen or mobile request),
+  or only some.
+- The rows per minute of each log type at peak, which set the batch size and
+  Loki sizing.
+- The `Duration` unit per log type: the reference says seconds for extension,
+  mobile request and cyclic job, milliseconds for the rest.
+- The installation's time zone, from an `Instant` next to the database's
+  `SYSDATETIMEOFFSET()`.

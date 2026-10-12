@@ -33,8 +33,10 @@ readiness and self-metrics.
 | Where the extractor runs | A new collector kind, `outsystems_logs`, in the **db-collector** | Reuses the SQL Server connector, safety settings, reload, backoff and readiness instead of copying them into another service. The logging database is a database; the collector already owns how Heartbeat reads databases. |
 | Where the queries live | One `.sql` file per log type in [`services/db-collector/internal/probes/outsystems/queries/`](../../../services/db-collector/internal/probes/outsystems/queries/README.md), embedded in the binary. The file name is the log type (`error.sql` → `error`) | Queries are code: reviewed with the [probe review checklist](../database-observability.md#probe-review-checklist), tested in CI against SQL Server and versioned with the release. Not in Prometheus or OTel Collector config, which never talk to SQL Server. |
 | Choosing log types | `probes:` in the collector's YAML lists the log types to extract, as for the `sqlserver` kind. A `query_template` override per environment is allowed under the same contract and review | Same configuration model and hot reload as the SQL Server probes (ADR 0002). |
-| Query contract | Parameters `@from` (exclusive), `@to` (inclusive) and `@limit`; at most `@limit` rows ordered by an `Instant` column. Every other column becomes a log attribute **under its OutSystems name**; `Message` becomes the log body; an optional `Severity` column sets the severity. Details in the [queries README](../../../services/db-collector/internal/probes/outsystems/queries/README.md) | Default OutSystems field names stay queryable, so existing SRE queries and habits carry over. The query author, who knows the tables, controls joins, filters and severity. |
+| Query contract | Parameters `@from` (exclusive), `@to` (inclusive) and `@limit`; at most `@limit` rows ordered by an `Instant` column. Every other column becomes a log attribute **under its OutSystems name, or under one standard name where the views disagree** (entry point, operation, server, session, caller address, duration unit); `Message` becomes the log body; an optional `Severity` column sets the severity. Details in the [queries README](../../../services/db-collector/internal/probes/outsystems/queries/README.md) | OutSystems field names stay queryable where they are consistent, so SRE habits carry over; one name per concept lets the derived metrics, the request timeline and Loki searches work across log types. The query author, who knows the tables, controls joins, filters and severity. |
 | Incremental reads | A watermark per target and log type: read `Instant` in (`watermark`, `now − lag`], advance only after the batch is delivered. When a batch is full, rows sharing its last `Instant` are left for the next cycle. The watermark is stored in a file on the collector's volume; without one, start at `now − initial_lookback` | No gaps from rows the log service commits late (`lag`), none at batch boundaries, and a restart resumes where it stopped. |
+| Weekly rotation | Each query reads the current week's view (`oslog_<TYPE>`) and the previous week's (`oslog_<TYPE>_Previous`) with `UNION ALL`. The platform keeps ten weekly cycle tables per log type and switches the views every Friday at 23:45 | Rows logged just before the switch are committed into the old table after it; reading only the current view would lose them every Friday, and could never look back past the switch. |
+| Lag per log type | `lag` is set per collector and can be overridden per log type (`probes[].lag`) | A `screen` or `cyclic_job` row carries the start of the operation as `Instant` but is written when it ends, so its lag must cover the longest screen request or timer; the other log types keep the short default. |
 | Delivery | OTLP/HTTP logs to the OTel Collector (`opentelemetry.endpoint`), then Loki. At least once: a failed export is retried from the same watermark, so a retried batch can appear twice in Loki | Keeps Loki behind the Collector like every other log source; the Collector stays the place for routing and processing. |
 | Loki labels | Resource attributes `service.name` (the application), `deployment.environment.name` and `outsystems.log_type`. User, session and request IDs, client IP, module, screen and the rest stay structured metadata | Few streams per application; high-cardinality fields stay filterable without becoming labels. |
 | Derived metrics | Computed by the extractor from the rows it reads and exposed on the collector's `/metrics`, scraped by Prometheus. The catalog is in [application observability](../application-observability.md#derived-metrics) | Exact counts and durations from every row, testable with fixtures, and the same Prometheus-scraped model as the SQL Server metrics. |
@@ -67,15 +69,20 @@ Considered and not chosen:
   endpoint and alert sink are superseded; whether the service is removed or
   kept as the bridge for future push sources (TODO 3.4) is decided before that
   work starts.
-- CI needs a SQL Server fixture with the `oslog_*` tables the queries read,
-  built from the real DDL.
+- CI needs a SQL Server fixture per log type with the cycle tables and the
+  two views the query reads, built from the real DDL, and rows copied from
+  the logging database on both sides of a rotation.
 - OutSystems 11 on OutSystems Cloud and ODC, when needed, send OTLP straight to
   the OTel Collector; the attribute names they use are mapped there, not in
   the extractor.
-- `Instant` is stored in the logging database server's local time on some
-  installations; the time zone is a per-collector setting (default UTC). In
+- `Instant` is in the platform servers' own time zone: OutSystems Cloud runs
+  UTC, a self-managed installation whatever its front-ends and database share
+  (the platform requires them to agree). The time zone is a per-collector
+  setting (default UTC), confirmed per installation against the database. In
   a zone with daylight saving time, rows logged in the hour that repeats when
   clocks go back can be missed; UTC avoids it.
-- Rows the platform's log service commits later than `lag` after their
-  `Instant` are missed. The OutSystems log delay metric shows how close the
-  log service gets to `lag`, and an alert on it comes with the derived metrics.
+- Rows the platform's log service commits later than the lag after their
+  `Instant` are missed. For `screen` and `cyclic_job` the lag also delays
+  every row by the longest operation it has to cover. The OutSystems log
+  delay metric shows how close the log service gets to the lag, and an alert
+  on it comes with the derived metrics.

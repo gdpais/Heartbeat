@@ -233,6 +233,26 @@ func TestExtractionStartsAtTheInitialLookbackAndStopsAtTheLag(t *testing.T) {
 	}
 }
 
+// A log type with its own lag (probe lag) reads up to now minus that lag,
+// not the collector's.
+func TestExtractionUsesTheLogTypeLag(t *testing.T) {
+	x := newExtraction(t, t.TempDir(), 100)
+	x.item.Definition.Lag = 5 * time.Minute
+	x.source.insert("done", at(4*time.Minute))
+	x.source.insert("maybe-running", at(6*time.Minute)) // inside the collector's lag, not this log type's
+	x.mustRun()
+
+	if params := x.source.params[0]; !params.To.Equal(at(5 * time.Minute)) {
+		t.Fatalf("read up to %s, want now-5m (the log type's lag)", params.To)
+	}
+	if got := x.exporter.keys(); !slices.Equal(got, []string{"done"}) {
+		t.Fatalf("delivered %v, want done only", got)
+	}
+	if got := x.gauge(x.metrics.lag); got != 300 {
+		t.Fatalf("extract lag = %vs, want 300", got)
+	}
+}
+
 // A full batch leaves the rows of its last Instant for the next batch, which
 // the same call reads at once.  Every row arrives exactly once.
 func TestExtractionSplitsFullBatchesBetweenInstants(t *testing.T) {

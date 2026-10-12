@@ -86,7 +86,7 @@ func TestValidateRejectsUnknownLogTypes(t *testing.T) {
 			if tt.wantErr != (err != nil) {
 				t.Fatalf("wantErr %v, got %v", tt.wantErr, err)
 			}
-			if err != nil && !strings.Contains(err.Error(), `unknown OutSystems log type "screen_typo"; log types: error`) {
+			if err != nil && !strings.Contains(err.Error(), `unknown OutSystems log type "screen_typo"; log types: cyclic_job, error, extension, general, integration, mobile_request, request_event, screen`) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})

@@ -19,6 +19,7 @@ const (
 	columnMessage     = "Message"
 	columnSeverity    = "Severity"
 	columnApplication = "Application_Name"
+	columnEspace      = "Espace_Name"
 	columnModule      = "Module_Name"
 	columnStack       = "Stack"
 )
@@ -71,12 +72,12 @@ type recordContext struct {
 //     Message; the severity comes from Severity, else ERROR for the error
 //     log type and INFO for the others.
 //   - Every other non-NULL column is an attribute under its exact name (see
-//     [attributeValue] for the types).  Application_Name and Module_Name stay
-//     attributes as well as naming the service.
+//     [attributeValue] for the types).  Application_Name, Espace_Name and
+//     Module_Name stay attributes as well as naming the service.
 //   - Records of the error log type get error.fingerprint (see
 //     [Fingerprint]).
-//   - Resource attributes: service.name (Application_Name, else Module_Name,
-//     else "unknown"), deployment.environment.name (when set),
+//   - Resource attributes: service.name (Application_Name, else Espace_Name,
+//     else Module_Name, else "unknown"), deployment.environment.name (when set),
 //     outsystems.log_type, heartbeat.collector and heartbeat.target.
 //
 // instants holds each row's Instant as a wall clock, from checkContract.
@@ -96,7 +97,7 @@ func buildLogs(batch Batch, rows [][]any, instants []time.Time, rc recordContext
 	var out []*logspb.ResourceLogs
 	scopes := map[string]*logspb.ScopeLogs{}
 	for r, row := range rows {
-		service := firstText(value(row, columnApplication), value(row, columnModule))
+		service := firstText(value(row, columnApplication), value(row, columnEspace), value(row, columnModule))
 		scope, ok := scopes[service]
 		if !ok {
 			scope = &logspb.ScopeLogs{Scope: &commonpb.InstrumentationScope{Name: scopeName}}
