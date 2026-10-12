@@ -180,7 +180,11 @@ There are no `latest` or `stable` tags.
 **Tags** are created only by the release app and are never moved or deleted;
 a bad release is fixed by the next patch release.
 
-**One-time setup** ([TODO 0.5](TODO.md)):
+**One-time setup** ([TODO 0.5](TODO.md)), done at the end of phase 2. Until
+the app exists the release-please job is skipped and no release is cut, not
+even by hand: a hand release would have to bump the chart, `version.txt`,
+`CHANGELOG.md` and the release-please manifest itself. Nothing is lost while
+waiting; the first release pull request covers every commit since `v0.1.0`.
 
 1. Create a GitHub App (Settings → Developer settings → GitHub Apps → New):
    webhook off; repository permissions *Contents*, *Pull requests* and
@@ -188,11 +192,20 @@ a bad release is fixed by the next patch release.
 2. In the repository's Settings → Secrets and variables → Actions, add the
    variable `RELEASE_APP_CLIENT_ID` (the app's client ID) and the secret
    `RELEASE_APP_PRIVATE_KEY` (a private key generated on the app's page).
-3. Add a tag ruleset (Settings → Rules → Rulesets → New tag ruleset) that
-   targets all tags (*Include all tags*), with *Restrict updates* and
-   *Restrict deletions*. Every tag here is a release tag, so all tags rather
-   than `v*`: per-component tags such as `db-collector-v1.2.0` would not match
-   `v*`. After the first release is tagged by hand, add *Restrict creations*
-   with the release app in the bypass list.
+3. Protect tags with two tag rulesets (Settings → Rules → Rulesets → New
+   tag ruleset), both targeting all tags (*Include all tags*). Every tag here
+   is a release tag, so all tags rather than `v*`: per-component tags such as
+   `db-collector-v1.2.0` would not match `v*`.
+   - `Heartbeat-tags`: *Restrict updates*, *Restrict deletions* and *Block
+     force pushes*, with an empty bypass list, so no one can move or delete
+     a tag.
+   - `Heartbeat-tag-creation`: *Restrict creations* only, with the release
+     app in the bypass list (*Always allow*). Add it after the first release
+     is tagged by hand.
+
+   A bypass applies to a whole ruleset, so the app gets a ruleset of its
+   own: it may create tags but, like everyone else, not move or delete them.
+   To check, pushing a tag by hand (`git push origin <tag>`) must be
+   rejected.
 4. After the first release, make each package public (your profile →
    Packages → package → Package settings → Change visibility).

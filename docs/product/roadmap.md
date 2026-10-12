@@ -35,8 +35,8 @@ shared validation inventory [16] throughout rather than as a final stage.
   ([ADR 0003](../architecture/decisions/0003-helm-on-kind-and-production.md)) [0.4]
 
 Open housekeeping: install the Renovate app and agree the local loop's time and
-resource budget [0.4]; create the release GitHub App, tag `v0.1.0`, then add
-*Restrict creations* to the tag ruleset
+resource budget [0.4]; make the `v0.1.0` packages on GHCR public [0.5]. The
+release GitHub App and the tag-creation ruleset wait for the end of phase 2
 ([ADR 0006](../architecture/decisions/0006-trunk-based-development-and-tagged-releases.md)) [0.5].
 
 ## Phase 1 — DB collector (done)
@@ -90,7 +90,9 @@ design in [application observability](../architecture/application-observability.
 
 Exit: every query tested against a SQL Server fixture with the `oslog_*`
 tables; logging database → collector → Loki and Prometheus → Grafana on kind,
-including restarts and outages without gaps.
+including restarts and outages without gaps. The phase ends with its release:
+the release GitHub App is created then, and release-please cuts the release
+from the commits since `v0.1.0` [0.5].
 
 ## Phase 3 — API / control plane
 
