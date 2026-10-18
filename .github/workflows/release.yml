@@ -59,7 +59,7 @@ jobs:
       packages: write
     strategy:
       matrix:
-        service: [db-collector, otel-gateway]
+        service: [db-collector]
     env:
       REF: ghcr.io/${{ github.repository_owner }}/heartbeat/${{ matrix.service }}:${{ needs.verify.outputs.version }}
     steps:
@@ -169,7 +169,7 @@ jobs:
             echo
             echo "| Artifact | Reference |"
             echo "| --- | --- |"
-            for service in db-collector otel-gateway; do
+            for service in db-collector; do
               digest=$(awk -v s="$service" '$1 == s {print $2}' digest-*.txt)
               echo "| \`$service\` image | \`$IMAGE_PREFIX/$service:$VERSION@$digest\` |"
             done

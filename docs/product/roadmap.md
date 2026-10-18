@@ -2,7 +2,7 @@
 
 The single phase plan for Heartbeat. It summarizes [TODO.md](../../TODO.md),
 which is the source of truth for delivery order and task status (TODO section
-numbers in brackets). The core order is **DB collector → OTel gateway →
+numbers in brackets). The core order is **DB collector → OutSystems ingest →
 API/control plane → Web UI**; each phase is tested as it is delivered, using the
 shared validation inventory [16] throughout rather than as a final stage.
 
@@ -72,7 +72,7 @@ isolation is a follow-up.
 ## Phase 2 — OutSystems ingest
 
 OutSystems 11 self-managed first. Its logs are read from the logging database
-by a new db-collector kind, not pushed to the gateway
+by a new db-collector kind
 ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md);
 design in [application observability](../architecture/application-observability.md)).
 
@@ -86,7 +86,9 @@ design in [application observability](../architecture/application-observability.
 - OutSystems overview, errors, latency and request-timeline dashboards [10.4, 3.5]
 - Use configured application/environment identities until API inventory exists
 - Later: synthesized request traces from `Request_Key` [3.5]; MuleSoft and
-  generic sources [3.4]; OutSystems Cloud and ODC through their OTLP streams
+  generic sources [3.4]; OutSystems Cloud and ODC through their OTLP streams,
+  straight into the OTel Collector (the OTel gateway was removed:
+  [ADR 0009](../architecture/decisions/0009-remove-the-otel-gateway.md))
 
 Exit: every query tested against a SQL Server fixture with the `oslog_*`
 tables; logging database → collector → Loki and Prometheus → Grafana on kind,

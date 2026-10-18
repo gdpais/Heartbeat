@@ -23,8 +23,8 @@ Docker settings:
   about 2 GB, SQL Server about 1 GB, and image builds need headroom.
 - On Apple silicon, enable **Use Rosetta for x86_64/amd64 emulation**. SQL
   Server only ships an AMD64 image.
-- These ports must be free on 127.0.0.1: 3000, 4317, 4318, 8082, 8083, 9090,
-  9093 and 11433.
+- These ports must be free on 127.0.0.1: 3000, 4317, 4318, 8082, 9090, 9093
+  and 11433.
 
 Then, from the repository root:
 
@@ -43,11 +43,11 @@ make kind-up      # creates the "heartbeat" cluster, builds and loads images, de
 ```
 
 The first `make kind-up` takes several minutes while Docker pulls the node and
-engine images. It ends by listing pods and services; all seven pods should be
+engine images. It ends by listing pods and services; all six pods should be
 `1/1 Running`:
 
 ```text
-alertmanager-0, db-collector-0, grafana-…, loki-0, otel-collector-…, otel-gateway-…, prometheus-…
+alertmanager-0, db-collector-0, grafana-…, loki-0, otel-collector-…, prometheus-…
 ```
 
 Check the endpoints:
@@ -64,7 +64,7 @@ answer.
 | Open | What you should see |
 | --- | --- |
 | http://localhost:3000 (Grafana, `admin`/`admin`) | Dashboards → **Heartbeat** folder with *Heartbeat Overview* and *SQL Server Overview*; Connections → Data sources lists Prometheus and Loki |
-| http://localhost:9090/targets (Prometheus) | Six jobs, all **UP**: alertmanager, db-collector, loki, otel-collector, otel-gateway, prometheus |
+| http://localhost:9090/targets (Prometheus) | Five jobs, all **UP**: alertmanager, db-collector, loki, otel-collector, prometheus |
 | http://localhost:9090/alerts | **Watchdog** firing. It always fires; that is how a dead-man's switch knows alerting works |
 | http://localhost:9093 (Alertmanager) | The Watchdog alert, received from Prometheus |
 | http://localhost:8082/readyz | `{"status":"ready"}`; the details need the admin token (next section) |

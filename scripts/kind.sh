@@ -81,7 +81,7 @@ cmd_images() {
 	arch=$(node_arch)
 	mkdir -p "$STATE_DIR"
 	: >"$STATE_DIR/images.env.tmp"
-	for svc in db-collector otel-gateway; do
+	for svc in db-collector; do
 		log "building heartbeat/$svc for linux/$arch"
 		# --provenance=false keeps a single-platform image that kind can load.
 		docker build --quiet --platform "linux/$arch" --provenance=false \
@@ -145,7 +145,6 @@ cmd_deploy() {
 		--kube-context "$CONTEXT" --namespace "$NAMESPACE" \
 		"$@" \
 		--set "dbCollector.image.tag=$DB_COLLECTOR_TAG" \
-		--set "otelGateway.image.tag=$OTEL_GATEWAY_TAG" \
 		--wait --timeout 10m
 	cmd_status
 }

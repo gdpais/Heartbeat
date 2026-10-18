@@ -41,9 +41,8 @@ is still pending.
 | --- | --- | --- |
 | DB collector | `:8082` — `/metrics`, `/healthz`, `/readyz`, `/admin/config`, `POST /admin/config/reload` | Reload also on SIGHUP, and on file change when `HEARTBEAT_CONFIG_WATCH_INTERVAL` is set. Credentials resolved from `HEARTBEAT_CREDENTIAL_*`. |
 | OTel Collector | OTLP `:4317` gRPC / `:4318` HTTP; Prometheus export `:8889`; health `:13133` | Exports logs to Loki's OTLP endpoint. Loki indexes only `service.name`, `service.namespace` and `deployment.environment.name` as labels; every other attribute, including user, session and request IDs and client IP, is kept as structured metadata. |
-| OTel gateway | `:8083` — `/metrics`, `/healthz`, `/readyz`, `POST /v1/heartbeat/events`, `POST /v1/heartbeat/alerts` | Events are normalized and returned to the caller, not exported. Alerts are counted, not stored or delivered. |
 | Prometheus | `:9090` | 15s scrape. Rule files `heartbeat.rules.yml` and `generated/` (currently empty). Sends alerts to Alertmanager. |
-| Alertmanager | `:9093` | `default` webhook receiver pointing at the gateway, `send_resolved: true`; the always-firing `Watchdog` alert routes to a `deadmans-switch` receiver (no integration on kind). |
+| Alertmanager | `:9093` | `default` and `deadmans-switch` receivers with no integrations on kind ([ADR 0009](decisions/0009-remove-the-otel-gateway.md)); the always-firing `Watchdog` alert routes to `deadmans-switch`. The production example adds chat receivers and healthchecks.io. |
 | Loki / Grafana | `:3100` / `:3000` | Grafana provisioned with Prometheus (default) and Loki data sources. |
 
 PostgreSQL and Redis are not deployed until a service uses them
@@ -69,11 +68,8 @@ current evidence sink does not retain them.
 
 ## Open questions
 
-- What does the gateway's alert intake become — persisted investigation
-  events (via the API into PostgreSQL), or removed once Alertmanager delivers
-  notifications directly?
-- Should the gateway export normalized events to the OTel Collector, and should
-  it wait for the collector to be ready?
+- How do alerts become persisted investigation events (phase 7): an
+  Alertmanager webhook into the API, or the API reading Alertmanager?
 - Who renders the chart's `files/prometheus/rules/generated/` — the API (as
   drawn) or a build step?
 
@@ -104,8 +100,7 @@ deployment on 2026-10-03 (`make kind-e2e`).
   and alerting, OTel pipelines, Alertmanager routes, Grafana data sources;
   [Heartbeat templates](../../infra/helm/heartbeat/templates/).
 - [DB collector wiring](../../services/db-collector/internal/app/app.go),
-  [probe runner and evidence sink](../../services/db-collector/internal/collectors/runner.go),
-  and [gateway HTTP handlers](../../services/otel-gateway/internal/app/app.go).
+  and [probe runner and evidence sink](../../services/db-collector/internal/collectors/runner.go).
 - Integration configuration (the chart's `integrations` values),
   [operator workflows](workflows.md), [data model](data-model.md), and
   [implementation checklist](../../TODO.md).
@@ -117,7 +112,7 @@ Heartbeat is organized into four planes, the same four groups as the
 
 | Plane | Components | Status | Details |
 | --- | --- | --- | --- |
-| Telemetry | Collection (DB collector, OpenTelemetry Collector, OTel gateway), storage and evaluation (Prometheus, Loki), alert routing (Alertmanager) | Implemented; gateway partial | [Current runtime](#current-runtime), [database observability](database-observability.md), [metrics and endpoints](../reference/metrics-and-endpoints.md) |
+| Telemetry | Collection (DB collector, OpenTelemetry Collector), storage and evaluation (Prometheus, Loki), alert routing (Alertmanager) | Implemented; OutSystems derived metrics pending | [Current runtime](#current-runtime), [database observability](database-observability.md), [metrics and endpoints](../reference/metrics-and-endpoints.md) |
 | Analysis jobs | Session analyzer (correlation, adaptive baselines), reporting, report storage | Planned | [Operator workflows](workflows.md) |
 | Control plane | Go API, PostgreSQL (durable metadata), Redis (queues, locks, retries), YAML/Kubernetes config | Schema and config manager implemented; API planned | [Data model](data-model.md), [configuration](../reference/configuration.md), [decisions](decisions/README.md) |
 | Presentation | Grafana dashboards, React web UI with Grafana deep links | Grafana implemented; UI planned | [Operator workflows](workflows.md) |
@@ -141,7 +136,8 @@ Rules every subsystem follows. The reasoning is recorded in the
   environment through `applications.environment_id`.
 - Collector desired state comes from YAML/Kubernetes, not PostgreSQL. Runtime
   state is exposed through metrics, health endpoints and logs.
-- The OTel gateway stays thin: stock OpenTelemetry Collector configuration first,
-  custom Go code only for platform-specific parsing.
+- Stock OpenTelemetry Collector configuration first: push sources arrive over
+  OTLP and are mapped with OTTL. Custom ingest code needs its own decision
+  ([ADR 0009](decisions/0009-remove-the-otel-gateway.md)).
 
 The repository layout is described in the [README](../../README.md#repository-layout).

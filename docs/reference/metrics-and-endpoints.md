@@ -12,7 +12,6 @@ maps fixed NodePorts to these ports on 127.0.0.1 only.
 | Service | Host port(s) | Notes |
 | --- | --- | --- |
 | DB collector | 8082 | Heartbeat service |
-| OTel gateway | 8083 | Heartbeat service (`full` profile) |
 | Prometheus | 9090 | 15s scrape interval |
 | Grafana | 3000 | Local login `admin`/`admin`, anonymous viewer enabled. **Local only.** |
 | Alertmanager | 9093 | |
@@ -22,7 +21,7 @@ maps fixed NodePorts to these ports on 127.0.0.1 only.
 
 Inside the cluster every component keeps its Compose-era name and port
 (`prometheus:9090`, `alertmanager:9093`, `loki:3100`, `otel-collector:4318`,
-`otel-gateway:8083`, `db-collector:8082`). PostgreSQL and Redis are not deployed
+`db-collector:8082`). PostgreSQL and Redis are not deployed
 until a service uses them (ADR 0003).
 
 ## DB collector (`:8082`)
@@ -66,16 +65,6 @@ Prometheus and the configured operator peers to port 8082
 Operators reach the admin endpoints with
 `kubectl -n heartbeat port-forward pod/db-collector-0 8082`, which
 NetworkPolicy does not apply to, or from a listed peer such as a VPN range.
-
-## OTel gateway (`:8083`)
-
-| Endpoint | Behavior |
-| --- | --- |
-| `GET /metrics` | Gateway counters |
-| `GET /healthz` | Always 200 `ok` |
-| `GET /readyz` | 200 with `config_version` and the configured OTel endpoint |
-| `POST /v1/heartbeat/events` | Parses one JSON event, normalizes common field aliases into the [application event contract](../../packages/telemetry-contracts/src/application_event.schema.json), and **returns it to the caller** (202). It is not forwarded anywhere yet. |
-| `POST /v1/heartbeat/alerts` | Accepts an Alertmanager webhook payload and counts it (202). Nothing is stored or delivered. |
 
 ## Metrics
 
@@ -233,19 +222,12 @@ The counters are created at 0 when a collector starts and, like the probe
 series, deleted when it stops. Error text (contract violations, login and
 query errors) is logged and reported per target in `GET /admin/config`.
 
-### OTel gateway
-
-| Metric | Meaning |
-| --- | --- |
-| `heartbeat_otel_gateway_normalized_events_total` | Events normalized by `POST /v1/heartbeat/events` |
-| `heartbeat_otel_gateway_alert_deliveries_total` | Alertmanager webhook deliveries accepted |
-
 ### Prometheus scrape jobs and rules
 
 Scrape jobs (`prometheus.scrapeConfigs` in the chart's
 [`values.yaml`](../../infra/helm/heartbeat/values.yaml)): `prometheus`,
-`otel-collector`, `db-collector`, `otel-gateway`, `alertmanager`, `loki`; the
-`minimal` profile drops the last three it does not deploy. `db-collector` uses
+`otel-collector`, `db-collector`, `alertmanager`, `loki`; the `minimal`
+profile drops `otel-collector` and `loki`, which it does not deploy. `db-collector` uses
 DNS discovery on the headless `db-collector-headless` Service, which lists the
 pod even while it is unready, so the collector's failure metrics are still
 scraped. Prometheus sends alerts to `alertmanager:9093`.
@@ -258,7 +240,7 @@ Rules ([`heartbeat.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules
 | `heartbeat:sqlserver_wait_seconds:rate5m` | Recording: wait seconds per second by `wait_type`, `rate()` of `heartbeat_sqlserver_wait_seconds_total` |
 | `heartbeat:sqlserver_blocked_requests:sum` | Recording: blocked requests per target; 0 when the target's last cycle succeeded and nothing is blocked |
 | `heartbeat:sqlserver_sessions:sum` | Recording: sessions per target, all statuses |
-| `HeartbeatServiceDown` | Alert: `up == 0` for the collector, gateway or OTel Collector |
+| `HeartbeatServiceDown` | Alert: `up == 0` for the DB collector or OTel Collector |
 | `HeartbeatCollectorLoginElevated` | Alert (warning): `heartbeat_collector_target_login_sysadmin == 1` for 15m, the collector's login for a target is sysadmin-equivalent |
 | `Watchdog` | Alert: always firing. Alertmanager routes it to the `deadmans-switch` receiver (healthchecks.io in production, ADR 0005), which notifies when it stops arriving |
 
@@ -272,11 +254,10 @@ a counter without `rate()` or `increase()`.
 
 ## Known gaps
 
-- **Alert delivery stops at the gateway.** Alerts reach Alertmanager, but the
-  default receiver is the OTel gateway webhook, which only counts them. Chat
-  and WhatsApp receivers exist only in
+- **Alerts notify no one by default.** Alerts reach Alertmanager, but the
+  chart's default receiver has no integrations
+  ([ADR 0009](../architecture/decisions/0009-remove-the-otel-gateway.md)).
+  Chat and WhatsApp receivers exist only in
   [`production.example.yaml`](../../infra/helm/values/production.example.yaml).
 - **Admin token attempts are not rate limited.** The NetworkPolicy limits who
   can try. Tracked in TODO §15.2.
-- **OTel gateway `/readyz`** is unauthenticated and still returns the config
-  version and the configured OTel endpoint.

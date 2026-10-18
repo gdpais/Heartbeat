@@ -247,13 +247,6 @@ environment variable. Changing it requires restarting the collector
 | `HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE` | `false` | Skip TLS certificate verification. **Local dev container only**; applies to every target. When set, startup logs a warning and `GET /admin/config` lists it under `warnings` |
 | `HEARTBEAT_CREDENTIAL_<REF>` | — | Target credentials, see above |
 
-### OTel gateway
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `HEARTBEAT_OTEL_GATEWAY_LISTEN_ADDR` | `:8083` | HTTP listen address |
-| `HEARTBEAT_INTEGRATIONS_PATH` | `config/integrations.yaml` | Integrations file path; the gateway loads it once, with no reload |
-
 ### Local development files
 
 | File | Tracked | Purpose |

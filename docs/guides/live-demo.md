@@ -356,26 +356,18 @@ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer wrong' localh
 hb_admin '.config.CredentialRefs'                                                                     # every value <redacted>
 ```
 
-## 6. OTel gateway and alert delivery
+## 6. Alert delivery
 
-The gateway normalizes one event and **returns** it; it forwards nothing yet
-(phase 2).
-
-```bash
-curl -s -X POST localhost:8083/v1/heartbeat/events \
-  -d '{"env":"prod","app":"Claims","action":"SubmitClaim","level":"ERROR","msg":"timeout calling PolicyService","userId":"u1","sessionId":"s-42","traceId":"abc123","ip":"10.1.2.3"}' | jq
-curl -s -w '\n%{http_code}\n' -X POST localhost:8083/v1/heartbeat/events -d '[1,2]'   # 400
-curl -s localhost:8083/metrics | grep '^heartbeat_otel_gateway'
-```
-
-Alertmanager sends every alert except Watchdog to the gateway's webhook,
-which counts it. Watchdog goes to `deadmans-switch`, which does nothing
-locally. Send a synthetic alert:
+Alertmanager routes Watchdog to `deadmans-switch` and every other alert to
+`default`. Neither has an integration locally
+([ADR 0009](../architecture/decisions/0009-remove-the-otel-gateway.md)), so
+alerts are visible in Alertmanager and Grafana but notify no one. Send a
+synthetic alert and find it:
 
 ```bash
 curl -s -X POST localhost:9093/api/v2/alerts -H 'Content-Type: application/json' \
   -d '[{"labels":{"alertname":"HeartbeatDemoAlert","severity":"info"},"annotations":{"summary":"live demo"}}]'
-sleep 40; curl -s localhost:8083/metrics | grep '^heartbeat_otel_gateway_alert_deliveries_total'   # 1
+curl -s 'localhost:9093/api/v2/alerts?filter=alertname="HeartbeatDemoAlert"' | jq '.[] | {receivers: [.receivers[].name], state: .status.state}'   # default, active
 ```
 
 ## 7. What is deployed but not used yet

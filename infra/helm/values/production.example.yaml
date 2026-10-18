@@ -34,11 +34,6 @@ dbCollector:
   credentials:
     existingSecret: heartbeat-sqlserver-credentials
 
-otelGateway:
-  image:
-    repository: <account>.dkr.ecr.<region>.amazonaws.com/heartbeat/otel-gateway
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
-
 integrations:
   grafana:
     base_url: https://grafana.heartbeat.example.internal

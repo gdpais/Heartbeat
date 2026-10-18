@@ -78,10 +78,9 @@ commit that does not follow the format is left out of the release notes.
 | `refactor`, `style` | Code changes with no behavior change | none |
 | `build`, `ci`, `chore` | Build, CI, tooling and housekeeping | none |
 
-The scope is the component: `db-collector`, `otel-gateway`, `config`,
-`chart`, `rules`, `dashboards`, `kind-e2e`, `docsite`. Mark a breaking change
-with `!` after the scope (`feat(config)!: …`) and explain it in a
-`BREAKING CHANGE:` footer.
+The scope is the component: `db-collector`, `config`, `chart`, `rules`,
+`dashboards`, `kind-e2e`, `docsite`. Mark a breaking change with `!` after the
+scope (`feat(config)!: …`) and explain it in a `BREAKING CHANGE:` footer.
 
 ## Before opening a pull request
 
@@ -161,9 +160,8 @@ release, and the tag starts `.github/workflows/release.yml`, which:
 
 1. checks the tag is on `master`, matches the chart version and passed the
    required CI check (`ci-ok`);
-2. builds `ghcr.io/gdpais/heartbeat/db-collector` and
-   `ghcr.io/gdpais/heartbeat/otel-gateway` for `linux/amd64` and `linux/arm64`,
-   and pushes the chart to `oci://ghcr.io/gdpais/charts/heartbeat`;
+2. builds `ghcr.io/gdpais/heartbeat/db-collector` for `linux/amd64` and
+   `linux/arm64`, and pushes the chart to `oci://ghcr.io/gdpais/charts/heartbeat`;
 3. lists every artifact with its digest in the GitHub release.
 
 While the version is `0.y.z`, every release is marked *Pre-release* on GitHub:

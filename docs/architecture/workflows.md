@@ -5,9 +5,8 @@ telemetry ingestion, session investigation, alerting and reporting, all driven
 through the control-plane API and web UI.
 
 > **Status:** mostly planned. Implemented today: the stock OpenTelemetry
-> Collector pipeline, a thin gateway helper that normalizes single JSON events
-> and accepts Alertmanager webhooks, Prometheus rules, Alertmanager routing, and
-> the PostgreSQL schema. The API, web UI, session analyzer and reporting service
+> Collector pipeline, OutSystems 11 log extraction by the DB collector,
+> Prometheus rules, Alertmanager routing, and the PostgreSQL schema. The API, web UI, session analyzer and reporting service
 > are empty scaffolds. See the [current runtime](overview.md#current-runtime)
 > and the [roadmap](../product/roadmap.md).
 
@@ -27,26 +26,26 @@ All four workflows follow the same pattern:
 | --- | --- | --- |
 | API / control plane (`apps/api`) | Inventory CRUD, telemetry source and database target onboarding, alert policy and report schedule CRUD, users/roles, investigation APIs, Grafana deep links from YAML templates, JSONL audit output. Uses PostgreSQL for durable data and Redis for queues, idempotency keys and cached summaries. | Planned |
 | Web UI (`apps/web`) | Operator screens: environments/applications, telemetry sources, DB target onboarding, investigations, alert policies, reports, integrations. Investigation is app-first; drill-downs open Grafana/Loki. | Planned |
-| OTel gateway (`services/otel-gateway`) | Platform-specific parsing and normalization into the shared telemetry contract; the stock OTel Collector handles OTLP ingest, batching and routing. See its [README](../../services/otel-gateway/README.md). | Partial |
 | Session analyzer (`services/session-analyzer`) | Investigation jobs: correlation across Prometheus, Loki, collector evidence and metadata; anomaly windows; adaptive baseline computation. | Planned |
 | Reporting (`services/reporting`) | Scheduled and on-demand report jobs, rendering, delivery, run metadata. | Planned |
 
 ## Application telemetry ingestion (OutSystems first)
 
-1. OutSystems emits logs, events and metrics through a supported export path or
-   an OTLP-compatible bridge.
-2. The OpenTelemetry Collector receives and routes what it can with stock
-   processors.
-3. The gateway normalizes OutSystems-specific fields into the
-   [application event contract](../../packages/telemetry-contracts/src/application_event.schema.json).
-4. Logs land in Loki through its OTLP endpoint. Loki's `otlp_config` limits
+1. OutSystems 11 self-managed: the DB collector's `outsystems_logs` kind reads
+   the logging database and pushes the rows as OTLP logs to the OpenTelemetry
+   Collector ([ADR 0008](decisions/0008-outsystems-11-log-extraction.md)).
+   Sources that stream OTLP themselves (OutSystems Cloud, ODC) point straight
+   at the Collector, which maps their fields with OTTL
+   ([ADR 0009](decisions/0009-remove-the-otel-gateway.md)).
+2. The OpenTelemetry Collector batches and routes with stock processors.
+3. Logs land in Loki through its OTLP endpoint. Loki's `otlp_config` limits
    index labels to three resource attributes (see the
    [OTel Collector notes](overview.md#component-details)). Everything else,
    including user, session and request IDs and client IP, is kept as
    structured metadata, so investigations can filter and correlate on it.
-5. Derived metrics (latency, throughput, errors, availability, saturation) land
+4. Derived metrics (latency, throughput, errors, availability, saturation) land
    in Prometheus.
-6. Grafana shows application health and links to Loki log views.
+5. Grafana shows application health and links to Loki log views.
 
 **Normalization targets:** environment; application/module;
 component/action/screen/API operation; tenant where available; user, session and
@@ -112,8 +111,8 @@ a build step) is an [open question](overview.md#open-questions).
 **Current state:** `infra/helm/heartbeat/files/prometheus/rules/heartbeat.rules.yml` holds hand-written
 rules; `make rules-check` validates them and runs their unit tests. Prometheus
 sends alerts to Alertmanager. Alertmanager routes the always-firing `Watchdog`
-alert to a dead-man's switch and everything else to the gateway's
-`POST /v1/heartbeat/alerts` endpoint, which only counts deliveries; see
+alert to a dead-man's switch and everything else to a default receiver with no
+integrations until an environment configures one; see
 [known gaps](../reference/metrics-and-endpoints.md#known-gaps).
 
 **Adaptive telemetry (later):** escalation profiles that raise collection

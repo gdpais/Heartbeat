@@ -56,13 +56,13 @@ const bundledPrometheusPeer = "pods{app.kubernetes.io/component=server,app.kuber
 var chartProfiles = []chartProfile{
 	{
 		name:           "defaults",
-		present:        []string{"StatefulSet/db-collector", "Deployment/otel-gateway", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "StatefulSet/loki", "Deployment/otel-collector", "NetworkPolicy/db-collector"},
+		present:        []string{"StatefulSet/db-collector", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "StatefulSet/loki", "Deployment/otel-collector", "NetworkPolicy/db-collector"},
 		collectorPeers: []string{bundledPrometheusPeer},
 	},
 	{
 		name:    "kind",
 		values:  []string{"kind.yaml"},
-		present: []string{"StatefulSet/db-collector", "Deployment/otel-gateway", "StatefulSet/loki", "Deployment/otel-collector", "NetworkPolicy/db-collector"},
+		present: []string{"StatefulSet/db-collector", "StatefulSet/loki", "Deployment/otel-collector", "NetworkPolicy/db-collector"},
 		// The host through the loopback NodePort; pods stay limited to Prometheus.
 		collectorPeers: []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
 	},
@@ -70,7 +70,7 @@ var chartProfiles = []chartProfile{
 		name:           "kind-minimal",
 		values:         []string{"kind.yaml", "minimal.yaml"},
 		present:        []string{"StatefulSet/db-collector", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "NetworkPolicy/db-collector"},
-		absent:         []string{"Deployment/otel-gateway", "StatefulSet/loki", "Deployment/otel-collector"},
+		absent:         []string{"StatefulSet/loki", "Deployment/otel-collector"},
 		collectorPeers: []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
 	},
 	{
