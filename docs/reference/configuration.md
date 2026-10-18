@@ -36,20 +36,25 @@ loads each profile's rendered file with the Go loader.
 
 ### Endpoints
 
+Heartbeat never writes to the observability platform itself: logs go to the
+OpenTelemetry Collector, and metrics are scraped from `/metrics`
+([ADR 0011](../architecture/decisions/0011-platform-agnostic-telemetry-boundary.md)).
+These keys say where the platform's UI and query APIs are, for links and,
+later, the API's queries.
+
 | Key | Required | Notes |
 | --- | --- | --- |
-| `grafana.base_url` | yes | Absolute URL, as seen from the operator's browser |
-| `grafana.dashboard_templates` | no | Map of name → dashboard path, e.g. `sqlserver-overview: /d/sqlserver-overview` |
-| `grafana.deep_link_templates` | no | Map of name → path with `${variables}`, e.g. `/d/sqlserver-overview?var-target=${target}` |
-| `loki.base_url` | yes | Absolute URL |
-| `loki.endpoint` | no | Absolute URL (push API) |
-| `alertmanager.base_url` | yes | Absolute URL |
-| `alertmanager.endpoint` | no | Absolute URL (alerts API) |
+| `platform` | no | `grafana` (default: Grafana, Prometheus, Loki, Alertmanager) or `generic` (any other platform; `dashboards`, `logs` and `alerting` must then be empty). Anything else is rejected |
+| `dashboards.base_url` | no | The platform's UI (Grafana), as seen from the operator's browser |
+| `dashboards.dashboard_templates` | no | Map of name → dashboard path, e.g. `sqlserver-overview: /d/sqlserver-overview` |
+| `dashboards.deep_link_templates` | no | Map of name → path with `${variables}`, e.g. `/d/sqlserver-overview?var-target=${target}` |
+| `logs.base_url` | no | The platform's log query API (Loki) |
+| `alerting.base_url` | no | The platform's alert API (Alertmanager) |
 | `opentelemetry.endpoint` | for `outsystems_logs` | Absolute base URL of the OTel Collector's OTLP/HTTP receiver, e.g. `http://otel-collector:4318`; logs go to `<endpoint>/v1/logs` |
 
 No URL may embed credentials (`https://user:password@host`): the loader rejects
 userinfo in every `base_url`, `endpoint`, dashboard and deep-link template, and
-channel `target_ref`, for all four integrations. Put secrets in a
+channel `target_ref`, for all four sections. Put secrets in a
 `credential_ref` instead; URLs end up in logs, diagnostics and browser links.
 The check also catches templates with `${variables}` in the host and the
 forms browsers accept (`http:\\user@host`, `http:user@host`, tabs or newlines

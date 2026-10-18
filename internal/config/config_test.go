@@ -13,13 +13,13 @@ import (
 func TestLoadRuntimeConfigFiltersEnabledSQLServerCollectors(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "integrations.yaml")
-	content := []byte(`grafana:
+	content := []byte(`dashboards:
   base_url: http://grafana:3000
   dashboard_templates:
     logs: /explore
-loki:
+logs:
   base_url: http://loki:3100
-alertmanager:
+alerting:
   base_url: http://alertmanager:9093
 opentelemetry:
   endpoint: http://otel-collector:4318
@@ -86,12 +86,12 @@ collectors:
 func TestManagerPreservesActiveSnapshotOnInvalidReload(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "integrations.yaml")
-	valid := []byte(`grafana:
+	valid := []byte(`dashboards:
   base_url: http://grafana:3000
   dashboard_templates: {}
-loki:
+logs:
   base_url: http://loki:3100
-alertmanager:
+alerting:
   base_url: http://alertmanager:9093
 opentelemetry:
   endpoint: http://otel-collector:4318
@@ -112,7 +112,7 @@ collectors:
 		t.Fatalf("NewManager returned error: %v", err)
 	}
 	active := manager.Snapshot().Config.Version
-	if err := os.WriteFile(path, []byte("grafana: {}\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("platform: elastic\n"), 0o600); err != nil {
 		t.Fatalf("write invalid config: %v", err)
 	}
 	snapshot, err := manager.Reload()
@@ -130,12 +130,12 @@ collectors:
 func TestManagerPreservesActiveSnapshotWhenApplyFails(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "integrations.yaml")
-	first := []byte(`grafana:
+	first := []byte(`dashboards:
   base_url: http://grafana:3000
   dashboard_templates: {}
-loki:
+logs:
   base_url: http://loki:3100
-alertmanager:
+alerting:
   base_url: http://alertmanager:9093
 collectors:
   - id: sql-prod
@@ -145,12 +145,12 @@ collectors:
     config:
       environment: prod
 `)
-	second := []byte(`grafana:
+	second := []byte(`dashboards:
   base_url: http://grafana:3000
   dashboard_templates: {}
-loki:
+logs:
   base_url: http://loki:3100
-alertmanager:
+alerting:
   base_url: http://alertmanager:9093
 collectors:
   - id: sql-prod
@@ -191,7 +191,7 @@ collectors:
 
 func TestRedactedDoesNotMutateActiveConfig(t *testing.T) {
 	cfg := RuntimeConfig{
-		Grafana:        Endpoint{DashboardTemplates: map[string]string{"sql": "/d/sql"}},
+		Dashboards:     Endpoint{DashboardTemplates: map[string]string{"sql": "/d/sql"}},
 		CredentialRefs: map[string]string{"sql": "env/SQL_PASSWORD"},
 		NotificationChannels: []NotificationChannel{{
 			ID:            "email",
@@ -212,14 +212,14 @@ func TestRedactedDoesNotMutateActiveConfig(t *testing.T) {
 	}
 
 	redacted := cfg.Redacted()
-	redacted.Grafana.DashboardTemplates["sql"] = "changed"
+	redacted.Dashboards.DashboardTemplates["sql"] = "changed"
 	redacted.Collectors[0].TargetNames[0] = "changed"
 	redacted.Collectors[0].Targets[0].Probes[0].Name = "changed"
 	redacted.NotificationChannels[0].Config["smtp_host"] = "changed"
 	redacted.Collectors[0].Targets[0].CredentialRef = "changed"
 	redacted.Collectors[0].Probes[0].Name = "changed"
 
-	if cfg.Grafana.DashboardTemplates["sql"] != "/d/sql" || cfg.Collectors[0].TargetNames[0] != "primary" || cfg.Collectors[0].Targets[0].Probes[0].Name != "sessions" {
+	if cfg.Dashboards.DashboardTemplates["sql"] != "/d/sql" || cfg.Collectors[0].TargetNames[0] != "primary" || cfg.Collectors[0].Targets[0].Probes[0].Name != "sessions" {
 		t.Fatal("redacted copy aliases nested active config")
 	}
 	if cfg.CredentialRefs["sql"] != "env/SQL_PASSWORD" {
@@ -236,17 +236,52 @@ func TestRedactedDoesNotMutateActiveConfig(t *testing.T) {
 	}
 }
 
+func TestLoadRuntimeConfigPlatform(t *testing.T) {
+	for _, tc := range []struct {
+		name, content, wantPlatform, wantErr string
+	}{
+		{name: "only collectors: grafana by default", content: "collectors: []\n", wantPlatform: PlatformGrafana},
+		{name: "grafana named", content: "platform: grafana\ncollectors: []\n", wantPlatform: PlatformGrafana},
+		{name: "generic platform", content: "platform: generic\ncollectors: []\n", wantPlatform: PlatformGeneric},
+		{name: "generic platform with dashboards", content: "platform: generic\ndashboards:\n  base_url: http://grafana:3000\ncollectors: []\n", wantErr: "dashboards must be empty with platform generic"},
+		{name: "unsupported platform", content: "platform: elastic\ncollectors: []\n", wantErr: `platform "elastic" is not supported`},
+		{name: "logs pushed directly", content: "logs:\n  base_url: http://loki:3100\n  endpoint: http://loki:3100/loki/api/v1/push\ncollectors: []\n", wantErr: "logs.endpoint is not supported"},
+		{name: "alerts pushed directly", content: "alerting:\n  endpoint: http://alertmanager:9093/api/v2/alerts\ncollectors: []\n", wantErr: "alerting.endpoint is not supported"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "integrations.yaml")
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			cfg, err := LoadRuntimeConfig(path)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want it to contain %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.Platform != tc.wantPlatform {
+				t.Fatalf("Platform = %q, want %q", cfg.Platform, tc.wantPlatform)
+			}
+		})
+	}
+}
+
 func TestLoadRuntimeConfigRejectsInvalidEndpoint(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "integrations.yaml")
-	content := []byte(`grafana:
+	content := []byte(`dashboards:
   base_url: http://grafana:3000
   dashboard_templates: {}
-loki:
+logs:
   base_url: http://loki:3100
-  endpoint: loki:3100/loki/api/v1/push
-alertmanager:
+alerting:
   base_url: http://alertmanager:9093
+opentelemetry:
+  endpoint: otel-collector:4318
 credential_refs:
   sql: env/SQL_PASSWORD
 collectors: []
@@ -263,12 +298,12 @@ collectors: []
 func TestLoadRuntimeConfigRejectsPlaintextCredentialRefs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "integrations.yaml")
-	content := []byte(`grafana:
+	content := []byte(`dashboards:
   base_url: http://grafana:3000
   dashboard_templates: {}
-loki:
+logs:
   base_url: http://loki:3100
-alertmanager:
+alerting:
   base_url: http://alertmanager:9093
 credential_refs:
   sql: plaintext-password
@@ -344,10 +379,10 @@ func TestValidateRejectsTargetScrapedByTwoSQLServerCollectors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validate(RuntimeConfig{
-				Grafana:      Endpoint{BaseURL: "http://grafana:3000"},
-				Loki:         Endpoint{BaseURL: "http://loki:3100"},
-				Alertmanager: Endpoint{BaseURL: "http://alertmanager:9093"},
-				Collectors:   tt.collectors,
+				Dashboards: Endpoint{BaseURL: "http://grafana:3000"},
+				Logs:       Endpoint{BaseURL: "http://loki:3100"},
+				Alerting:   Endpoint{BaseURL: "http://alertmanager:9093"},
+				Collectors: tt.collectors,
 			})
 			if tt.wantErr != (err != nil) {
 				t.Fatalf("wantErr %v, got %v", tt.wantErr, err)
@@ -375,9 +410,9 @@ func TestValidateBoundsProbeTimeout(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := RuntimeConfig{
-				Grafana:      Endpoint{BaseURL: "http://grafana:3000"},
-				Loki:         Endpoint{BaseURL: "http://loki:3100"},
-				Alertmanager: Endpoint{BaseURL: "http://alertmanager:9093"},
+				Dashboards: Endpoint{BaseURL: "http://grafana:3000"},
+				Logs:       Endpoint{BaseURL: "http://loki:3100"},
+				Alerting:   Endpoint{BaseURL: "http://alertmanager:9093"},
 				Collectors: []CollectorRuntimeConfig{{
 					ID: "sql", Kind: "sqlserver", Enabled: true, ScrapeInterval: time.Minute,
 					Targets: []TargetRuntimeConfig{{
@@ -426,7 +461,7 @@ func TestUserinfoDetectionAndStripping(t *testing.T) {
 		{raw: "http://host?q=a@b", stripped: "http://host?q=a@b"},
 		{raw: "http://host#a@b", stripped: "http://host#a@b"},
 		{raw: `http://host\a@b`, stripped: `http://host\a@b`},
-		{raw: "/explore?orgId=1&left=${loki_query}", stripped: "/explore?orgId=1&left=${loki_query}"},
+		{raw: "/explore?orgId=1&left=${logs_query}", stripped: "/explore?orgId=1&left=${logs_query}"},
 		{raw: "/d/x?mail=ops@example.com", stripped: "/d/x?mail=ops@example.com"},
 		{raw: "mailto:ops@example.com", stripped: "mailto:ops@example.com"},
 		{raw: "ops@example.com", stripped: "ops@example.com"},
@@ -446,13 +481,13 @@ func TestUserinfoDetectionAndStripping(t *testing.T) {
 
 func TestRedactedMasksChannelConfigAndURLUserinfo(t *testing.T) {
 	cfg := RuntimeConfig{
-		Grafana: Endpoint{
+		Dashboards: Endpoint{
 			BaseURL:            "https://admin:grafana-pass@grafana.example.internal",
 			DashboardTemplates: map[string]string{"sql": "https://u:dash-pass@grafana.example.internal/d/sql"},
-			DeepLinkTemplates:  map[string]string{"logs": "/explore?left=${loki_query}"},
+			DeepLinkTemplates:  map[string]string{"logs": "/explore?left=${logs_query}"},
 		},
-		Loki:          Endpoint{BaseURL: "http://loki:3100", Endpoint: "http://push:loki-pass@loki:3100/loki/api/v1/push"},
-		Alertmanager:  Endpoint{BaseURL: "http://alertmanager:9093", Endpoint: "http://am:am-pass@alertmanager:9093/api/v2/alerts"},
+		Logs:          Endpoint{BaseURL: "http://logs:loki-pass@loki:3100"},
+		Alerting:      Endpoint{BaseURL: "http://am:am-pass@alertmanager:9093"},
 		OpenTelemetry: Endpoint{Endpoint: "http://otel:otel-pass@otel-collector:4318"},
 		NotificationChannels: []NotificationChannel{{
 			ID:            "hook",
@@ -471,12 +506,11 @@ func TestRedactedMasksChannelConfigAndURLUserinfo(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct{ name, got, want string }{
-		{"grafana.base_url", redacted.Grafana.BaseURL, "https://grafana.example.internal"},
-		{"grafana dashboard template", redacted.Grafana.DashboardTemplates["sql"], "https://grafana.example.internal/d/sql"},
-		{"grafana deep link template", redacted.Grafana.DeepLinkTemplates["logs"], "/explore?left=${loki_query}"},
-		{"loki.base_url", redacted.Loki.BaseURL, "http://loki:3100"},
-		{"loki.endpoint", redacted.Loki.Endpoint, "http://loki:3100/loki/api/v1/push"},
-		{"alertmanager.endpoint", redacted.Alertmanager.Endpoint, "http://alertmanager:9093/api/v2/alerts"},
+		{"dashboards.base_url", redacted.Dashboards.BaseURL, "https://grafana.example.internal"},
+		{"dashboards dashboard template", redacted.Dashboards.DashboardTemplates["sql"], "https://grafana.example.internal/d/sql"},
+		{"dashboards deep link template", redacted.Dashboards.DeepLinkTemplates["logs"], "/explore?left=${logs_query}"},
+		{"logs.base_url", redacted.Logs.BaseURL, "http://loki:3100"},
+		{"alerting.base_url", redacted.Alerting.BaseURL, "http://alertmanager:9093"},
 		{"opentelemetry.endpoint", redacted.OpenTelemetry.Endpoint, "http://otel-collector:4318"},
 		{"target_ref", redacted.NotificationChannels[0].TargetRef, "https://hooks.example.internal/alerts"},
 		{"channel credential_ref", redacted.NotificationChannels[0].CredentialRef, "env/HOOK_TOKEN:<redacted>"},
@@ -487,22 +521,20 @@ func TestRedactedMasksChannelConfigAndURLUserinfo(t *testing.T) {
 			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
 		}
 	}
-	if cfg.NotificationChannels[0].Config["smtp_password"] != "config-pass" || cfg.Loki.Endpoint != "http://push:loki-pass@loki:3100/loki/api/v1/push" {
+	if cfg.NotificationChannels[0].Config["smtp_password"] != "config-pass" || cfg.Logs.BaseURL != "http://logs:loki-pass@loki:3100" {
 		t.Fatal("Redacted mutated the active config")
 	}
 }
 
 func TestLoadRuntimeConfigRejectsCredentialsEmbeddedInURLs(t *testing.T) {
-	const base = `grafana:
+	const base = `dashboards:
   base_url: %s
   dashboard_templates:
     sql: %s
-loki:
+logs:
   base_url: %s
-  endpoint: %s
-alertmanager:
+alerting:
   base_url: %s
-  endpoint: %s
 opentelemetry:
   endpoint: %s
 notification_channels:
@@ -512,13 +544,12 @@ notification_channels:
 collectors: []
 `
 	clean := []string{
-		"http://grafana:3000", "/d/sql", "http://loki:3100", "http://loki:3100/loki/api/v1/push",
-		"http://alertmanager:9093", "http://alertmanager:9093/api/v2/alerts", "http://otel-collector:4318",
-		"http://alertmanager:9093/api/v2/alerts",
+		"http://grafana:3000", "/d/sql", "http://loki:3100", "http://alertmanager:9093",
+		"http://otel-collector:4318", "http://alertmanager:9093/api/v2/alerts",
 	}
 	fields := []string{
-		"grafana.base_url", "grafana.dashboard_templates.sql", "loki.base_url", "loki.endpoint",
-		"alertmanager.base_url", "alertmanager.endpoint", "opentelemetry.endpoint", "notification channel hook target_ref",
+		"dashboards.base_url", "dashboards.dashboard_templates.sql", "logs.base_url",
+		"alerting.base_url", "opentelemetry.endpoint", "notification channel hook target_ref",
 	}
 	write := func(t *testing.T, values []string) string {
 		t.Helper()
@@ -618,11 +649,11 @@ func TestValidHost(t *testing.T) {
 
 func TestLoadRuntimeConfigRejectsHostThatBreaksTheConnectionURL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "integrations.yaml")
-	content := []byte(`grafana:
+	content := []byte(`dashboards:
   base_url: http://grafana:3000
-loki:
+logs:
   base_url: http://loki:3100
-alertmanager:
+alerting:
   base_url: http://alertmanager:9093
 collectors:
   - id: sql
@@ -652,12 +683,12 @@ collectors:
 func outSystemsLogsConfig(t *testing.T, otel, settings string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "integrations.yaml")
-	content := `grafana:
+	content := `dashboards:
   base_url: http://grafana:3000
   dashboard_templates: {}
-loki:
+logs:
   base_url: http://loki:3100
-alertmanager:
+alerting:
   base_url: http://alertmanager:9093
 ` + otel + `
 collectors:
@@ -902,9 +933,9 @@ func TestValidateRejectsLogTypeExtractedByTwoOutSystemsLogsCollectors(t *testing
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validate(RuntimeConfig{
-				Grafana:       Endpoint{BaseURL: "http://grafana:3000"},
-				Loki:          Endpoint{BaseURL: "http://loki:3100"},
-				Alertmanager:  Endpoint{BaseURL: "http://alertmanager:9093"},
+				Dashboards:    Endpoint{BaseURL: "http://grafana:3000"},
+				Logs:          Endpoint{BaseURL: "http://loki:3100"},
+				Alerting:      Endpoint{BaseURL: "http://alertmanager:9093"},
 				OpenTelemetry: Endpoint{Endpoint: "http://otel-collector:4318"},
 				Collectors:    tt.collectors,
 			})

@@ -9,13 +9,13 @@ import (
 func TestLoadRuntimeConfigFiltersEnabledSQLServerCollectors(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "integrations.yaml")
-	content := []byte(`grafana:
+	content := []byte(`dashboards:
   base_url: http://grafana:3000
   dashboard_templates:
     logs: /explore
-loki:
+logs:
   base_url: http://loki:3100
-alertmanager:
+alerting:
   base_url: http://alertmanager:9093
 collectors:
   - id: sql-prod
@@ -87,12 +87,12 @@ func TestConfigVersionStableForEquivalentContent(t *testing.T) {
 	dir := t.TempDir()
 	pathA := filepath.Join(dir, "a.yaml")
 	pathB := filepath.Join(dir, "b.yaml")
-	content := []byte(`grafana:
+	content := []byte(`dashboards:
   base_url: http://grafana:3000
   dashboard_templates: {}
-loki:
+logs:
   base_url: http://loki:3100
-alertmanager:
+alerting:
   base_url: http://alertmanager:9093
 collectors:
   - id: sql-prod
