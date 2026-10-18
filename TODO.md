@@ -249,7 +249,7 @@ inventory exists; API-managed onboarding [4.4, 10.1] follows in stage 3.
 Generic source expansion [3.4] remains later work. Grafana dashboards [10.4]
 follow the ingest path.
 
-- [ ] Validate this stage: every log-type query against a SQL Server fixture with the `oslog_*` tables, extraction → OTel Collector → Loki and derived metrics → Prometheus on kind, restarts and outages without gaps [16.1–16.2]
+- [ ] Validate this stage: every log-type query against a SQL Server fixture with the `oslog_*` tables, extraction → OTel Collector → Loki and derived metrics → Prometheus on kind, restarts and outages without gaps; generated OTLP traces → Tempo, linked to their logs [16.1–16.2]
 
 ### 3.1 OTel gateway bootstrap (service removed, [ADR 0009](docs/architecture/decisions/0009-remove-the-otel-gateway.md))
 - [x] Create Go service entrypoint `services/otel-gateway/cmd/otel-gateway/`
@@ -288,7 +288,21 @@ follow the ingest path.
 Design: [request traces](docs/architecture/application-observability.md#request-traces).
 
 - [ ] Step A: request timeline dashboard across log types by `Request_Key`; measure how reliably each log type carries it
-- [ ] Step B, after step A: decide trace storage (ADR; Grafana Tempo is the natural fit), then synthesize OTLP spans from `Request_Key` in the extractor, with trace IDs derived from the key and logs ↔ traces links
+- [ ] Step B, after step A and the trace store [3.6]: synthesize OTLP spans from `Request_Key` in the extractor, with trace IDs derived from the key and logs ↔ traces links
+
+### 3.6 OTLP trace ingest
+
+Heartbeat accepts all three OpenTelemetry signals, so any source that sends
+OTLP traces has somewhere to store them, and step B [3.5] reuses the store. No
+real source sends traces yet, so the tests use generated ones (`telemetrygen`).
+Nothing here waits on the logging-database survey; do it after the phase 2
+items the survey does not block.
+
+- [ ] Decide trace storage and retention (ADR; Grafana Tempo in single-binary mode is the natural fit next to Loki)
+- [ ] Tempo as a pinned chart dependency with persistence and retention, off in the `minimal` profile; storage settings in the production example values
+- [ ] Traces pipeline in the OTel Collector config (`otlp` → `memory_limiter`, `resource`, `batch` → Tempo); update the chart render test that pins the pipelines
+- [ ] Grafana Tempo data source, with links from a log's trace ID to its trace and from a span to its logs
+- [ ] Validate: kind-e2e sends traces and logs sharing a trace ID with `telemetrygen`, finds the trace in Tempo and follows the link from the log; record the full profile's added memory [16.2]
 
 ---
 
