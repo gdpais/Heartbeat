@@ -32,8 +32,6 @@ while IFS= read -r path; do
 		db_collector=true
 		kind_e2e=true
 		;;
-	# Its tests are Go unit tests, which always run.
-	services/otel-gateway/*) kind_e2e=true ;;
 	infra/helm/*)
 		chart=true
 		kind_e2e=true
@@ -50,8 +48,8 @@ while IFS= read -r path; do
 		chart=true
 		kind_e2e=true
 		;;
-	# Read by the Go tests (always run) and mirrored by the OTel gateway.
-	packages/telemetry-contracts/*) kind_e2e=true ;;
+	# Read only by the Go tests, which always run.
+	packages/telemetry-contracts/*) ;;
 	# Everything else can affect every job: go.mod, go.sum, internal/, the
 	# config schema, the other tests and scripts, Makefile, .github/,
 	# .dockerignore, config/ and anything new.

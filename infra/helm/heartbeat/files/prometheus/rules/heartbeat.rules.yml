@@ -33,7 +33,7 @@ groups:
           summary: "Heartbeat alerting pipeline is alive"
           description: "Always firing. If the dead-man's switch stops receiving it, Heartbeat alerting is down."
       - alert: HeartbeatServiceDown
-        expr: up{job=~"db-collector|otel-gateway|otel-collector"} == 0
+        expr: up{job=~"db-collector|otel-collector"} == 0
         for: 2m
         labels:
           severity: warning

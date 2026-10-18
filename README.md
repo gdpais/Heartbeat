@@ -23,8 +23,7 @@ Early MVP construction. See the [roadmap](docs/product/roadmap.md) and
 | Component | Path | Status |
 | --- | --- | --- |
 | DB collector (SQL Server) | `services/db-collector` | Phase 1 done: probes, hot reload, failure isolation, readiness, secured endpoints, least-privilege login, counters and self-metrics |
-| OTel gateway | `services/otel-gateway` | Partial: normalizes events, not yet forwarding |
-| Kubernetes delivery | `infra/helm`, `infra/kind` | One Helm chart for kind, CI and production: both services plus pinned Prometheus, Alertmanager, Grafana, Loki and OTel Collector; kind workflow and acceptance tests |
+| Kubernetes delivery | `infra/helm`, `infra/kind` | One Helm chart for kind, CI and production: the DB collector plus pinned Prometheus, Alertmanager, Grafana, Loki and OTel Collector; kind workflow and acceptance tests |
 | Metadata schema | `db/migrations` | Migrated and tested; no service uses it yet |
 | Shared contracts | `packages/` | JSON schemas for config and telemetry payloads |
 | API, web UI | `apps/api`, `apps/web` | Not started |
@@ -86,7 +85,6 @@ apps/
   web/                 operator UI (scaffold)
 services/
   db-collector/        SQL Server collector
-  otel-gateway/        telemetry normalization helper
   session-analyzer/    investigation and baseline worker (scaffold)
   reporting/           report worker (scaffold)
 internal/config/       shared integrations config manager

@@ -1,4 +1,4 @@
-{{- if or .Values.dbCollector.enabled .Values.otelGateway.enabled }}
+{{- if .Values.dbCollector.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

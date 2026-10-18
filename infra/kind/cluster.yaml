@@ -12,6 +12,5 @@ nodes:
       - {containerPort: 30090, hostPort: 9090, listenAddress: 127.0.0.1, protocol: TCP} # Prometheus
       - {containerPort: 30093, hostPort: 9093, listenAddress: 127.0.0.1, protocol: TCP} # Alertmanager
       - {containerPort: 30082, hostPort: 8082, listenAddress: 127.0.0.1, protocol: TCP} # DB collector
-      - {containerPort: 30083, hostPort: 8083, listenAddress: 127.0.0.1, protocol: TCP} # OTel gateway
       - {containerPort: 30317, hostPort: 4317, listenAddress: 127.0.0.1, protocol: TCP} # OTLP gRPC
       - {containerPort: 30318, hostPort: 4318, listenAddress: 127.0.0.1, protocol: TCP} # OTLP HTTP

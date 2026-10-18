@@ -1,7 +1,7 @@
 apiVersion: v2
 name: heartbeat
 description: >-
-  Heartbeat monitoring platform: the DB collector, the OTel gateway, their
+  Heartbeat monitoring platform: the DB collector, its
   integrations config, Prometheus rules and Grafana dashboards, plus pinned
   observability engines that each environment can turn off.
 type: application

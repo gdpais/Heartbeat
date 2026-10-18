@@ -87,8 +87,6 @@ func TestMonorepoScaffoldingExists(t *testing.T) {
 		"apps/api/cmd/api",
 		"apps/api/internal",
 		"apps/web",
-		"services/otel-gateway/cmd/otel-gateway",
-		"services/otel-gateway/internal",
 		"services/db-collector/cmd/db-collector",
 		"services/db-collector/internal",
 		"services/session-analyzer/cmd/session-analyzer",

@@ -35,13 +35,6 @@ dbCollector:
           except:
             - 10.244.0.0/16
 
-otelGateway:
-  image:
-    pullPolicy: Never
-  service:
-    type: NodePort
-    nodePort: 30083
-
 prometheus:
   server:
     retention: 2d

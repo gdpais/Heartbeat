@@ -28,7 +28,6 @@ Heartbeat's own objects (fixed names; one release per namespace):
 | `Service/db-collector-headless` | Headless, `publishNotReadyAddresses`; Prometheus discovers the collector through it even while it is unready |
 | `Service/db-collector` | Operator access (health, admin endpoints); ready pods only. kind: NodePort with `externalTrafficPolicy: Local`, so the NetworkPolicy sees the host's address |
 | `NetworkPolicy/db-collector` | Ingress to port 8082 only from the bundled Prometheus and the `dbCollector.networkPolicy.prometheus` (shared Prometheus) and `.operators` peers; no peers means deny all. kind adds every source outside the pod subnet `10.244.0.0/16` (the host through the loopback NodePort, and containers on the Docker `kind` network); the production example adds a VPN range. Kubelet probes and `kubectl port-forward` are not affected. Needs a CNI that enforces NetworkPolicy (kind's kindnet does) |
-| `Deployment/otel-gateway`, `Service/otel-gateway` | Rolls on config change (it reads `integrations.yaml` once) |
 | `ConfigMap/heartbeat-integrations` | `integrations.yaml`, rendered from the `integrations` values |
 | `ConfigMap/heartbeat-prometheus-rules` | Rule files; Prometheus mounts them at `/etc/prometheus-rules` and its config reloader reloads on change |
 | `ConfigMap/heartbeat-dashboards` | Dashboards; label `grafana_dashboard: "1"` for shared Grafanas with a dashboard sidecar |
