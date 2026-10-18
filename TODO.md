@@ -268,7 +268,7 @@ follow the ingest path.
 - [ ] Review each log-type query with the probe checklist once the survey (below) has confirmed its column names, types and `Duration` unit
 - [x] Answer the [open questions](docs/architecture/application-observability.md#open-questions) from the OutSystems 11 docs: `Instant` is the start for screen and timer rows and the end for integration and mobile request rows; `Request_Key` is on all eight current log types; ten weekly cycle tables behind `oslog_<TYPE>` and `oslog_<TYPE>_Previous`, rotated Friday 23:45; the time zone is the servers' own
 - [x] Read the current and the previous week's views in every query (no Friday gap) and allow a `lag` per log type for the start-stamped ones (`probes[].lag`); the SQL Server tests load `<log type>.rows.sql` and replay a rotation
-- [ ] Run [`scripts/outsystems-log-survey.sql`](scripts/outsystems-log-survey.sql) against the logging database; replace the stand-in fixtures with its DDL and rows (both sides of a rotation, copied as they are); from its output confirm the installation's time zone (`log_timezone`), the `Duration` unit per log type, entry-point row coverage and the rows per minute at peak (`batch_limit`, Loki sizing), and set the `screen` and `cyclic_job` lags
+- [ ] Run [`scripts/outsystems-log-survey.sql`](scripts/outsystems-log-survey.sql) against the logging database replica (read only; [ADR 0010](docs/architecture/decisions/0010-patientzero-test-application.md)); replace the stand-in fixtures with its DDL and rows (both sides of a rotation, anonymized before they reach git: the repository is public); from its output confirm the installation's time zone (`log_timezone`), the `Duration` unit per log type, entry-point row coverage and the rows per minute at peak (`batch_limit`, Loki sizing), and set the `screen` and `cyclic_job` lags
 - [x] Config: `outsystems_logs` kind in the schema and Go config (`probes` select log types; `scrape_interval` is the poll interval; `lag`, `batch_limit`, `initial_lookback`, `log_timezone`)
 - [x] Extractor: watermarked reads per target and log type, full-batch tie handling, watermark file on a persistent volume, same session settings, deadline, backoff and readiness as the `sqlserver` kind
 - [x] Export OTLP/HTTP logs to the OTel Collector: OutSystems column names as attributes, `Message` body, severity, resource attributes `service.name`, `deployment.environment.name`, `outsystems.log_type`; `error.fingerprint` on error records; watermark moves only after delivery
@@ -717,6 +717,35 @@ ownership and outage testing are in section 19.
 - [ ] `SIGHUP` reload path
 - [ ] `/admin/config/reload` path
 - [ ] collector add/remove/update reconciliation under live traffic
+
+### 16.5 PatientZero test application
+
+A synthetic OutSystems 11 application on the sandbox SQL Server: each request
+runs real SQL against its business database and writes the log rows the
+platform would into its own logging database
+([ADR 0010](docs/architecture/decisions/0010-patientzero-test-application.md)).
+Code in `tools/patientzero/`, its own Go module and Helm chart, never part of
+the product chart or releases. The replica of a real logging database
+(`127.0.0.1:1433`, an SSH tunnel) is only read: nothing is written to it, and
+nothing copied from it reaches git unanonymized.
+
+First slice, with phase 2:
+- [ ] Read-only login on the replica, kept in an ignored env file like `.env.sqlserver-dev`; run the survey [3.3]
+- [ ] Logging schema from the replica's DDL (ten cycle tables per log type, current and `_Previous` views), shared with the collector's fixtures so a schema change is made once
+- [ ] Traffic profile from the replica's aggregates only: rows per minute per log type, duration distributions, error ratio, identifier coverage, `Duration` units, time zone
+- [ ] Service bootstrap: `tools/patientzero/` module, own SQL login with write rights on `patientzero` and `patientzero_log` only, health endpoint, Dockerfile, Helm chart into a `patientzero` namespace, `make patientzero-up` and `make patientzero-down`
+- [ ] Entry points: Traditional screens, Reactive server actions, an exposed REST API, timers, extension calls and a fake consumed REST partner; each request runs business SQL and writes its log rows under one `Request_Key`, with the caller's session, user and client IP
+- [ ] k6 load: virtual users with stable identities; steady, peak and soak profiles
+- [ ] Compressed calendar: weekly rotation on demand, backfill within Loki's 168h limit, commits held back past the `lag`, long-running screens and timers, `Instant` in a configured time zone including daylight saving switches; the collector's clock is never changed
+- [ ] Scenario files (fault, duration, expected PromQL/LogQL/alert signals) and an admin endpoint to start them: `blocking` (and deadlock), `bad-deploy`, `slow-partner`, `slow-sql`, `timer-backlog`, `bad-front-end`, `log-growth`, `log-backlog`, `rotation`
+- [ ] Run journal (JSONL): users, sessions, requests, and each fault with its start and end
+- [ ] `make kind-e2e` runs the scenarios against PatientZero and checks their signals; replace the hand-run load in the [live demo](docs/guides/live-demo.md) with them [16.2, 16.3]
+
+Later, each with the phase that needs it:
+- [ ] Phases 3–4: onboard PatientZero through the API and the UI as the reference application [16.3]
+- [ ] Phase 7: investigations and reports on PatientZero runs compared with their journals; decide soak runs or a Prometheus TSDB backfill for multi-day baselines and weekly reports [6, 13, 14]
+- [ ] Optional soak target: the collector reading the replica itself, with the tunnel exposed where kind can reach it (for example `host.docker.internal`)
+- [ ] OTLP mode for the OutSystems Cloud/ODC streams and traces [3.4, 3.5]; a MuleSoft-like source [3.4]; an Oracle-backed variant [21]
 
 ---
 
