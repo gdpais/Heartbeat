@@ -16,6 +16,7 @@ one; mark the old record *Superseded by ADR NNNN*.
 | [0008](0008-outsystems-11-log-extraction.md) | OutSystems 11 self-managed logs are extracted from the logging database by a new db-collector kind, `outsystems_logs`: one reviewed `.sql` file per log type, watermarked reads, OTLP to the OTel Collector and Loki, derived metrics on the collector's `/metrics` | Proposed |
 | [0009](0009-remove-the-otel-gateway.md) | Remove the OTel gateway service; Alertmanager's default receiver has no integrations until an environment configures one; push sources go to the OTel Collector over OTLP, mapped with OTTL | Accepted |
 | [0010](0010-patientzero-test-application.md) | Heartbeat is tested against PatientZero, a synthetic OutSystems 11 application on the sandbox SQL Server: real SQL and OutSystems log rows from the same requests, k6 load, named fault scenarios with expected signals, a run journal; a replica of a real logging database is only read, for its schema and traffic profile | Accepted; not built |
+| [0011](0011-platform-agnostic-telemetry-boundary.md) | Heartbeat's services emit only OTLP and Prometheus exposition; only the OTel Collector and the chart name a platform; the integrations config is neutral (`platform`, `dashboards`, `logs`, `alerting`); content is per platform. The Grafana stack stays bundled and is reconsidered against the organization's ELK before production | Accepted |
 
 Template:
 

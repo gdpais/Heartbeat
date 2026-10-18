@@ -24,12 +24,13 @@ Alloy coverage check [21] → final Alloy comparison [22].
 - [x] Design current-runtime and target-architecture diagrams, link them from the README, and verify them against source/configuration
 - [x] Reorganize docs by audience; record key decisions as ADRs; archive superseded plans
 - [x] Reorder delivery: collector → gateway → API → Web; production delivery after the Web UI; Oracle after fallback ingestion and gated by an Alloy coverage check; Alloy comparison last
+- [x] Keep the observability platform replaceable: services emit only OTLP and Prometheus exposition, neutral integrations config, an external-platform values example ([ADR 0011](docs/architecture/decisions/0011-platform-agnostic-telemetry-boundary.md))
 - [ ] Freeze subsystem boundaries, responsibilities, and interfaces
 - [ ] Freeze ownership rules:
   - [ ] app-owned workflows derive environment through `applications.environment_id`
   - [ ] PostgreSQL stores control-plane metadata only
   - [ ] YAML/Kubernetes stores integration + collector desired runtime config
-  - [ ] Prometheus/Loki store telemetry data
+  - [ ] The observability platform (Prometheus and Loki when bundled) stores telemetry data
   - [ ] Redis stores transient async coordination only
 
 ### 0.2 Repo and local platform bootstrap
@@ -784,6 +785,7 @@ production with the defaults in
 It follows the Web UI so the first production deploy carries a usable product;
 pull it forward if a production SQL Server must be monitored sooner.
 
+- [ ] First: review the observability platform, the organization's ELK stack (Elastic Cloud) against the bundled Grafana stack, on the same data (the Collector sends to both); compare search, investigation queries, alerting, cost and operations; record the choice in an ADR ([ADR 0011](docs/architecture/decisions/0011-platform-agnostic-telemetry-boundary.md)). If ELK wins: its content pack (Kibana dashboards, rules, index templates and ILM) and log/metric query adapters
 - [ ] `heartbeat-deploy` config repository with Argo CD Applications and per-environment values
 - [ ] The release workflow [0.5] also publishes the images and the chart to ECR through GitHub OIDC
 - [ ] EKS infrastructure as code; AWS Secrets Manager with External Secrets

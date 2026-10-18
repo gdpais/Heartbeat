@@ -78,7 +78,7 @@ current evidence sink does not retain them.
 | System | Owns | Boundary |
 | --- | --- | --- |
 | PostgreSQL | Inventory, policy intent, investigation summaries, evidence links, baseline versions, report-run metadata | No raw telemetry, raw sessions, audit streams, or report binaries |
-| YAML / Kubernetes | Integration endpoints, Grafana URL templates, collector desired runtime state, credential references | Active collector targets/probes come from config, not PostgreSQL |
+| YAML / Kubernetes | Integration endpoints, dashboard URL templates, collector desired runtime state, credential references | Active collector targets/probes come from config, not PostgreSQL |
 | Prometheus | Metric time series and executable recording/alert rules | Metrics are scraped from collectors; no SQL metric buffering in Redis/PostgreSQL |
 | Loki | Logs and queryable operational evidence | High-cardinality investigation identifiers are kept as structured metadata, never index labels |
 | Redis | Transient job queues, retries, locks, short-lived caches | Not the durable source of investigation or report state |
@@ -121,6 +121,12 @@ Heartbeat is organized into four planes, the same four groups as the
 
 Rules every subsystem follows. The reasoning is recorded in the
 [architecture decisions](decisions/README.md).
+
+- Services emit only OTLP (to the OpenTelemetry Collector) and Prometheus
+  exposition (`/metrics`), never a platform's own write API. Only the Collector
+  config and the chart name the observability platform; dashboards, rules and
+  link templates are per-platform content
+  ([ADR 0011](decisions/0011-platform-agnostic-telemetry-boundary.md)).
 
 - The API never queries SQL Server directly; all database-specific collection
   stays in `db-collector`.
