@@ -21,6 +21,29 @@ shared validation inventory [16] throughout rather than as a final stage.
 | 10 | Oracle collector, gated by an Alloy coverage check | Late roadmap |
 | 11 | Custom collector vs Grafana Alloy comparison | Last planned phase |
 
+## Test application: PatientZero
+
+Heartbeat only reads, so the phases are tested against **PatientZero**, a
+synthetic application that behaves like an OutSystems 11 application
+([ADR 0010](../architecture/decisions/0010-patientzero-test-application.md)) [16.5].
+Each request runs real SQL against its business database on the sandbox SQL
+Server and writes the log rows the platform would into its own logging
+database, so database load and application logs share a cause. Its logging
+schema and traffic profile come from a replica of a real OutSystems 11
+logging database, which is only read.
+
+- k6 load with virtual users of stable identity, in steady, peak and soak
+  profiles
+- Named fault scenarios (blocking, a bad deploy, a slow partner, slow SQL,
+  late timers, a bad front-end, log growth and backlog, weekly rotation),
+  each with the signals it must produce, checked by `make kind-e2e`
+- A compressed calendar for the extractor: rotation on demand, backfill,
+  late commits and time zones, without touching the collector's clock
+- A journal of every run: the known answer for investigations and reports
+
+It grows with the phases: logs and derived metrics in phase 2, onboarding in
+phases 3 and 4, investigations, alerts and reports in phase 7.
+
 ## Phase 0 — Foundations (done)
 
 - Monorepo scaffolding, local platform, CI [0.2]
@@ -76,6 +99,10 @@ by a new db-collector kind
 ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md);
 design in [application observability](../architecture/application-observability.md)).
 
+- PatientZero's first slice: the logging-database survey run against the
+  replica, its schema and traffic profile, the business and logging
+  databases on the sandbox, k6 load and the first scenarios, which are part of
+  this phase's exit checks [16.5]
 - One reviewed `.sql` query per log type (error, screen, integration, ...),
   watermarked incremental reads, OTLP to the OTel Collector and Loki with
   OutSystems field names kept [3.3]
@@ -111,8 +138,10 @@ from the commits since `v0.1.0` [0.5].
   JSONL audit output [4.6–4.10]
 
 Exit: auth/ownership, CRUD persistence, secret refs, audit redaction and queue
-contracts. Workflows that need later workers (investigations, baselines,
-reports) are validated in phase 7, not from endpoint tests alone.
+contracts; PatientZero registered through the API as an application with its
+telemetry source and database targets. Workflows that need later workers
+(investigations, baselines, reports) are validated in phase 7, not from
+endpoint tests alone.
 
 ## Phase 4 — Web UI
 
@@ -120,7 +149,8 @@ reports) are validated in phase 7, not from endpoint tests alone.
 - Investigation, alert and report screens start as contract-backed shells and
   are completed with their workers in phase 7
 
-Exit: API-backed login, roles, onboarding and Grafana/Loki deep links.
+Exit: API-backed login, roles, onboarding and Grafana/Loki deep links;
+PatientZero onboarded from the UI.
 
 ## Phase 5 — Production delivery (EKS + Argo CD)
 
@@ -159,7 +189,8 @@ field/metric semantics, cardinality and database load checked.
 - See [operator workflows](../architecture/workflows.md)
 
 Exit: deterministic correlation/baseline/report tests; alert
-trigger/route/dedupe/resolve and scheduled/on-demand reports end to end.
+trigger/route/dedupe/resolve and scheduled/on-demand reports end to end;
+investigations and reports on PatientZero runs match their journals.
 
 ## Phase 8 — Advanced reliability, HA and security
 
