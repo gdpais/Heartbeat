@@ -263,7 +263,8 @@ pass "Watchdog active in Alertmanager"
 
 step "log identifiers reach Loki as structured metadata, not labels"
 # One OTLP/JSON log record into the Collector. Loki's otlp_config indexes only
-# service.name, service.namespace and deployment.environment.name.
+# service.name, service.namespace, deployment.environment.name and
+# outsystems.log_type.
 user_id=e2e-user-$run_id session_id=e2e-session-$run_id request_id=e2e-request-$run_id client_ip=203.0.113.42
 cat >"$WORK/otlp-log.json" <<EOF
 {"resourceLogs": [{
@@ -344,10 +345,12 @@ wait_for 240 "3 rows extracted" value_is 'sum(heartbeat_outsystems_extract_rows_
 wait_for 120 "3 log lines in Loki" loki_count_is '{service_name="E2eShop"}' 3
 loki_count_is '{service_name="E2eShop"} | Request_Key="e2e-2"' 1 ||
 	fail "Loki has no line with the Request_Key attribute e2e-2 as structured metadata"
+loki_count_is '{service_name="E2eShop", outsystems_log_type="error"}' 3 ||
+	fail "the OutSystems rows are not indexed under the label outsystems_log_type=\"error\""
 target_up logging-db 1 || fail "the logging-db target is not up"
 [ -n "$(prom_value 'heartbeat_outsystems_extract_lag_seconds{collector="oslogs-e2e"}')" ] ||
 	fail "no heartbeat_outsystems_extract_lag_seconds for oslogs-e2e"
-pass "3 OutSystems error rows in Loki as {service_name=\"E2eShop\"}, attributes as structured metadata"
+pass "3 OutSystems error rows in Loki as {service_name=\"E2eShop\", outsystems_log_type=\"error\"}, attributes as structured metadata"
 
 # ----------------------------------------------------------------------------
 step "unauthenticated endpoints expose no diagnostics"

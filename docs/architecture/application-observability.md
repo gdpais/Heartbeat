@@ -9,8 +9,8 @@ is in [workflows](workflows.md#application-telemetry-ingestion-outsystems-first)
 > **Status: partly built.** Extraction to the OTel Collector (data path
 > steps 1, 2 and 5) runs as the db-collector's `outsystems_logs` kind,
 > switched off by default ([configuration](../reference/configuration.md#outsystems_logs-collectors)).
-> The Loki index label `outsystems.log_type`, the derived metrics and request
-> traces are designed, not built. Field names and log types follow
+> Loki indexes `outsystems.log_type` as a label (`outsystems_log_type` in
+> LogQL). The derived metrics and request traces are designed, not built. Field names and log types follow
 > OutSystems 11; they are confirmed against the SRE team's queries and the
 > logging database DDL before the queries are reviewed.
 
@@ -32,7 +32,8 @@ Data path for self-managed OutSystems 11:
    the body, every other column an attribute under its OutSystems name. The
    collector adds `error.fingerprint` to error records.
 3. Records go to the OTel Collector, then to Loki. Loki indexes only
-   `service.name`, `deployment.environment.name` and `outsystems.log_type`.
+   `service.name`, `deployment.environment.name` and `outsystems.log_type`
+   (`service.namespace` too, which the collector does not set).
 4. From the same rows the collector updates the
    [derived metrics](#derived-metrics), which Prometheus scrapes from its
    `/metrics`.
