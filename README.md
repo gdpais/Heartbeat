@@ -95,7 +95,7 @@ db/migrations/         PostgreSQL schema migrations
 config/                integrations.yaml for running a service outside Kubernetes
 infra/helm/heartbeat/  Helm chart: workloads, engine config, rules, dashboards
 infra/helm/values/     values per environment (kind, minimal, SQL Server sandbox,
-                       production example)
+                       production example, external platform example)
 infra/kind/            local kind cluster config
 infra/docker-compose.test.yml  disposable PostgreSQL fixture for integration tests
 tests/                 repository, migration and integration tests

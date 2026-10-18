@@ -10,8 +10,8 @@
 {{- $bundled := dict "app.kubernetes.io/name" $promName "app.kubernetes.io/component" $promComponent "app.kubernetes.io/instance" .Release.Name }}
 {{- $peers = append $peers (dict "podSelector" (dict "matchLabels" $bundled)) }}
 {{- end }}
-{{- $peers = concat $peers $np.prometheus $np.operators }}
-# Only Prometheus and the configured operator peers may reach the collector's
+{{- $peers = concat $peers $np.scrapers $np.operators }}
+# Only Prometheus, the configured scrapers and the operator peers may reach the collector's
 # port 8082 (metrics, health and the token-protected admin endpoints); all
 # other ingress, including from other pods in the namespace, is dropped.
 # Kubelet probes and `kubectl port-forward` are not subject to NetworkPolicy.

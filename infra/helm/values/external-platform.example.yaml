@@ -1,0 +1,120 @@
+# Heartbeat on an observability platform the chart does not bundle
+# (ADR 0011): Elastic, a vendor's OTLP endpoint, or a shared OTel gateway.
+#
+# The bundled Grafana stack is off. The OpenTelemetry Collector scrapes the
+# db-collector's /metrics, as Prometheus would, and sends metrics and logs as
+# OTLP/HTTP to the platform. Heartbeat's services do not change.
+#
+# Before use: create the Secret below, set the endpoint, and install the
+# platform's own dashboards and alert rules. Heartbeat ships content only for
+# Grafana (files/grafana, files/prometheus).
+#
+#   kubectl create secret generic heartbeat-platform-otlp \
+#     --from-literal=endpoint=https://otlp.example.internal \
+#     --from-literal=authorization='ApiKey <key>'
+
+prometheus:
+  enabled: false
+grafana:
+  enabled: false
+loki:
+  enabled: false
+prometheusRules:
+  enabled: false
+grafanaDashboards:
+  enabled: false
+
+integrations:
+  # No dashboards, links or queries: Heartbeat has none for this platform.
+  platform: generic
+  dashboards: null
+  logs: null
+  alerting: null
+
+dbCollector:
+  networkPolicy:
+    # The Collector replaces Prometheus as the collector's scraper.
+    scrapers:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: otelCollector
+            component: standalone-collector
+
+otelCollector:
+  ports:
+    # Nothing scrapes the Collector's Prometheus exporter here.
+    prom-exporter:
+      enabled: false
+  extraEnvs:
+    - name: PLATFORM_OTLP_ENDPOINT
+      valueFrom:
+        secretKeyRef:
+          name: heartbeat-platform-otlp
+          key: endpoint
+    - name: PLATFORM_OTLP_AUTHORIZATION
+      valueFrom:
+        secretKeyRef:
+          name: heartbeat-platform-otlp
+          key: authorization
+  alternateConfig:
+    extensions:
+      health_check:
+        endpoint: ${env:MY_POD_IP}:13133
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: ${env:MY_POD_IP}:4317
+          http:
+            endpoint: ${env:MY_POD_IP}:4318
+      # The same job as the bundled Prometheus' db-collector job: the headless
+      # Service publishes the collector while unready, so its failure metrics
+      # are still scraped.
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: db-collector
+              scrape_interval: 30s
+              dns_sd_configs:
+                - names: ["db-collector-headless"]
+                  type: A
+                  port: 8082
+    processors:
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      resource:
+        attributes:
+          - key: heartbeat.source
+            value: otel-collector
+            action: upsert
+      batch: {}
+    # alternateConfig is merged with the chart's, and a null override does not
+    # remove an entry: otlp_http/logs, the chart's Loki exporter, is repointed,
+    # and the unused debug and prometheus exporters are never started.
+    exporters:
+      otlp_http/logs:
+        endpoint: ${env:PLATFORM_OTLP_ENDPOINT}
+        headers:
+          Authorization: ${env:PLATFORM_OTLP_AUTHORIZATION}
+    service:
+      extensions: [health_check]
+      pipelines:
+        metrics:
+          receivers: [otlp, prometheus]
+          processors: [memory_limiter, resource, batch]
+          # The same OTLP/HTTP exporter: logs and metrics go to one endpoint.
+          exporters: [otlp_http/logs]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [otlp_http/logs]
+      telemetry:
+        metrics:
+          readers:
+            - pull:
+                exporter:
+                  prometheus:
+                    host: ${env:MY_POD_IP}
+                    port: 8888

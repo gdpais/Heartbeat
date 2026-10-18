@@ -35,21 +35,20 @@ dbCollector:
     existingSecret: heartbeat-sqlserver-credentials
 
 integrations:
-  grafana:
+  platform: grafana
+  dashboards:
     base_url: https://grafana.heartbeat.example.internal
     dashboard_templates:
       sqlserver-overview: /d/sqlserver-overview
       heartbeat-overview: /d/heartbeat-overview
       outsystems-overview: /d/outsystems-overview
     deep_link_templates:
-      loki-logs: /explore?orgId=1&left=${loki_query}
+      logs-explore: /explore?orgId=1&left=${logs_query}
       sqlserver-target: /d/sqlserver-overview?var-target=${target}
-  loki:
+  logs:
     base_url: https://grafana.heartbeat.example.internal
-    endpoint: http://loki:3100/loki/api/v1/push
-  alertmanager:
+  alerting:
     base_url: http://alertmanager:9093
-    endpoint: http://alertmanager:9093/api/v2/alerts
   notification_channels: []
   credential_refs:
     sqlserver-orders: env/sqlserver-orders
