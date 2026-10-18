@@ -5,7 +5,7 @@ Single source of truth for delivery order and task status. The
 original plan this list was derived from is
 [archived](docs/archive/2026-05-30-mvp-implementation-plan.md).
 
-Core delivery order: **DB collector → OTel gateway → API/control plane → Web UI**,
+Core delivery order: **DB collector → OutSystems ingest → API/control plane → Web UI**,
 after foundations and schema prerequisites (sections 2–5). Later-service
 integrations are explicitly identified below; they do not block independent
 stage work, but they do block end-to-end completion of the dependent feature.
@@ -84,7 +84,7 @@ the rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Tag ruleset on all tags (not only `v*`, so later component tags are covered): no updates or deletions
 - [ ] Right after the release app exists: add a second tag ruleset on all tags, `Heartbeat-tag-creation`, with only *Restrict creations* and the release app in its bypass list, so the app can create tags but not move or delete them ([setup](CONTRIBUTING.md#releases))
 - [x] First release, `v0.1.0`: tag the phase 1 merge commit `64ac1b6`, run the `release` workflow by hand for it, check the release notes list three digests
-- [ ] Make the GHCR packages public: `heartbeat/db-collector`, `heartbeat/otel-gateway`, `charts/heartbeat`
+- [ ] Make the GHCR packages public: `heartbeat/db-collector`, `charts/heartbeat`, and `heartbeat/otel-gateway`, which only `v0.1.0` uses
 
 ---
 
@@ -241,7 +241,7 @@ Replica ownership and outage testing are section 19. Design details:
 
 Delivery stage 2. The first deployment is OutSystems 11 self-managed: its logs
 are extracted from the logging database by a new db-collector kind,
-`outsystems_logs`, not pushed to the OTel gateway
+`outsystems_logs`
 ([ADR 0008](docs/architecture/decisions/0008-outsystems-11-log-extraction.md),
 design in [application observability](docs/architecture/application-observability.md)).
 Use explicitly configured application/environment identities until API
@@ -249,9 +249,9 @@ inventory exists; API-managed onboarding [4.4, 10.1] follows in stage 3.
 Generic source expansion [3.4] remains later work. Grafana dashboards [10.4]
 follow the ingest path.
 
-- [ ] Validate this stage: every log-type query against a SQL Server fixture with the `oslog_*` tables, extraction → OTel Collector → Loki and derived metrics → Prometheus on kind, restarts and outages without gaps [16.1–16.2]
+- [ ] Validate this stage: every log-type query against a SQL Server fixture with the `oslog_*` tables, extraction → OTel Collector → Loki and derived metrics → Prometheus on kind, restarts and outages without gaps; generated OTLP traces → Tempo, linked to their logs [16.1–16.2]
 
-### 3.1 OTel gateway bootstrap
+### 3.1 OTel gateway bootstrap (service removed, [ADR 0009](docs/architecture/decisions/0009-remove-the-otel-gateway.md))
 - [x] Create Go service entrypoint `services/otel-gateway/cmd/otel-gateway/`
 - [x] Create internal packages for parsers and normalization
 - [x] Add health/metrics/logging/graceful shutdown
@@ -276,7 +276,7 @@ follow the ingest path.
 - [ ] Add `outsystems.log_type` to Loki's index labels
 - [x] Extraction self-metrics: rows, lag, export failures, OutSystems log delay
 - [ ] Derived metrics from the [catalog](docs/architecture/application-observability.md#derived-metrics), with bounded labels; recording rules, SLO burn-rate alerts and promtool tests
-- [ ] Decide the OTel gateway's future: remove its JSON event endpoint and alert sink, then remove the service or keep it for push sources [3.4]
+- [x] Decide the OTel gateway's future: removed with its JSON event endpoint and alert sink; Alertmanager's default receiver has no integrations; push sources go to the OTel Collector over OTLP, mapped with OTTL ([ADR 0009](docs/architecture/decisions/0009-remove-the-otel-gateway.md))
 
 ### 3.4 Generic telemetry expansion
 - [ ] Harden generic OTLP ingest after OutSystems path works
@@ -288,14 +288,28 @@ follow the ingest path.
 Design: [request traces](docs/architecture/application-observability.md#request-traces).
 
 - [ ] Step A: request timeline dashboard across log types by `Request_Key`; measure how reliably each log type carries it
-- [ ] Step B, after step A: decide trace storage (ADR; Grafana Tempo is the natural fit), then synthesize OTLP spans from `Request_Key` in the extractor, with trace IDs derived from the key and logs ↔ traces links
+- [ ] Step B, after step A and the trace store [3.6]: synthesize OTLP spans from `Request_Key` in the extractor, with trace IDs derived from the key and logs ↔ traces links
+
+### 3.6 OTLP trace ingest
+
+Heartbeat accepts all three OpenTelemetry signals, so any source that sends
+OTLP traces has somewhere to store them, and step B [3.5] reuses the store. No
+real source sends traces yet, so the tests use generated ones (`telemetrygen`).
+Nothing here waits on the logging-database survey; do it after the phase 2
+items the survey does not block.
+
+- [ ] Decide trace storage and retention (ADR; Grafana Tempo in single-binary mode is the natural fit next to Loki)
+- [ ] Tempo as a pinned chart dependency with persistence and retention, off in the `minimal` profile; storage settings in the production example values
+- [ ] Traces pipeline in the OTel Collector config (`otlp` → `memory_limiter`, `resource`, `batch` → Tempo); update the chart render test that pins the pipelines
+- [ ] Grafana Tempo data source, with links from a log's trace ID to its trace and from a span to its logs
+- [ ] Validate: kind-e2e sends traces and logs sharing a trace ID with `telemetrygen`, finds the trace in Tempo and follows the link from the log; record the full profile's added memory [16.2]
 
 ---
 
 ## 4. Core system: API / control plane (`apps/api`)
 
 Delivery stage 3. PostgreSQL schema [1], Redis [0.2], runtime config [8]
-and collector/gateway contracts are prerequisites. CRUD, metadata persistence,
+and collector contracts are prerequisites. CRUD, metadata persistence,
 queue submission and worker interfaces can be delivered before their workers.
 Investigation results [4.6] need analyzer/evidence assembly [6, 12]; adaptive
 baselines [4.7] need computation [6.3, 13.2]; report execution/status [4.8] needs
@@ -305,7 +319,7 @@ endpoint or queue tests alone. Rule/route provisioning [4.7] needs [9.1, 9.4,
 
 - [ ] Define/version API-to-worker job/result contracts before queue producers and consumers; integration-test each complete workflow when its worker lands
 - [ ] Define how approved metadata probe assignments become YAML/Kubernetes runtime config [2.5, 8]; keep runtime desired state out of PostgreSQL
-- [ ] Validate this stage: auth/ownership/secret refs, CRUD persistence, audit redaction, queue contracts and collector/gateway onboarding [16.1–16.2]
+- [ ] Validate this stage: auth/ownership/secret refs, CRUD persistence, audit redaction, queue contracts and collector onboarding [16.1–16.2]
 
 ### 4.1 Service bootstrap
 - [ ] Create Go service entrypoint `apps/api/cmd/api/`
@@ -745,7 +759,7 @@ Later, each with the phase that needs it:
 - [ ] Phases 3–4: onboard PatientZero through the API and the UI as the reference application [16.3]
 - [ ] Phase 7: investigations and reports on PatientZero runs compared with their journals; decide soak runs or a Prometheus TSDB backfill for multi-day baselines and weekly reports [6, 13, 14]
 - [ ] Optional soak target: the collector reading the replica itself, with the tunnel exposed where kind can reach it (for example `host.docker.internal`)
-- [ ] OTLP mode for the OutSystems Cloud/ODC streams and traces [3.4, 3.5]; a MuleSoft-like source [3.4]; an Oracle-backed variant [21]
+- [ ] OTLP mode for the OutSystems Cloud/ODC streams and traces [3.4, 3.6]; a MuleSoft-like source [3.4]; an Oracle-backed variant [21]
 
 ---
 

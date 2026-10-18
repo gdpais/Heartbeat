@@ -93,31 +93,7 @@ dbCollector:
   tolerations: []
   affinity: {}
 
-otelGateway:
-  enabled: true
-  image:
-    repository: heartbeat/otel-gateway
-    tag: ""
-    digest: ""
-    pullPolicy: IfNotPresent
-  replicas: 1
-  service:
-    type: ClusterIP
-    port: 8083
-    nodePort: null
-  resources:
-    requests:
-      cpu: 20m
-      memory: 32Mi
-    limits:
-      memory: 128Mi
-  extraEnv: []
-  podAnnotations: {}
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
-
-# Pod and container hardening shared by both Heartbeat workloads. The images
+# Pod and container hardening for the Heartbeat workloads. The images
 # are distroless and run as the nonroot user. fsGroup makes the collector's
 # state volume writable by that user.
 podSecurityContext:
@@ -270,9 +246,6 @@ prometheus:
         - names: ["db-collector-headless"]
           type: A
           port: 8082
-    otel-gateway:
-      static_configs:
-        - targets: ["otel-gateway:8083"]
     otel-collector:
       static_configs:
         - targets: ["otel-collector:8889"]
@@ -310,11 +283,10 @@ prometheus:
             group_wait: 0s
             group_interval: 1m
             repeat_interval: 1m
+      # Neither receiver has an integration (ADR 0009): alerts stay visible in
+      # Alertmanager and Grafana, and each environment adds its own receivers.
       receivers:
         - name: default
-          webhook_configs:
-            - url: http://otel-gateway:8083/v1/heartbeat/alerts
-              send_resolved: true
         - name: deadmans-switch
 
 grafana:

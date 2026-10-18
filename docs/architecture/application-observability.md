@@ -174,8 +174,9 @@ The extractor turns rows into spans as well as log records:
 The OTel Collector's `spanmetrics` connector can then produce the same RED
 metrics from spans, and a trace store (Grafana Tempo is the natural fit next
 to Loki and Grafana) shows waterfalls with links to the logs and the SQL
-Server dashboards for the same time. Adding a trace store is a new component
-and needs its own ADR.
+Server dashboards for the same time. The trace store comes first, for any
+OTLP source and with its own ADR ([TODO 3.6](../../TODO.md)); step B only
+adds the spans.
 
 Limits, stated in the product: spans exist only where OutSystems logs
 something. Fast SQL, internal actions and client-side time do not appear, and

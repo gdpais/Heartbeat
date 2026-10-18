@@ -38,8 +38,7 @@ which is not committed.
   way they are
 - [Contributing](../CONTRIBUTING.md): branches, commits, checks, pull requests
   and releases; [changelog](../CHANGELOG.md)
-- Service internals: [DB collector](../services/db-collector/README.md),
-  [OTel gateway](../services/otel-gateway/README.md)
+- Service internals: [DB collector](../services/db-collector/README.md)
 - [TODO.md](../TODO.md): implementation task list
 
 **Operators and SREs**
@@ -79,7 +78,7 @@ review and are not tracked in git. Their lasting outcomes are recorded as
 | **Investigation** | A request to correlate evidence for a subject (user, IP, session, request) in an application over a time window. |
 | **Evidence link** | A URL into Grafana, Loki or Prometheus that supports an investigation result; raw evidence is never copied. |
 | **Adaptive baseline** | A computed, versioned threshold (for example rolling median + MAD) rendered into Prometheus rules. |
-| **OTel gateway** | Heartbeat's thin service for platform-specific normalization. Not to be confused with the stock **OpenTelemetry Collector**, which does OTLP ingest and routing. |
+| **OTel gateway** | A Heartbeat normalization service that never got a caller, removed by [ADR 0009](architecture/decisions/0009-remove-the-otel-gateway.md). Not the stock **OpenTelemetry Collector**, which does OTLP ingest and routing. |
 | **Plane** | One of Heartbeat's four areas (telemetry, analysis jobs, control plane, presentation); see [core systems](architecture/overview.md#core-systems). |
 | **Control plane** | The planned Go API plus PostgreSQL, Redis and YAML config, which manage inventory, policies, schedules and investigations. |
 | **ADR** | Architecture decision record, under [`architecture/decisions/`](architecture/decisions/README.md). |

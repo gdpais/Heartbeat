@@ -66,9 +66,8 @@ Considered and not chosen:
 - The db-collector now pushes logs over OTLP as well as serving metrics, so it
   needs network access to the OTel Collector (NetworkPolicy egress).
 - The OTel gateway takes no part in OutSystems 11 ingest. Its JSON event
-  endpoint and alert sink are superseded; whether the service is removed or
-  kept as the bridge for future push sources (TODO 3.4) is decided before that
-  work starts.
+  endpoint and alert sink are superseded; the service was then removed
+  ([ADR 0009](0009-remove-the-otel-gateway.md)).
 - CI needs a SQL Server fixture per log type with the cycle tables and the
   two views the query reads, built from the real DDL, and rows copied from
   the logging database on both sides of a rotation.

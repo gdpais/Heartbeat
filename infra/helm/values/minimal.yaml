@@ -1,9 +1,6 @@
 # Minimal profile: DB collector, Prometheus, Alertmanager and Grafana. Drops
-# Loki, the OpenTelemetry Collector and the OTel gateway to save CPU and RAM.
+# Loki and the OpenTelemetry Collector to save CPU and RAM.
 # Layer after kind.yaml.
-
-otelGateway:
-  enabled: false
 
 loki:
   enabled: false
@@ -13,18 +10,10 @@ otelCollector:
 
 prometheus:
   scrapeConfigs:
-    otel-gateway:
-      enabled: false
     otel-collector:
       enabled: false
     loki:
       enabled: false
-  alertmanager:
-    config:
-      # The default receiver posts to the OTel gateway, which is not deployed.
-      receivers:
-        - name: default
-        - name: deadmans-switch
 
 grafana:
   datasources:

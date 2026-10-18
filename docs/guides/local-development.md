@@ -46,7 +46,7 @@ make kind-down     # delete the cluster
 
 | Profile | Deploys |
 | --- | --- |
-| `full` (default) | DB collector, OTel gateway, Prometheus, Alertmanager, Grafana, Loki, OpenTelemetry Collector |
+| `full` (default) | DB collector, Prometheus, Alertmanager, Grafana, Loki, OpenTelemetry Collector |
 | `minimal` | DB collector, Prometheus, Alertmanager, Grafana |
 
 Choose one with `PROFILE=minimal make kind-up` (or `make kind-deploy`).
@@ -54,7 +54,7 @@ PostgreSQL and Redis are not deployed until a service uses them.
 
 Services keep the ports Compose used, on 127.0.0.1 only: Grafana
 http://localhost:3000 (`admin`/`admin`), Prometheus :9090, Alertmanager :9093,
-collector :8082, gateway :8083, OTLP :4317/:4318. The
+collector :8082, OTLP :4317/:4318. The
 [metrics and endpoints reference](../reference/metrics-and-endpoints.md#local-ports-kind)
 lists them.
 
@@ -172,9 +172,9 @@ test Compose file.
 
 ## Build images
 
-`make kind-images` builds both images for the kind node's own architecture and
-loads them. To build by hand: both Dockerfiles compile for Docker's selected
-target platform; the build stage runs natively and cross-compiles Go, so no CPU
+`make kind-images` builds the collector image for the kind node's own
+architecture and loads it. To build by hand: the Dockerfile compiles for
+Docker's selected target platform; the build stage runs natively and cross-compiles Go, so no CPU
 emulation is needed.
 
 ```bash
@@ -182,8 +182,7 @@ docker build --platform linux/arm64 -t heartbeat/db-collector:dev -f services/db
 docker build --platform linux/amd64 -t heartbeat/db-collector:amd64 -f services/db-collector/Dockerfile .
 ```
 
-Use `services/otel-gateway/Dockerfile` and `heartbeat/otel-gateway` for the
-gateway. BuildKit supplies `TARGETOS` and `TARGETARCH`; do not override them
+BuildKit supplies `TARGETOS` and `TARGETARCH`; do not override them
 separately from `--platform`. `.dockerignore` keeps everything but Go sources
 out of the build context.
 
