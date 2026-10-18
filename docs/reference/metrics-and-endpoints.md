@@ -222,6 +222,31 @@ The counters are created at 0 when a collector starts and, like the probe
 series, deleted when it stops. Error text (contract violations, login and
 query errors) is logged and reported per target in `GET /admin/config`.
 
+#### Derived OutSystems metrics
+
+Computed from the rows each batch delivers, labelled `collector`,
+`environment` and `application` plus the labels shown. Design, label caps
+and the entry-point log types:
+[derived metrics](../architecture/application-observability.md#derived-metrics).
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `heartbeat_outsystems_operations_total` | counter | `module`, `log_type`, `operation`, `outcome` | Entry points: screens, Reactive server calls, timers and exposed APIs |
+| `heartbeat_outsystems_operation_duration_seconds` | histogram | `module`, `log_type`, `outcome` | Entry-point duration; buckets 0.1 to 60 s |
+| `heartbeat_outsystems_operation_seconds_total` | counter | `module`, `log_type`, `operation` | Entry-point seconds, for the mean per operation |
+| `heartbeat_outsystems_front_end_operations_total` | counter | `front_end`, `outcome` | Entry points per front-end server |
+| `heartbeat_outsystems_integration_duration_seconds` | histogram | `direction`, `type`, `outcome` | Integration calls, consumed and exposed |
+| `heartbeat_outsystems_errors_total` | counter | `module` | Error log rows |
+| `heartbeat_outsystems_slow_events_total` | counter | `module`, `kind` | Slow SQL and slow extension rows of the general log |
+| `heartbeat_outsystems_timer_delay_seconds` | histogram | `operation` | Timer start minus its schedule; buckets 1 s to 1 h |
+| `heartbeat_outsystems_screen_state_bytes` | histogram | `module`, `kind` | Traditional web screen session and viewstate size; buckets 1 KiB to 16 MiB |
+
+They are deleted with their collector. Per application, each operation adds
+3 counter series (two outcomes and its seconds) and each module, log type and
+outcome 13 histogram series (11 buckets, sum, count); `operation` and `module`
+are capped at 100 values per application (and log type), so the worst case
+is bounded.
+
 ### Prometheus scrape jobs and rules
 
 Scrape jobs (`prometheus.scrapeConfigs` in the chart's
@@ -240,6 +265,12 @@ Rules ([`heartbeat.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules
 | `heartbeat:sqlserver_wait_seconds:rate5m` | Recording: wait seconds per second by `wait_type`, `rate()` of `heartbeat_sqlserver_wait_seconds_total` |
 | `heartbeat:sqlserver_blocked_requests:sum` | Recording: blocked requests per target; 0 when the target's last cycle succeeded and nothing is blocked |
 | `heartbeat:sqlserver_sessions:sum` | Recording: sessions per target, all statuses |
+| `heartbeat:outsystems_operations:rate5m`, `heartbeat:outsystems_errors:rate5m` | Recording: OutSystems entry points per second by log type and outcome; error log rows per second by module |
+| `heartbeat:outsystems_request_duration_seconds:p95_5m`, `heartbeat:outsystems_integration_duration_seconds:p95_5m` | Recording: p95 request and integration latency |
+| `heartbeat:outsystems_request_errors:ratio_rate{5m,30m,1h,6h}`, `heartbeat:outsystems_request_slow:ratio_rate{5m,30m,1h,6h}`, `heartbeat:outsystems_requests:rate{1h,6h}` | Recording: availability and latency (2 s) SLIs per application over screens, Reactive server calls and exposed APIs, and their traffic |
+| `OutSystemsErrorBudgetBurnFast`, `OutSystemsLatencyBudgetBurnFast` | Alert (critical): 14.4× burn of a 99.5% availability or 99%-within-2-s objective over 1h and 5m, for applications with at least one request a minute |
+| `OutSystemsErrorBudgetBurnSlow`, `OutSystemsLatencyBudgetBurnSlow` | Alert (warning): 6× burn over 6h and 30m |
+| `OutSystemsLogExtractionBehind` | Alert (warning): a log type's extraction lag above 30 minutes for 10m; the OutSystems metrics and SLO alerts of that target are stale |
 | `HeartbeatServiceDown` | Alert: `up == 0` for the DB collector or OTel Collector |
 | `HeartbeatCollectorLoginElevated` | Alert (warning): `heartbeat_collector_target_login_sysadmin == 1` for 15m, the collector's login for a target is sysadmin-equivalent |
 | `Watchdog` | Alert: always firing. Alertmanager routes it to the `deadmans-switch` receiver (healthchecks.io in production, ADR 0005), which notifies when it stops arriving |
@@ -249,8 +280,9 @@ reserved for rules rendered from alert policies. The chart ships all rule files
 in the `heartbeat-prometheus-rules` ConfigMap. `make rules-check` validates the
 rules and runs their promtool unit tests (`files/prometheus/rules/tests/`). A Go
 test fails if a rule, rule test, dashboard, script or metrics doc names a SQL
-Server metric the probe catalog does not emit, or if a rule or dashboard reads
-a counter without `rate()` or `increase()`.
+Server metric the probe catalog does not emit or an OutSystems metric the
+collector does not export, or if a rule or dashboard reads a counter without
+`rate()` or `increase()`.
 
 ## Known gaps
 

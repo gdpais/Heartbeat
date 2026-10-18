@@ -101,3 +101,124 @@ tests:
             exp_annotations:
               summary: "db-collector logs in to dev/db1 as a sysadmin-equivalent login"
               description: "The collector login for db1 is a member of sysadmin or holds CONTROL SERVER. Give it only VIEW SERVER STATE and VIEW ANY DEFINITION."
+
+  - name: OutSystems request error ratio covers user-facing requests only
+    interval: 1m
+    input_series:
+      # 57 good and 3 failed screen requests a minute: 5% errors.
+      - series: 'heartbeat_outsystems_operations_total{collector="c",environment="prod",application="Shop",module="Shop_CS",log_type="screen",operation="Checkout",outcome="success"}'
+        values: '0+57x10'
+      - series: 'heartbeat_outsystems_operations_total{collector="c",environment="prod",application="Shop",module="Shop_CS",log_type="screen",operation="Checkout",outcome="error"}'
+        values: '0+3x10'
+      # Failing timers are not requests.
+      - series: 'heartbeat_outsystems_operations_total{collector="c",environment="prod",application="Shop",module="Shop_BL",log_type="cyclic_job",operation="ProcessOrders",outcome="error"}'
+        values: '0+50x10'
+      # No errors yet: the error series exists at 0, so the ratio is 0.
+      - series: 'heartbeat_outsystems_operations_total{collector="c",environment="prod",application="Users",module="Users",log_type="mobile_request",operation="Login",outcome="success"}'
+        values: '0+10x10'
+      - series: 'heartbeat_outsystems_operations_total{collector="c",environment="prod",application="Users",module="Users",log_type="mobile_request",operation="Login",outcome="error"}'
+        values: '0x10'
+    promql_expr_test:
+      - expr: heartbeat:outsystems_request_errors:ratio_rate5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'heartbeat:outsystems_request_errors:ratio_rate5m{environment="prod",application="Shop"}'
+            value: 0.05
+          - labels: 'heartbeat:outsystems_request_errors:ratio_rate5m{environment="prod",application="Users"}'
+            value: 0
+
+  - name: OutSystems slow request ratio reads the 2 s bucket in either le format
+    interval: 1m
+    input_series:
+      # Shop: 50 of 100 requests a minute within 2 s.
+      - series: 'heartbeat_outsystems_operation_duration_seconds_bucket{collector="c",environment="prod",application="Shop",module="Shop_CS",log_type="screen",outcome="success",le="2"}'
+        values: '0+50x10'
+      - series: 'heartbeat_outsystems_operation_duration_seconds_count{collector="c",environment="prod",application="Shop",module="Shop_CS",log_type="screen",outcome="success"}'
+        values: '0+100x10'
+      # Users, as Prometheus 3 stores le after scraping: 3 of 4 within 2 s.
+      - series: 'heartbeat_outsystems_operation_duration_seconds_bucket{collector="c",environment="prod",application="Users",module="Users",log_type="mobile_request",outcome="success",le="2.0"}'
+        values: '0+3x10'
+      - series: 'heartbeat_outsystems_operation_duration_seconds_count{collector="c",environment="prod",application="Users",module="Users",log_type="mobile_request",outcome="success"}'
+        values: '0+4x10'
+    promql_expr_test:
+      - expr: heartbeat:outsystems_request_slow:ratio_rate5m
+        eval_time: 10m
+        exp_samples:
+          - labels: 'heartbeat:outsystems_request_slow:ratio_rate5m{environment="prod",application="Shop"}'
+            value: 0.5
+          - labels: 'heartbeat:outsystems_request_slow:ratio_rate5m{environment="prod",application="Users"}'
+            value: 0.25
+
+  - name: OutSystems fast error budget burn pages, but not for an application with almost no traffic
+    interval: 1m
+    input_series:
+      # Shop: 10% of 100 requests a minute fail from the start.
+      - series: 'heartbeat_outsystems_operations_total{collector="c",environment="prod",application="Shop",module="Shop_CS",log_type="screen",operation="Checkout",outcome="success"}'
+        values: '0+90x80'
+      - series: 'heartbeat_outsystems_operations_total{collector="c",environment="prod",application="Shop",module="Shop_CS",log_type="screen",operation="Checkout",outcome="error"}'
+        values: '0+10x80'
+      # Rare: every request fails, but there is one every two minutes.
+      - series: 'heartbeat_outsystems_operations_total{collector="c",environment="prod",application="Rare",module="Rare",log_type="screen",operation="Home",outcome="success"}'
+        values: '0x80'
+      - series: 'heartbeat_outsystems_operations_total{collector="c",environment="prod",application="Rare",module="Rare",log_type="screen",operation="Home",outcome="error"}'
+        values: '0+0.5x80'
+    alert_rule_test:
+      - alertname: OutSystemsErrorBudgetBurnFast
+        eval_time: 1m
+        exp_alerts: []
+      - alertname: OutSystemsErrorBudgetBurnFast
+        eval_time: 70m
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              environment: prod
+              application: Shop
+            exp_annotations:
+              summary: "prod/Shop is burning its error budget fast"
+              description: "10% of requests failed over the last hour, more than 14.4 times the 0.5% budget."
+
+  - name: OutSystems fast latency budget burn pages
+    interval: 1m
+    input_series:
+      # Half of the requests take more than 2 s.
+      - series: 'heartbeat_outsystems_operation_duration_seconds_bucket{collector="c",environment="prod",application="Shop",module="Shop_CS",log_type="screen",outcome="success",le="2"}'
+        values: '0+50x80'
+      - series: 'heartbeat_outsystems_operation_duration_seconds_count{collector="c",environment="prod",application="Shop",module="Shop_CS",log_type="screen",outcome="success"}'
+        values: '0+100x80'
+      - series: 'heartbeat_outsystems_operations_total{collector="c",environment="prod",application="Shop",module="Shop_CS",log_type="screen",operation="Checkout",outcome="success"}'
+        values: '0+100x80'
+    alert_rule_test:
+      - alertname: OutSystemsLatencyBudgetBurnFast
+        eval_time: 70m
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              environment: prod
+              application: Shop
+            exp_annotations:
+              summary: "prod/Shop is slow"
+              description: "50% of requests took more than 2 s over the last hour, more than 14.4 times the 1% budget."
+
+  - name: OutSystems log extraction behind fires after 10 minutes past half an hour
+    interval: 1m
+    input_series:
+      - series: 'heartbeat_outsystems_extract_lag_seconds{collector="oslogs",environment="prod",target="logging-db",log_type="screen"}'
+        values: '2000x15'
+      - series: 'heartbeat_outsystems_extract_lag_seconds{collector="oslogs",environment="prod",target="logging-db",log_type="error"}'
+        values: '120x15'
+    alert_rule_test:
+      - alertname: OutSystemsLogExtractionBehind
+        eval_time: 5m
+        exp_alerts: []
+      - alertname: OutSystemsLogExtractionBehind
+        eval_time: 12m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              collector: oslogs
+              environment: prod
+              target: logging-db
+              log_type: screen
+            exp_annotations:
+              summary: "OutSystems screen logs of prod/logging-db are 33m 20s behind"
+              description: "The oslogs collector has not extracted screen rows for more than 30 minutes. Logs, derived metrics and the OutSystems SLO alerts for this target are stale. Check the collector's probe errors and OTLP export failures."

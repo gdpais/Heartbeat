@@ -82,18 +82,7 @@ type recordContext struct {
 //
 // instants holds each row's Instant as a wall clock, from checkContract.
 func buildLogs(batch Batch, rows [][]any, instants []time.Time, rc recordContext) []*logspb.ResourceLogs {
-	index := map[string]int{}
-	for i, column := range batch.Columns {
-		if _, seen := index[column.Name]; !seen {
-			index[column.Name] = i
-		}
-	}
-	value := func(row []any, name string) any {
-		if i, ok := index[name]; ok {
-			return row[i]
-		}
-		return nil
-	}
+	value := indexColumns(batch).value
 	var out []*logspb.ResourceLogs
 	scopes := map[string]*logspb.ScopeLogs{}
 	for r, row := range rows {

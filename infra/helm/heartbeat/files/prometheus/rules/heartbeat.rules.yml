@@ -20,6 +20,131 @@ groups:
       - record: heartbeat:sqlserver_sessions:sum
         expr: sum by (environment, target) (heartbeat_sqlserver_sessions)
 
+  - name: heartbeat-outsystems-recording
+    rules:
+      # Entry points per second: screens, Reactive server calls, timers and
+      # exposed APIs. The collector counts rows as it extracts them, so these
+      # trail real time by the extraction lag plus the poll interval.
+      - record: heartbeat:outsystems_operations:rate5m
+        expr: sum by (environment, application, log_type, outcome) (rate(heartbeat_outsystems_operations_total[5m]))
+      - record: heartbeat:outsystems_errors:rate5m
+        expr: sum by (environment, application, module) (rate(heartbeat_outsystems_errors_total[5m]))
+      - record: heartbeat:outsystems_request_duration_seconds:p95_5m
+        expr: histogram_quantile(0.95, sum by (environment, application, le) (rate(heartbeat_outsystems_operation_duration_seconds_bucket{log_type=~"screen|mobile_request|integration"}[5m])))
+      - record: heartbeat:outsystems_integration_duration_seconds:p95_5m
+        expr: histogram_quantile(0.95, sum by (environment, application, direction, type, le) (rate(heartbeat_outsystems_integration_duration_seconds_bucket[5m])))
+
+  # SLIs per application over user-facing requests: screens, Reactive server
+  # calls and exposed APIs (timers are left out). Availability is the share
+  # of requests without an error; latency the share answered within 2 s, a
+  # bucket of the request histogram (le="2", or "2.0" once Prometheus 3
+  # normalizes it at scrape time). The error series exists at 0 from a
+  # request's first row, so an application without errors reads 0, not
+  # nothing; one without requests reads nothing.
+  - name: heartbeat-outsystems-slo
+    rules:
+      - record: heartbeat:outsystems_request_errors:ratio_rate5m
+        expr: >-
+          sum by (environment, application) (rate(heartbeat_outsystems_operations_total{log_type=~"screen|mobile_request|integration",outcome="error"}[5m]))
+          / sum by (environment, application) (rate(heartbeat_outsystems_operations_total{log_type=~"screen|mobile_request|integration"}[5m]))
+      - record: heartbeat:outsystems_request_slow:ratio_rate5m
+        expr: >-
+          1 - sum by (environment, application) (rate(heartbeat_outsystems_operation_duration_seconds_bucket{log_type=~"screen|mobile_request|integration",le=~"2(\\.0)?"}[5m]))
+          / sum by (environment, application) (rate(heartbeat_outsystems_operation_duration_seconds_count{log_type=~"screen|mobile_request|integration"}[5m]))
+      - record: heartbeat:outsystems_request_errors:ratio_rate30m
+        expr: >-
+          sum by (environment, application) (rate(heartbeat_outsystems_operations_total{log_type=~"screen|mobile_request|integration",outcome="error"}[30m]))
+          / sum by (environment, application) (rate(heartbeat_outsystems_operations_total{log_type=~"screen|mobile_request|integration"}[30m]))
+      - record: heartbeat:outsystems_request_slow:ratio_rate30m
+        expr: >-
+          1 - sum by (environment, application) (rate(heartbeat_outsystems_operation_duration_seconds_bucket{log_type=~"screen|mobile_request|integration",le=~"2(\\.0)?"}[30m]))
+          / sum by (environment, application) (rate(heartbeat_outsystems_operation_duration_seconds_count{log_type=~"screen|mobile_request|integration"}[30m]))
+      - record: heartbeat:outsystems_request_errors:ratio_rate1h
+        expr: >-
+          sum by (environment, application) (rate(heartbeat_outsystems_operations_total{log_type=~"screen|mobile_request|integration",outcome="error"}[1h]))
+          / sum by (environment, application) (rate(heartbeat_outsystems_operations_total{log_type=~"screen|mobile_request|integration"}[1h]))
+      - record: heartbeat:outsystems_request_slow:ratio_rate1h
+        expr: >-
+          1 - sum by (environment, application) (rate(heartbeat_outsystems_operation_duration_seconds_bucket{log_type=~"screen|mobile_request|integration",le=~"2(\\.0)?"}[1h]))
+          / sum by (environment, application) (rate(heartbeat_outsystems_operation_duration_seconds_count{log_type=~"screen|mobile_request|integration"}[1h]))
+      - record: heartbeat:outsystems_request_errors:ratio_rate6h
+        expr: >-
+          sum by (environment, application) (rate(heartbeat_outsystems_operations_total{log_type=~"screen|mobile_request|integration",outcome="error"}[6h]))
+          / sum by (environment, application) (rate(heartbeat_outsystems_operations_total{log_type=~"screen|mobile_request|integration"}[6h]))
+      - record: heartbeat:outsystems_request_slow:ratio_rate6h
+        expr: >-
+          1 - sum by (environment, application) (rate(heartbeat_outsystems_operation_duration_seconds_bucket{log_type=~"screen|mobile_request|integration",le=~"2(\\.0)?"}[6h]))
+          / sum by (environment, application) (rate(heartbeat_outsystems_operation_duration_seconds_count{log_type=~"screen|mobile_request|integration"}[6h]))
+      - record: heartbeat:outsystems_requests:rate1h
+        expr: sum by (environment, application) (rate(heartbeat_outsystems_operations_total{log_type=~"screen|mobile_request|integration"}[1h]))
+      - record: heartbeat:outsystems_requests:rate6h
+        expr: sum by (environment, application) (rate(heartbeat_outsystems_operations_total{log_type=~"screen|mobile_request|integration"}[6h]))
+
+  - name: heartbeat-outsystems-alerts
+    rules:
+      # Multiwindow burn rates (Google SRE workbook) against static default
+      # objectives: 99.5% of requests without an error and 99% within 2 s,
+      # over 30 days. Fast burn (14.4x: 2% of the budget in an hour) pages;
+      # slow burn (6x: 5% in six hours) is a ticket. Applications with less
+      # than one request a minute over the long window are left out: a few
+      # errors among a handful of requests are not an SLO breach. Adaptive
+      # baselines replace these guardrails in phase 7.
+      - alert: OutSystemsErrorBudgetBurnFast
+        expr: >-
+          heartbeat:outsystems_request_errors:ratio_rate1h > (14.4 * 0.005)
+          and heartbeat:outsystems_request_errors:ratio_rate5m > (14.4 * 0.005)
+          and heartbeat:outsystems_requests:rate1h > 1/60
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.environment }}/{{ $labels.application }} is burning its error budget fast"
+          description: "{{ $value | humanizePercentage }} of requests failed over the last hour, more than 14.4 times the 0.5% budget."
+      - alert: OutSystemsErrorBudgetBurnSlow
+        expr: >-
+          heartbeat:outsystems_request_errors:ratio_rate6h > (6 * 0.005)
+          and heartbeat:outsystems_request_errors:ratio_rate30m > (6 * 0.005)
+          and heartbeat:outsystems_requests:rate6h > 1/60
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.environment }}/{{ $labels.application }} is burning its error budget"
+          description: "{{ $value | humanizePercentage }} of requests failed over the last 6 hours, more than 6 times the 0.5% budget."
+      - alert: OutSystemsLatencyBudgetBurnFast
+        expr: >-
+          heartbeat:outsystems_request_slow:ratio_rate1h > (14.4 * 0.01)
+          and heartbeat:outsystems_request_slow:ratio_rate5m > (14.4 * 0.01)
+          and heartbeat:outsystems_requests:rate1h > 1/60
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.environment }}/{{ $labels.application }} is slow"
+          description: "{{ $value | humanizePercentage }} of requests took more than 2 s over the last hour, more than 14.4 times the 1% budget."
+      - alert: OutSystemsLatencyBudgetBurnSlow
+        expr: >-
+          heartbeat:outsystems_request_slow:ratio_rate6h > (6 * 0.01)
+          and heartbeat:outsystems_request_slow:ratio_rate30m > (6 * 0.01)
+          and heartbeat:outsystems_requests:rate6h > 1/60
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.environment }}/{{ $labels.application }} is getting slower"
+          description: "{{ $value | humanizePercentage }} of requests took more than 2 s over the last 6 hours, more than 6 times the 1% budget."
+      # The SLO alerts above go quiet, not red, when extraction stops: no rows,
+      # no ratio. Half an hour is well past any log type's lag plus the poll
+      # interval.
+      - alert: OutSystemsLogExtractionBehind
+        expr: heartbeat_outsystems_extract_lag_seconds > 1800
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "OutSystems {{ $labels.log_type }} logs of {{ $labels.environment }}/{{ $labels.target }} are {{ $value | humanizeDuration }} behind"
+          description: "The {{ $labels.collector }} collector has not extracted {{ $labels.log_type }} rows for more than 30 minutes. Logs, derived metrics and the OutSystems SLO alerts for this target are stale. Check the collector's probe errors and OTLP export failures."
+
   - name: heartbeat-alerts
     rules:
       # Always firing. Alertmanager routes it to an external dead-man's switch,

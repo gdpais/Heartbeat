@@ -238,6 +238,73 @@ func TestLogQueriesAgainstSQLServer(t *testing.T) {
 	}
 }
 
+// Computes the derived metrics from every log type's fixture rows, read
+// through its query, so the column types the driver returns (bit, int,
+// datetime, text error ids) are the ones the metrics code sees in
+// production.
+func TestDerivedMetricsAgainstSQLServer(t *testing.T) {
+	server := newLiveServer(t)
+	setupFixtures(t, server)
+	sa := server.sa(t, fixtureDatabase)
+	source := SQLServerSource{Manager: server.manager}
+	target := server.target(fixtureDatabase, liveOSLogCredentialRef)
+	target.EnvironmentSlug = "prod"
+	catalog := catalogoutsystems.DefaultCatalog()
+	from := Wall(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), time.UTC)
+	to := Wall(time.Now(), time.UTC).Truncate(time.Second)
+	const limit = 10000
+	d := newDerivedRun(t)
+	for _, logType := range catalog.Names() {
+		loadFixtureRows(t, sa, logType)
+		query, _ := catalog.Get(logType)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		batch, err := source.Query(ctx, target, query.SQL, QueryParams{From: from, To: to, Limit: limit})
+		cancel()
+		if err != nil {
+			t.Fatalf("%s query: %v", logType, err)
+		}
+		instants, _, err := checkContract(batch, from, to, limit)
+		if err != nil {
+			t.Fatalf("%s: %v", logType, err)
+		}
+		item := collectormetadata.ScheduledProbe{CollectorID: "c", Target: target, Definition: collectormetadata.ProbeDefinition{Name: logType}}
+		d.metrics.observeRows(item, batch, batch.Rows, instants)
+	}
+
+	operations := func(module, logType, operation, outcome string) map[string]string {
+		return map[string]string{"application": "Shop", "module": module, "log_type": logType, "operation": operation, "outcome": outcome}
+	}
+	for _, tc := range []struct {
+		name   string
+		metric string
+		labels map[string]string
+		want   float64
+	}{
+		{"screen request", MetricOperations, operations("Shop_CS", "screen", "Checkout", "success"), 1},
+		{"Reactive server call with an error id", MetricOperations, operations("Shop_RW", "mobile_request", "Pay", "error"), 1},
+		{"Reactive server call", MetricOperations, operations("Shop_RW", "mobile_request", "GetOrders", "success"), 1},
+		{"timer run with an error id", MetricOperations, operations("Shop_CS", "cyclic_job", "ProcessOrders", "error"), 1},
+		{"exposed API", MetricOperations, operations("Shop_CS", "integration", "Orders_Get", "success"), 1},
+		{"consumed integration call that failed", MetricIntegrationDuration, map[string]string{"application": "Shop", "direction": "consume", "type": "REST", "outcome": "error"}, 1},
+		{"consumed integration call", MetricIntegrationDuration, map[string]string{"application": "Shop", "direction": "consume", "type": "REST", "outcome": "success"}, 1},
+		{"errors by module", MetricErrors, map[string]string{"application": "Shop", "module": "Shop_CS"}, 2},
+		{"slow SQL", MetricSlowEvents, map[string]string{"application": "Shop", "module": "Shop_CS", "kind": "sql"}, 1},
+		{"front-end server", MetricFrontEndOperations, map[string]string{"application": "Shop", "front_end": "FE-02", "outcome": "error"}, 2},
+	} {
+		if got := d.value(tc.metric, tc.labels); got != tc.want {
+			t.Errorf("%s: %s%v = %v, want %v", tc.name, tc.metric, tc.labels, got, tc.want)
+		}
+	}
+	// Seconds, converted by the query, then to seconds by the collector.
+	if got := d.sum(MetricOperationDuration, map[string]string{"application": "Shop", "module": "Shop_RW", "log_type": "mobile_request", "outcome": "error"}); got != 31 {
+		t.Errorf("Reactive server call duration = %v s, want 31", got)
+	}
+	// ProcessOrders started 53 s after its schedule.
+	if got := d.sum(MetricTimerDelay, map[string]string{"application": "Shop", "operation": "ProcessOrders"}); got != 53 {
+		t.Errorf("timer delay = %v s, want 53", got)
+	}
+}
+
 // Reads the session's lock timeout and deadlock priority from inside a log
 // query, as a query_template override would, with its parameters bound: the
 // collector's session settings must hold there too.

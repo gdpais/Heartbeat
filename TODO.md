@@ -275,7 +275,8 @@ follow the ingest path.
 - [x] Persistent volume for the collector in the chart; NetworkPolicy egress from the collector to the OTel Collector (none needed: the collector's policy restricts ingress only)
 - [ ] Add `outsystems.log_type` to Loki's index labels
 - [x] Extraction self-metrics: rows, lag, export failures, OutSystems log delay
-- [ ] Derived metrics from the [catalog](docs/architecture/application-observability.md#derived-metrics), with bounded labels; recording rules, SLO burn-rate alerts and promtool tests
+- [x] Derived metrics from the [catalog](docs/architecture/application-observability.md#derived-metrics), with bounded labels; recording rules, SLO burn-rate alerts and promtool tests; a Go test fails when a rule, dashboard or doc names an OutSystems metric the collector does not export
+- [ ] Active users and sessions, and new error fingerprints: left out of the collector on purpose ([why](docs/architecture/application-observability.md#not-built-on-purpose)); active users come from Loki in the dashboards [10.4], new fingerprints need a persisted fingerprint set first
 - [x] Decide the OTel gateway's future: removed with its JSON event endpoint and alert sink; Alertmanager's default receiver has no integrations; push sources go to the OTel Collector over OTLP, mapped with OTTL ([ADR 0009](docs/architecture/decisions/0009-remove-the-otel-gateway.md))
 
 ### 3.4 Generic telemetry expansion
@@ -528,7 +529,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 
 ### 9.1 Prometheus
 - [x] Provision scrape config for services and collectors
-- [ ] Add OutSystems recording rules (the first one grouped the gateway counter by labels it does not have and was removed)
+- [x] Add OutSystems recording rules: operation and error rates, p95 latency, availability and latency SLIs, burn-rate and extraction-lag alerts
 - [x] Add SQL Server recording rules
 - [x] Add alert rule output path (`rules/generated/`, loaded by Prometheus; nothing renders into it yet)
 - [x] Add an `alerting` block so Prometheus sends alerts to Alertmanager (plus an always-firing Watchdog routed to a dead-man's switch)
