@@ -17,6 +17,7 @@ func TestCIChangesFlags(t *testing.T) {
 		dbOnly = "db_collector=true chart=false kind_e2e=true"
 		chart  = "db_collector=false chart=true kind_e2e=true"
 		e2e    = "db_collector=false chart=false kind_e2e=true"
+		probes = "db_collector=true chart=false kind_e2e=false"
 	)
 	cases := []struct {
 		name   string
@@ -39,7 +40,10 @@ func TestCIChangesFlags(t *testing.T) {
 		{"docs and chart", []string{"docs/README.md", "infra/helm/heartbeat/Chart.yaml"}, false, chart},
 		{"chart tests", []string{"tests/chart_render_test.go", "tests/chart_schema_test.go"}, false, "db_collector=false chart=true kind_e2e=false"},
 		{"kind scripts", []string{"scripts/kind.sh", "scripts/kind-e2e.sh"}, false, e2e},
-		{"probe test script", []string{"scripts/sqlserver-test.sh"}, false, "db_collector=true chart=false kind_e2e=false"},
+		{"probe test script", []string{"scripts/sqlserver-test.sh"}, false, probes},
+		{"PatientZero", []string{"tools/patientzero/internal/app/server.go", "tools/patientzero/go.mod", "tools/patientzero/Dockerfile", "tools/patientzero/chart/values.yaml", "tools/patientzero/scripts/patientzero.sh"}, false, probes},
+		{"PatientZero docs", []string{"tools/patientzero/README.md"}, false, none},
+		{"PatientZero and docs", []string{"tools/patientzero/cmd/patientzero/main.go", "docs/README.md"}, false, probes},
 		{"collector login script", []string{"scripts/sqlserver-login.sh"}, false, dbOnly},
 		{"tool pins", []string{"scripts/install-tools.sh", "scripts/tools-check.sh", "scripts/chart-deps.sh"}, false, chart},
 		{"telemetry contracts", []string{"packages/telemetry-contracts/src/application_event.schema.json"}, false, none},

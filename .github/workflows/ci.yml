@@ -114,7 +114,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Run every SQL Server probe against a disposable SQL Server
+      - name: Run every SQL Server probe and PatientZero's live test against a disposable SQL Server
         run: make test-sqlserver
 
   chart:

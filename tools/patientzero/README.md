@@ -135,7 +135,10 @@ go -C tools/patientzero test ./...    # also part of make test, make test-race a
 the rows back with the collector's own queries from
 [`queries/`](../../services/db-collector/internal/probes/outsystems/queries/README.md).
 It is skipped unless `PATIENTZERO_TEST_SQLSERVER` is a `sqlserver://` URL for a
-login that may create databases, for example the sandbox's `sa`:
+login that may create databases. `make test-sqlserver` runs it against a
+disposable SQL Server container as that container's `sa`, and so does CI's
+`SQL Server probes` job, which runs whenever `tools/patientzero` changes. To
+run it on its own against the sandbox's `sa`:
 
 ```bash
 PATIENTZERO_TEST_SQLSERVER="sqlserver://sa:$(grep '^MSSQL_SA_PASSWORD=' .env.sqlserver-dev | cut -d= -f2-)@127.0.0.1:11433?encrypt=true&TrustServerCertificate=true" \

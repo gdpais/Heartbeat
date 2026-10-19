@@ -2,7 +2,7 @@
 # Decides which of CI's slower jobs a change needs (ADR 0007). Reads the
 # changed paths, one per line, on stdin and prints one flag per line:
 #
-#   db_collector=true|false   the SQL Server probe tests
+#   db_collector=true|false   the SQL Server probe tests and PatientZero's live test
 #   chart=true|false          helm lint and the rendered profiles, Helm 4 and 3
 #   kind_e2e=true|false       the acceptance checks on a temporary kind cluster
 #
@@ -39,6 +39,10 @@ while IFS= read -r path; do
 	tests/chart_*) chart=true ;;
 	infra/kind/* | scripts/kind.sh | scripts/kind-e2e.sh) kind_e2e=true ;;
 	scripts/sqlserver-test.sh) db_collector=true ;;
+	# PatientZero (ADR 0010), its own module: the always-run job tests it and
+	# make test-sqlserver runs its live test. No other job builds, renders or
+	# deploys it.
+	tools/patientzero/*) db_collector=true ;;
 	# Creates the collector's login for the probe tests and for kind.
 	scripts/sqlserver-login.sh)
 		db_collector=true
