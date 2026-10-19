@@ -35,6 +35,11 @@ About a minute later the rows are in Loki as `{service_name="PatientZero"}`
 (the screen log's `lag` is longer, because a screen row is stamped with the
 request's start).
 
+With [load](#load) running (`make patientzero-load`), Grafana's *OutSystems
+Overview* shows the application `PatientZero`, and the other OutSystems
+dashboards drill into it
+([dashboards](../../docs/architecture/application-observability.md#dashboards)).
+
 ```bash
 make patientzero-down    # remove PatientZero, its databases and its login
 ```
