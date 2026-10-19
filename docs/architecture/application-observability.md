@@ -6,11 +6,13 @@ correlated across logs. The decision behind the ingest path is
 [ADR 0008](decisions/0008-outsystems-11-log-extraction.md); the operator flow
 is in [workflows](workflows.md#application-telemetry-ingestion-outsystems-first).
 
-> **Status: partly built.** Extraction to the OTel Collector (data path
-> steps 1, 2 and 5) runs as the db-collector's `outsystems_logs` kind,
-> switched off by default ([configuration](../reference/configuration.md#outsystems_logs-collectors)).
-> Loki indexes `outsystems.log_type` as a label (`outsystems_log_type` in
-> LogQL). The derived metrics and request traces are designed, not built. Field names and log types follow
+> **Status: partly built.** Extraction to the OTel Collector and the derived
+> metrics (data path steps 1, 2, 4 and 5) run as the db-collector's
+> `outsystems_logs` kind, switched off by default
+> ([configuration](../reference/configuration.md#outsystems_logs-collectors));
+> the chart ships their recording rules and SLO alerts. Loki indexes
+> `outsystems.log_type` as a label (`outsystems_log_type` in LogQL). Request
+> traces are designed, not built. Field names and log types follow
 > OutSystems 11; they are confirmed against the SRE team's queries and the
 > logging database DDL before the queries are reviewed.
 
@@ -74,33 +76,46 @@ hash them before export without changing anything else.
 
 ## Derived metrics
 
-The collector computes these from every row it extracts. They are counted when
-the row is extracted, so they trail real time by the lag plus the poll interval
-(about a minute by default). Labels are bounded: `operation` keeps the 100
-busiest values per application and log type and folds the rest into `other`;
-`front_end` is the handful of front-end servers. User, session, request and IP
-never become labels.
+The collector computes these from every row it delivers to the OTel
+Collector and exposes them on its `/metrics`
+([code](../../services/db-collector/internal/collectors/outsystems/derived.go)).
+They are counted when the row is extracted, so they trail real time by the
+lag plus the poll interval (about a minute by default), and a batch delivered
+twice (a crash between delivery and the watermark save) is counted twice.
 
-Common labels: `environment`, `application`; `module` and `log_type` where
-shown.
+Every metric has the labels `collector`, `environment` and `application`
+(the record's `service.name`), plus those shown. Labels are capped so a name
+the platform invents cannot grow the series without bound: the first 100
+values of `module` per application and of `operation` per application and log
+type keep their own series, later ones are counted as `other`; `front_end`
+is capped at 50 and integration `type` at 20 per collector, `application` at
+1,000. The kept values are the first seen since the collector started, so a
+restart can keep different ones. User, session, request and IP never become
+labels.
+
+Entry points are the rows that stand for one request or timer run: `screen`
+(Traditional and Reactive screens; `operation` is the screen),
+`mobile_request` (Reactive server calls; the endpoint), `cyclic_job` (the
+timer) and `integration` rows of exposed APIs (the API action).
 
 ### SRE: requests, latency and errors
 
 | Metric | Type | Labels | What it answers |
 | --- | --- | --- | --- |
-| `heartbeat_outsystems_operation_duration_seconds` | histogram | `module`, `log_type`, `outcome` | Latency percentiles and SLOs per module for screens, server calls (Reactive), exposed APIs and timers |
-| `heartbeat_outsystems_operations_total` | counter | `module`, `log_type`, `operation`, `outcome` | Throughput and error rate per screen, server action, endpoint or timer |
+| `heartbeat_outsystems_operation_duration_seconds` | histogram | `module`, `log_type`, `outcome` | Latency percentiles and SLOs per module for entry points |
+| `heartbeat_outsystems_operations_total` | counter | `module`, `log_type`, `operation`, `outcome` | Throughput and error rate per screen, server call, exposed API or timer |
 | `heartbeat_outsystems_operation_seconds_total` | counter | `module`, `log_type`, `operation` | Mean latency per operation (with the counter above); finds the slow screen inside a slow module |
 | `heartbeat_outsystems_integration_duration_seconds` | histogram | `direction` (consume/expose), `type` (REST/SOAP), `outcome` | External dependency latency; a slow partner shows here first |
 | `heartbeat_outsystems_errors_total` | counter | `module` | Error rate by module, from the error log |
-| `heartbeat_outsystems_error_fingerprints_new_total` | counter | — | Errors never seen before: the first sign of a bad deployment |
-| `heartbeat_outsystems_slow_events_total` | counter | `module`, `kind` (sql/extension) | Slow SQL and slow extension calls the platform reports in the general log |
-| `heartbeat_outsystems_timer_delay_seconds` | histogram | `operation` | How late timers start against their schedule: scheduler saturation |
+| `heartbeat_outsystems_slow_events_total` | counter | `module`, `kind` (sql/extension) | Slow SQL (`SLOWSQL`) and slow extension (`SLOWEXTENSION`) rows the platform writes to the general log |
+| `heartbeat_outsystems_timer_delay_seconds` | histogram | `operation` | How late timers start against `Should_Have_Run_At`: scheduler saturation |
 | `heartbeat_outsystems_screen_state_bytes` | histogram | `module`, `kind` (session/viewstate) | Traditional web pages whose state size makes them slow or loads front-end memory |
 
 `outcome` is `error` when the row has an `Error_Id` or a severity of `ERROR` or
-above, otherwise `success`. Histogram buckets include the latency SLO
-thresholds (0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 30, 60 s).
+above, otherwise `success`; both series exist from an entry point's first
+row, so an error ratio reads 0 rather than nothing. Rows without a usable
+`Duration` (NULL or negative) are counted but not timed. Latency buckets
+include the SLO thresholds (0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 30, 60 s).
 
 ### Infrastructure
 
@@ -114,20 +129,46 @@ thresholds (0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 30, 60 s).
 
 ### Business
 
-| Metric | What it answers |
+| Source | What it answers |
 | --- | --- |
-| `heartbeat_outsystems_active_users{window}` and `heartbeat_outsystems_active_sessions{window}` (gauges, 5m and 1h windows) | How many people use each application now. Daily and monthly actives come from Loki in reports (phase 7), not from Prometheus |
+| Distinct `User_Id` and `Session_Id` per application over 5m and 1h, from Loki | How many people use each application now. Daily and monthly actives come from Loki in reports (phase 7) |
 | `heartbeat_outsystems_operations_total` by `operation` | Feature and screen usage: what people actually use |
-| `heartbeat_outsystems_integration_duration_seconds_count` by endpoint (via `operations_total`) | Business transaction volume with each partner system |
+| `heartbeat_outsystems_integration_duration_seconds_count` by `direction` and `type`; per endpoint from Loki | Business transaction volume with partner systems |
 | `Tenant_Id` (Loki, reports) | Usage per tenant, where apps are multi-tenant; not a metric label unless the tenant count is small |
+
+### Not built, on purpose
+
+- **Active users and sessions as gauges.** A distinct count needs every
+  identifier of the window in the collector's memory; it resets on a restart
+  and would double when collectors run as replicas (phase 8). Loki counts
+  them correctly from the structured metadata already sent, so dashboards
+  query Loki instead.
+- **New error fingerprints.** "Never seen before" needs a persisted,
+  bounded set of fingerprints, or every restart reports all errors as new and
+  looks like a bad deployment. It waits until a dashboard or alert needs it;
+  until then `error.fingerprint` is on every error record in Loki.
 
 ### SLOs and alerts
 
-Recording rules ([TODO 3.3](../../TODO.md)) turn the metrics above into SLIs per
-application: availability as the share of `success` operations, latency as the
-share under a threshold from the histogram buckets. Alerts use multiwindow
-burn rates (for example 14.4× over 1h and 5m, 6× over 6h and 30m) as static
-guardrails; adaptive baselines come in phase 7.
+Recording rules in
+[`heartbeat.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules/heartbeat.rules.yml)
+turn the metrics into SLIs per environment and application, over
+user-facing requests (screens, Reactive server calls and exposed APIs;
+timers are left out):
+
+- Availability: the share of requests with `outcome="success"`
+  (`heartbeat:outsystems_request_errors:ratio_rate<window>`).
+- Latency: the share of requests answered within 2 s, from the histogram's
+  `le="2"` bucket (`heartbeat:outsystems_request_slow:ratio_rate<window>`).
+
+Alerts use multiwindow burn rates against static default objectives, 99.5%
+available and 99% within 2 s over 30 days: fast burn (14.4× over 1h and 5m)
+is `critical`, slow burn (6× over 6h and 30m) is `warning`. Applications with
+less than one request a minute over the long window are left out. Because the
+SLIs go quiet, not red, when extraction stops, `OutSystemsLogExtractionBehind`
+fires when a log type's extraction lag passes 30 minutes. These are
+guardrails; per-application objectives and adaptive baselines come in
+phase 7.
 
 ## Request traces
 

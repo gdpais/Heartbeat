@@ -10,7 +10,8 @@
 // (probes/outsystems), sends them to <opentelemetry.endpoint>/v1/logs, and
 // only then moves the watermark, which [Store] keeps in a file.  Delivery is
 // therefore at least once: a failed export or a crash before the watermark is
-// saved reads the same rows again.
+// saved reads the same rows again.  The derived metrics (derived.go) count
+// a batch when it is delivered, so such a batch is counted twice.
 //
 // The lag is the collector's, or the log type's own when its probe sets one:
 // a screen or cyclic_job row carries the start of the operation as Instant
@@ -187,6 +188,7 @@ func (e *Executor) extractBatch(ctx context.Context, item collectormetadata.Sche
 			return false, fmt.Errorf("log type %s: %w", item.Definition.Name, err)
 		}
 		e.Metrics.addRows(item, len(rows))
+		e.Metrics.observeRows(item, batch, rows, instants)
 		e.Metrics.setLogDelay(item, now.Sub(Real(instants[len(instants)-1], location)))
 	}
 	*watermark = Watermark{Instant: next, InstantType: instantType, Source: watermark.Source}

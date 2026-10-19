@@ -35,9 +35,10 @@ const (
 // metricLabels are the label names of every extraction metric.
 var metricLabels = []string{"collector", "environment", "target", "log_type"}
 
-// Metrics records the extraction self-metrics.  The series of a collector
-// are created, counters at 0, when its Poller starts and deleted when it
-// stops.  A label value Prometheus rejects skips the update instead of
+// Metrics records the extraction self-metrics and the derived metrics
+// (derived.go).  The self-metric series of a collector are created, counters
+// at 0, when its Poller starts; every series of a collector is deleted when
+// it stops.  A label value Prometheus rejects skips the update instead of
 // panicking.  A nil *Metrics records nothing.  Metrics is safe for
 // concurrent use.
 type Metrics struct {
@@ -46,9 +47,11 @@ type Metrics struct {
 	exportFailures *prometheus.CounterVec
 	stuck          *prometheus.CounterVec
 	logDelay       *prometheus.GaugeVec
+	derived        *derived
 }
 
-// NewMetrics creates the extraction metrics and registers them in reg.
+// NewMetrics creates the extraction metrics and the derived metrics and
+// registers them in reg.
 func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 	m := &Metrics{
 		rows: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -71,8 +74,9 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 			Name: MetricLogDelay,
 			Help: "Seconds between now and the newest OutSystems log Instant extracted, set when rows arrive.",
 		}, metricLabels),
+		derived: newDerived(),
 	}
-	for _, collector := range []prometheus.Collector{m.rows, m.lag, m.exportFailures, m.stuck, m.logDelay} {
+	for _, collector := range append([]prometheus.Collector{m.rows, m.lag, m.exportFailures, m.stuck, m.logDelay}, m.derived.collectors()...) {
 		if err := reg.Register(collector); err != nil {
 			return nil, fmt.Errorf("register outsystems metrics: %w", err)
 		}
@@ -115,6 +119,7 @@ func (m *Metrics) forgetCollector(collectorID string) {
 	m.exportFailures.DeletePartialMatch(labels)
 	m.stuck.DeletePartialMatch(labels)
 	m.logDelay.DeletePartialMatch(labels)
+	m.derived.forget(collectorID)
 }
 
 func (m *Metrics) addRows(item collectormetadata.ScheduledProbe, n int) {
@@ -124,6 +129,14 @@ func (m *Metrics) addRows(item collectormetadata.ScheduledProbe, n int) {
 	if counter, err := m.rows.GetMetricWithLabelValues(labelValues(item)...); err == nil {
 		counter.Add(float64(n))
 	}
+}
+
+// observeRows updates the derived metrics from delivered rows.
+func (m *Metrics) observeRows(item collectormetadata.ScheduledProbe, batch Batch, rows [][]any, instants []time.Time) {
+	if m == nil {
+		return
+	}
+	m.derived.observe(item, batch, rows, instants)
 }
 
 func (m *Metrics) exportFailed(item collectormetadata.ScheduledProbe) {
