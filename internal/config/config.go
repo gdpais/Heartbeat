@@ -29,6 +29,26 @@ const (
 	KindOutSystemsLogs = "outsystems_logs"
 )
 
+// Observability platforms. Heartbeat writes telemetry only as OTLP to the
+// OpenTelemetry Collector and as Prometheus exposition on /metrics (ADR 0011),
+// so the platform that stores and shows it is the Collector's and the chart's
+// choice. platform names it for the parts that cannot be neutral: dashboard
+// and deep-link templates, and later the API's log and metric queries.
+const (
+	// PlatformGrafana is Grafana with Prometheus, Loki and Alertmanager, the
+	// platform the chart bundles.
+	PlatformGrafana = "grafana"
+	// PlatformGeneric is any other platform that takes OTLP, or scrapes
+	// /metrics, through the Collector. Heartbeat has no dashboards, links or
+	// queries for it.
+	PlatformGeneric = "generic"
+	// DefaultPlatform is the platform when the config names none.
+	DefaultPlatform = PlatformGrafana
+)
+
+// supportedPlatforms are the platform values the loader accepts.
+var supportedPlatforms = []string{PlatformGrafana, PlatformGeneric}
+
 // Defaults and limits of the outsystems_logs settings.
 const (
 	// DefaultLogLag is how far behind now an outsystems_logs read stops, so
@@ -46,6 +66,8 @@ const (
 )
 
 // Endpoint holds the connection details for an external service integration.
+// Dashboards uses the templates, logs and alerting only base_url (their query
+// APIs), opentelemetry only endpoint.
 type Endpoint struct {
 	BaseURL            string            `yaml:"base_url"`
 	Endpoint           string            `yaml:"endpoint"`
@@ -64,9 +86,10 @@ type NotificationChannel struct {
 }
 
 type document struct {
-	Grafana              Endpoint               `yaml:"grafana"`
-	Loki                 Endpoint               `yaml:"loki"`
-	Alertmanager         Endpoint               `yaml:"alertmanager"`
+	Platform             string                 `yaml:"platform"`
+	Dashboards           Endpoint               `yaml:"dashboards"`
+	Logs                 Endpoint               `yaml:"logs"`
+	Alerting             Endpoint               `yaml:"alerting"`
 	OpenTelemetry        Endpoint               `yaml:"opentelemetry"`
 	NotificationChannels []NotificationChannel  `yaml:"notification_channels"`
 	Collectors           []collectorDocument    `yaml:"collectors"`
@@ -181,10 +204,17 @@ type ProbeRuntimeConfig struct {
 
 // RuntimeConfig is the fully parsed and validated integrations file.
 type RuntimeConfig struct {
-	Version              string
-	Grafana              Endpoint
-	Loki                 Endpoint
-	Alertmanager         Endpoint
+	Version string
+	// Platform is the observability platform: grafana unless set.
+	Platform string
+	// Dashboards is the platform's UI (Grafana): base URL, dashboard and
+	// deep-link templates.
+	Dashboards Endpoint
+	// Logs is the platform's log query API (Loki).
+	Logs Endpoint
+	// Alerting is the platform's alert API (Alertmanager).
+	Alerting Endpoint
+	// OpenTelemetry is the OTel Collector Heartbeat sends OTLP to.
 	OpenTelemetry        Endpoint
 	NotificationChannels []NotificationChannel
 	Collectors           []CollectorRuntimeConfig
@@ -205,12 +235,16 @@ func LoadRuntimeConfig(path string) (RuntimeConfig, error) {
 	}
 	cfg := RuntimeConfig{
 		Version:              hash(content),
-		Grafana:              normalizeEndpoint(doc.Grafana),
-		Loki:                 normalizeEndpoint(doc.Loki),
-		Alertmanager:         normalizeEndpoint(doc.Alertmanager),
+		Platform:             strings.TrimSpace(doc.Platform),
+		Dashboards:           normalizeEndpoint(doc.Dashboards),
+		Logs:                 normalizeEndpoint(doc.Logs),
+		Alerting:             normalizeEndpoint(doc.Alerting),
 		OpenTelemetry:        normalizeEndpoint(doc.OpenTelemetry),
 		NotificationChannels: append([]NotificationChannel(nil), doc.NotificationChannels...),
 		CredentialRefs:       copyStringMap(doc.CredentialRefs),
+	}
+	if cfg.Platform == "" {
+		cfg.Platform = DefaultPlatform
 	}
 	for _, collector := range doc.Collectors {
 		runtimeCfg, err := normalizeCollector(collector)
@@ -251,9 +285,9 @@ const redactedValue = "<redacted>"
 // every URL-bearing field.
 func (c RuntimeConfig) Redacted() RuntimeConfig {
 	out := c
-	out.Grafana = redactEndpoint(c.Grafana)
-	out.Loki = redactEndpoint(c.Loki)
-	out.Alertmanager = redactEndpoint(c.Alertmanager)
+	out.Dashboards = redactEndpoint(c.Dashboards)
+	out.Logs = redactEndpoint(c.Logs)
+	out.Alerting = redactEndpoint(c.Alerting)
 	out.OpenTelemetry = redactEndpoint(c.OpenTelemetry)
 	out.Collectors = cloneCollectors(c.Collectors)
 	out.NotificationChannels = cloneNotificationChannels(c.NotificationChannels)
@@ -328,6 +362,11 @@ func cloneNotificationChannels(in []NotificationChannel) []NotificationChannel {
 		}
 	}
 	return out
+}
+
+func emptyEndpoint(endpoint Endpoint) bool {
+	return endpoint.BaseURL == "" && endpoint.Endpoint == "" &&
+		len(endpoint.DashboardTemplates) == 0 && len(endpoint.DeepLinkTemplates) == 0
 }
 
 func normalizeEndpoint(endpoint Endpoint) Endpoint {
@@ -480,19 +519,34 @@ func validate(cfg RuntimeConfig) error {
 	if err := validateEndpointCredentials(cfg); err != nil {
 		return err
 	}
-	if err := validateURL("grafana.base_url", cfg.Grafana.BaseURL, true); err != nil {
+	if cfg.Platform != "" && !slices.Contains(supportedPlatforms, cfg.Platform) {
+		return fmt.Errorf("platform %q is not supported (supported: %s)", cfg.Platform, strings.Join(supportedPlatforms, ", "))
+	}
+	// Heartbeat never writes to the platform directly: logs go through
+	// opentelemetry.endpoint, alerts through the platform's own rules.
+	if cfg.Logs.Endpoint != "" {
+		return fmt.Errorf("logs.endpoint is not supported: logs are sent to opentelemetry.endpoint")
+	}
+	if cfg.Alerting.Endpoint != "" {
+		return fmt.Errorf("alerting.endpoint is not supported: Heartbeat does not send alerts itself")
+	}
+	if cfg.Platform == PlatformGeneric {
+		for _, section := range []struct {
+			name     string
+			endpoint Endpoint
+		}{{"dashboards", cfg.Dashboards}, {"logs", cfg.Logs}, {"alerting", cfg.Alerting}} {
+			if !emptyEndpoint(section.endpoint) {
+				return fmt.Errorf("%s must be empty with platform %s: Heartbeat has no links or queries for it", section.name, PlatformGeneric)
+			}
+		}
+	}
+	if err := validateURL("dashboards.base_url", cfg.Dashboards.BaseURL, false); err != nil {
 		return err
 	}
-	if err := validateURL("loki.base_url", cfg.Loki.BaseURL, true); err != nil {
+	if err := validateURL("logs.base_url", cfg.Logs.BaseURL, false); err != nil {
 		return err
 	}
-	if err := validateURL("loki.endpoint", cfg.Loki.Endpoint, false); err != nil {
-		return err
-	}
-	if err := validateURL("alertmanager.base_url", cfg.Alertmanager.BaseURL, true); err != nil {
-		return err
-	}
-	if err := validateURL("alertmanager.endpoint", cfg.Alertmanager.Endpoint, false); err != nil {
+	if err := validateURL("alerting.base_url", cfg.Alerting.BaseURL, false); err != nil {
 		return err
 	}
 	if err := validateURL("opentelemetry.endpoint", cfg.OpenTelemetry.Endpoint, false); err != nil {
@@ -725,7 +779,7 @@ const embeddedCredentialsHint = "must not embed credentials (user:password@); us
 
 // validateEndpointCredentials rejects userinfo in every URL-bearing endpoint
 // field: base_url, endpoint and the dashboard and deep-link templates of
-// grafana, loki, alertmanager and opentelemetry. Credentials belong in secret
+// dashboards, logs, alerting and opentelemetry. Credentials belong in secret
 // references; a URL is copied into logs, diagnostics, browser links and
 // error messages.
 func validateEndpointCredentials(cfg RuntimeConfig) error {
@@ -733,9 +787,9 @@ func validateEndpointCredentials(cfg RuntimeConfig) error {
 		name     string
 		endpoint Endpoint
 	}{
-		{"grafana", cfg.Grafana},
-		{"loki", cfg.Loki},
-		{"alertmanager", cfg.Alertmanager},
+		{"dashboards", cfg.Dashboards},
+		{"logs", cfg.Logs},
+		{"alerting", cfg.Alerting},
 		{"opentelemetry", cfg.OpenTelemetry},
 	} {
 		if hasUserinfo(section.endpoint.BaseURL) {

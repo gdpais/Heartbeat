@@ -404,10 +404,10 @@ pass "config $version_before -> $(config_version), same pod"
 step "an invalid ConfigMap update is rejected while collection continues"
 version_good=$(config_version)
 restarts_before=$(collector_restarts)
-# Valid YAML that the Go loader rejects (no grafana/loki/alertmanager sections),
+# Valid YAML that the Go loader rejects (a platform Heartbeat does not know),
 # written straight to the ConfigMap: Helm's values schema refuses to render it.
 k -n "$NAMESPACE" get configmap heartbeat-integrations -o json >"$WORK/integrations-good.json"
-jq '.data["integrations.yaml"] = "collectors: [{id: broken, kind: sqlserver, enabled: true}]\n"' \
+jq '.data["integrations.yaml"] = "platform: unsupported\ncollectors: [{id: broken, kind: sqlserver, enabled: true}]\n"' \
 	"$WORK/integrations-good.json" | k replace -f - >/dev/null
 wait_for 180 "reload error reported" reload_error_is_set
 admin_config | jq -r '"      last_reload_err: " + .last_reload_err'

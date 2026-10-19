@@ -41,6 +41,9 @@ type chartProfile struct {
 	// admit to port 8082, in peerString form; none means it denies all
 	// ingress. Checked whenever the profile renders the policy.
 	collectorPeers []string
+	// collectorReceivers are the OTel Collector's receivers; none means only
+	// otlp.
+	collectorReceivers []string
 	// stateEmptyDir means the collector's state is an emptyDir instead of the
 	// db-collector-state claim (dbCollector.persistence.enabled=false).
 	stateEmptyDir bool
@@ -90,12 +93,23 @@ var chartProfiles = []chartProfile{
 		name: "external-prometheus",
 		set: []string{
 			"prometheus.enabled=false", "grafana.enabled=false",
-			`dbCollector.networkPolicy.prometheus[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=monitoring`,
-			`dbCollector.networkPolicy.prometheus[0].podSelector.matchLabels.app\.kubernetes\.io/name=prometheus`,
+			`dbCollector.networkPolicy.scrapers[0].namespaceSelector.matchLabels.kubernetes\.io/metadata\.name=monitoring`,
+			`dbCollector.networkPolicy.scrapers[0].podSelector.matchLabels.app\.kubernetes\.io/name=prometheus`,
 		},
 		present:        []string{"StatefulSet/db-collector", "NetworkPolicy/db-collector"},
 		absent:         []string{"Deployment/prometheus", "Deployment/grafana"},
 		collectorPeers: []string{"ns{kubernetes.io/metadata.name=monitoring} pods{app.kubernetes.io/name=prometheus}"},
+	},
+	{
+		// Another observability platform (ADR 0011): no bundled engines or
+		// content; the Collector scrapes the collector and sends logs and
+		// metrics over OTLP.
+		name:               "external-platform-example",
+		values:             []string{"external-platform.example.yaml"},
+		present:            []string{"StatefulSet/db-collector", "Deployment/otel-collector", "NetworkPolicy/db-collector"},
+		absent:             []string{"Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "StatefulSet/loki", "ConfigMap/heartbeat-prometheus-rules", "ConfigMap/heartbeat-dashboards"},
+		collectorPeers:     []string{"pods{app.kubernetes.io/name=otelCollector,component=standalone-collector}"},
+		collectorReceivers: []string{"otlp", "prometheus"},
 	},
 	{
 		// No peer at all must deny all ingress, never render an empty `from`
@@ -119,7 +133,7 @@ var chartProfiles = []chartProfile{
 	},
 	{
 		name:      "collector-peer-empty-match-labels",
-		inline:    "dbCollector: {networkPolicy: {prometheus: [{namespaceSelector: {matchLabels: {}}}]}}",
+		inline:    "dbCollector: {networkPolicy: {scrapers: [{namespaceSelector: {matchLabels: {}}}]}}",
 		wantError: "values don't meet the specifications of the schema",
 	},
 	{
@@ -273,7 +287,7 @@ func TestChartProfiles(t *testing.T) {
 			checkInClusterEndpoints(t, objects)
 			checkCollectorNetworkPolicy(t, objects, profile.collectorPeers)
 			checkCollectorState(t, objects, profile.stateEmptyDir)
-			checkCollectorPipelines(t, objects)
+			checkCollectorPipelines(t, objects, profile.collectorReceivers)
 			checkLogIdentifiers(t, objects)
 			checkLokiLabelPolicy(t, objects)
 		})
@@ -325,7 +339,8 @@ func checkCollectorSingleton(t *testing.T, objects map[string]object) {
 }
 
 // Every in-cluster address the engines are configured with (Prometheus scrape
-// and Alertmanager targets, Alertmanager webhooks, Grafana datasources) must be
+// and Alertmanager targets, Alertmanager webhooks, Grafana datasources, the OTel
+// Collector's exporters and scrape targets) must be
 // a Service the same profile renders. Catches a profile that disables a
 // component but still points at it.
 func checkInClusterEndpoints(t *testing.T, objects map[string]object) {
@@ -402,6 +417,36 @@ func checkInClusterEndpoints(t *testing.T, objects map[string]object) {
 			hosts = append(hosts, d.URL)
 		}
 	}
+	if cm, ok := objects["ConfigMap/otel-collector"]; ok {
+		var relay struct {
+			Receivers struct {
+				Prometheus struct {
+					Config struct {
+						ScrapeConfigs []struct {
+							DNSSDConfigs []struct {
+								Names []string `yaml:"names"`
+							} `yaml:"dns_sd_configs"`
+						} `yaml:"scrape_configs"`
+					} `yaml:"config"`
+				} `yaml:"prometheus"`
+			} `yaml:"receivers"`
+			Exporters map[string]struct {
+				Endpoint string `yaml:"endpoint"`
+			} `yaml:"exporters"`
+		}
+		mustUnmarshal(t, cm.Data["relay"], &relay)
+		for _, job := range relay.Receivers.Prometheus.Config.ScrapeConfigs {
+			for _, sd := range job.DNSSDConfigs {
+				hosts = append(hosts, sd.Names...)
+			}
+		}
+		for _, exporter := range relay.Exporters {
+			// ${env:...} is set from a Secret; the pod's own address is local.
+			if strings.HasPrefix(exporter.Endpoint, "http") {
+				hosts = append(hosts, exporter.Endpoint)
+			}
+		}
+	}
 	for _, raw := range hosts {
 		host := hostOf(raw)
 		// Dotted names are external or fully qualified; localhost is the pod itself.
@@ -415,11 +460,15 @@ func checkInClusterEndpoints(t *testing.T, objects map[string]object) {
 }
 
 // The OTel Collector runs exactly Heartbeat's config in every profile: only
-// the OTLP receiver, and logs and metrics pipelines. Values merged over the
+// the profile's receivers (the OTLP receiver unless it says otherwise), and
+// logs and metrics pipelines. Values merged over the
 // subchart's defaults once brought back its other receivers and a traces
 // pipeline in profiles that did not set otelCollector keys.
-func checkCollectorPipelines(t *testing.T, objects map[string]object) {
+func checkCollectorPipelines(t *testing.T, objects map[string]object, receivers []string) {
 	t.Helper()
+	if receivers == nil {
+		receivers = []string{"otlp"}
+	}
 	cm, ok := objects["ConfigMap/otel-collector"]
 	if !ok {
 		return
@@ -431,8 +480,8 @@ func checkCollectorPipelines(t *testing.T, objects map[string]object) {
 		} `yaml:"service"`
 	}
 	mustUnmarshal(t, cm.Data["relay"], &relay)
-	if got := slices.Sorted(maps.Keys(relay.Receivers)); !slices.Equal(got, []string{"otlp"}) {
-		t.Errorf("OTel Collector receivers = %v, want [otlp]", got)
+	if got := slices.Sorted(maps.Keys(relay.Receivers)); !slices.Equal(got, receivers) {
+		t.Errorf("OTel Collector receivers = %v, want %v", got, receivers)
 	}
 	if got := slices.Sorted(maps.Keys(relay.Service.Pipelines)); !slices.Equal(got, []string{"logs", "metrics"}) {
 		t.Errorf("OTel Collector pipelines = %v, want [logs metrics]", got)

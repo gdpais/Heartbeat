@@ -4,12 +4,18 @@
   "title": "Heartbeat Integrations Config",
   "type": "object",
   "additionalProperties": false,
-  "required": ["grafana", "loki", "alertmanager", "collectors"],
+  "required": ["collectors"],
   "properties": {
-    "grafana": {
+    "platform": {
+      "description": "Observability platform that stores and shows Heartbeat's telemetry (ADR 0011). Heartbeat only writes OTLP to opentelemetry.endpoint and Prometheus exposition on /metrics; grafana selects Grafana dashboard and deep-link syntax and, later, the API's query adapters; generic is any other platform, for which dashboards, logs and alerting stay empty.",
+      "type": "string",
+      "enum": ["grafana", "generic"],
+      "default": "grafana"
+    },
+    "dashboards": {
+      "description": "The platform's UI (Grafana): base URL and dashboard and deep-link templates.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["base_url", "dashboard_templates"],
       "properties": {
         "base_url": {"type": "string", "format": "uri"},
         "dashboard_templates": {
@@ -22,22 +28,20 @@
         }
       }
     },
-    "loki": {
+    "logs": {
+      "description": "The platform's log query API (Loki). Heartbeat never writes logs here; they go through opentelemetry.endpoint.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["base_url"],
       "properties": {
-        "base_url": {"type": "string", "format": "uri"},
-        "endpoint": {"type": "string", "format": "uri"}
+        "base_url": {"type": "string", "format": "uri"}
       }
     },
-    "alertmanager": {
+    "alerting": {
+      "description": "The platform's alert API (Alertmanager).",
       "type": "object",
       "additionalProperties": false,
-      "required": ["base_url"],
       "properties": {
-        "base_url": {"type": "string", "format": "uri"},
-        "endpoint": {"type": "string", "format": "uri"}
+        "base_url": {"type": "string", "format": "uri"}
       }
     },
     "opentelemetry": {
