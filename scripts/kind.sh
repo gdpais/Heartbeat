@@ -10,7 +10,8 @@
 #   down             delete the kind cluster (and only it)
 #   cluster          create the cluster if it does not exist
 #   images           build both images, tag them by content, load them into kind
-#   deploy           create the local Secrets and helm upgrade --install
+#   deploy           rebuild images if the Go sources are newer, create the
+#                    local Secrets and helm upgrade --install
 #   status           show pods and services
 #   sqlserver-up     start the Docker SQL Server target and deploy against it
 #   sqlserver-down   remove the SQL Server container and its volume
@@ -120,9 +121,48 @@ chart_deps() {
 	fi
 }
 
+# True when the collector's sources changed after the last `images` run (a pull
+# or a branch switch), so its tags in images.env are older than the code.
+images_stale() {
+	[ -n "$(find services internal go.mod go.sum -newer "$STATE_DIR/images.env" 2>/dev/null | head -n 1)" ]
+}
+
+helm_upgrade() {
+	helm upgrade --install "$RELEASE" "$CHART" \
+		--kube-context "$CONTEXT" --namespace "$NAMESPACE" \
+		"$@" \
+		--set "dbCollector.image.tag=$DB_COLLECTOR_TAG" \
+		--wait --timeout 10m
+}
+
+# With the OrderedReady policy a StatefulSet does not replace a pod that never
+# became Ready (kubernetes/kubernetes#67250), so a collector crash-looping on an
+# old image keeps the new template from rolling out and helm --wait fails. The
+# policy cannot change on an existing StatefulSet, so this deletes such a pod
+# once and the controller recreates it from the new template. Returns 1 when
+# db-collector-0 is missing, Ready, terminating or already on the new revision.
+replace_stuck_collector() {
+	update=$(kubectl_ -n "$NAMESPACE" get statefulset db-collector --ignore-not-found -o jsonpath='{.status.updateRevision}')
+	[ -n "$update" ] || return 1
+	state=$(kubectl_ -n "$NAMESPACE" get pod db-collector-0 --ignore-not-found \
+		-o jsonpath='{.metadata.labels.controller-revision-hash}/{.status.conditions[?(@.type=="Ready")].status}/{.metadata.deletionTimestamp}')
+	case "$state" in
+	"" | /* | "$update"/* | */True/* | */*/?*) return 1 ;;
+	esac
+	log "db-collector-0 is not Ready on revision ${state%%/*}, not $update; replacing it"
+	kubectl_ -n "$NAMESPACE" delete pod db-collector-0 --timeout 2m >/dev/null
+}
+
 cmd_deploy() {
 	cluster_exists || die "kind cluster $CLUSTER does not exist; run make kind-up"
-	[ -f "$STATE_DIR/images.env" ] || cmd_images
+	# A deploy pairs the current chart with the image: rebuild when the code is
+	# newer than the image. Unchanged content builds from cache to the same tag.
+	if [ ! -f "$STATE_DIR/images.env" ]; then
+		cmd_images
+	elif images_stale; then
+		log "collector sources changed since the last image build; rebuilding"
+		cmd_images
+	fi
 	# shellcheck disable=SC1090
 	. "./$STATE_DIR/images.env"
 	chart_deps
@@ -141,11 +181,11 @@ cmd_deploy() {
 		set -- "$@" -f "$file"
 	done
 	log "deploying release $RELEASE ($PROFILE) to $CONTEXT/$NAMESPACE"
-	helm upgrade --install "$RELEASE" "$CHART" \
-		--kube-context "$CONTEXT" --namespace "$NAMESPACE" \
-		"$@" \
-		--set "dbCollector.image.tag=$DB_COLLECTOR_TAG" \
-		--wait --timeout 10m
+	if ! helm_upgrade "$@"; then
+		replace_stuck_collector || die "helm upgrade failed"
+		log "deploying release $RELEASE again"
+		helm_upgrade "$@"
+	fi
 	cmd_status
 }
 
