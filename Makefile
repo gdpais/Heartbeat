@@ -1,4 +1,4 @@
-.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down patientzero-up patientzero-down chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet docs-site
+.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down patientzero-up patientzero-down chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet vulncheck docs-site
 
 SQLSERVER_DEV_ENV_FILE := .env.sqlserver-dev
 # Health checks fail fast on HTTP errors (keeping the body) and never hang.
@@ -13,6 +13,9 @@ HELM_MIN_VERSION := v4.2.0
 KUBECTL_VERSION := v1.36.4
 HELM_VERSION := v4.2.4
 HELM3_VERSION := v3.22.0
+# go run fetches this exact version and checks it against the Go checksum
+# database, so there is nothing to install.
+GOVULNCHECK_VERSION := v1.9.0
 TOOLS_DIR ?= .tmp/bin
 HELM ?= helm
 CHART_DIR := infra/helm/heartbeat
@@ -29,6 +32,7 @@ DOCSITE_MODULE := tools/docsite
 # PatientZero, the synthetic OutSystems test application (ADR 0010), is its
 # own module too: test code stays out of the product's module and releases.
 PATIENTZERO_MODULE := tools/patientzero
+GOVULNCHECK := GOCACHE=$$(pwd)/.tmp/gocache go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 DOCSITE := GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) run ./cmd/docsite -root ../.. -repo-url $(DOCS_REPO_URL) -ref $(DOCS_REPO_REF)
 
 help:
@@ -56,6 +60,7 @@ help:
 		'  make test-sqlserver      Run every SQL Server probe and OutSystems log query against a disposable SQL Server container (requires Docker)' \
 		'  make test-race           Run all Docker-free tests with the race detector' \
 		'  make vet                 Run Go static checks' \
+		'  make vulncheck           Report known vulnerabilities reachable from the Go code, standard library included' \
 		'  make docs-site           Build the HTML docs site into docs/site (not committed; CI publishes it)'
 
 tools-check:
@@ -165,6 +170,14 @@ vet:
 	GOCACHE=$$(pwd)/.tmp/gocache go vet ./...
 	GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) vet ./...
 	GOCACHE=$$(pwd)/.tmp/gocache go -C $(PATIENTZERO_MODULE) vet ./...
+
+# Fails on any vulnerability reachable from the code; the standard library
+# counts, so a Go patch release with security fixes needs the go directives
+# and the Dockerfile build images bumped.
+vulncheck:
+	$(GOVULNCHECK) ./...
+	$(GOVULNCHECK) -C $(DOCSITE_MODULE) ./...
+	$(GOVULNCHECK) -C $(PATIENTZERO_MODULE) ./...
 
 docs-site:
 	$(DOCSITE)

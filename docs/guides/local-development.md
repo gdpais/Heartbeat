@@ -131,6 +131,7 @@ make patientzero-down       # remove it, its databases and its login
 | `make test` | All Go unit and repository contract tests, including the docs generator's and PatientZero's modules | Go |
 | `make test-race` | The same suite with the race detector | Go |
 | `make vet` | Go static checks | Go |
+| `make vulncheck` | `govulncheck` on all three Go modules; fails on a known vulnerability the code can reach, standard library included | Go, network access |
 | `make rules-check` | promtool rule validation and unit tests | Docker |
 | `make test-integration` | PostgreSQL migration and index tests (`-tags=integration`) | Docker (`postgres:17`) |
 | `make test-sqlserver` | Every built-in probe against a disposable SQL Server, as a login with only the documented grants; fails on duplicate series or padded label values; checks the session settings and the sysadmin-equivalence flag for that login, `sa` and a `CONTROL SERVER` login. Every OutSystems log query against its fixture tables, views and rows, as a login with only `SELECT` on them, returning every row of the current and the previous week; and the extraction of `oslog_Error` to a fake OTel Collector across cycles, a restart and a weekly log table rotation, each row exactly once (`-tags=sqlserver`). Then PatientZero's live test (`TestLiveSQLServer`) as `sa`: its entry points write `oslog_*` rows that the collector's own queries read back | Docker (SQL Server 2022) |
