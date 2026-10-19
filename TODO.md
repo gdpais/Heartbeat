@@ -24,12 +24,13 @@ Alloy coverage check [21] → final Alloy comparison [22].
 - [x] Design current-runtime and target-architecture diagrams, link them from the README, and verify them against source/configuration
 - [x] Reorganize docs by audience; record key decisions as ADRs; archive superseded plans
 - [x] Reorder delivery: collector → gateway → API → Web; production delivery after the Web UI; Oracle after fallback ingestion and gated by an Alloy coverage check; Alloy comparison last
+- [x] Keep the observability platform replaceable: services emit only OTLP and Prometheus exposition, neutral integrations config, an external-platform values example ([ADR 0011](docs/architecture/decisions/0011-platform-agnostic-telemetry-boundary.md))
 - [ ] Freeze subsystem boundaries, responsibilities, and interfaces
 - [ ] Freeze ownership rules:
   - [ ] app-owned workflows derive environment through `applications.environment_id`
   - [ ] PostgreSQL stores control-plane metadata only
   - [ ] YAML/Kubernetes stores integration + collector desired runtime config
-  - [ ] Prometheus/Loki store telemetry data
+  - [ ] The observability platform (Prometheus and Loki when bundled) stores telemetry data
   - [ ] Redis stores transient async coordination only
 
 ### 0.2 Repo and local platform bootstrap
@@ -273,7 +274,7 @@ follow the ingest path.
 - [x] Extractor: watermarked reads per target and log type, full-batch tie handling, watermark file on a persistent volume, same session settings, deadline, backoff and readiness as the `sqlserver` kind
 - [x] Export OTLP/HTTP logs to the OTel Collector: OutSystems column names as attributes, `Message` body, severity, resource attributes `service.name`, `deployment.environment.name`, `outsystems.log_type`; `error.fingerprint` on error records; watermark moves only after delivery
 - [x] Persistent volume for the collector in the chart; NetworkPolicy egress from the collector to the OTel Collector (none needed: the collector's policy restricts ingress only)
-- [ ] Add `outsystems.log_type` to Loki's index labels
+- [x] Add `outsystems.log_type` to Loki's index labels
 - [x] Extraction self-metrics: rows, lag, export failures, OutSystems log delay
 - [ ] Derived metrics from the [catalog](docs/architecture/application-observability.md#derived-metrics), with bounded labels; recording rules, SLO burn-rate alerts and promtool tests
 - [x] Decide the OTel gateway's future: removed with its JSON event endpoint and alert sink; Alertmanager's default receiver has no integrations; push sources go to the OTel Collector over OTLP, mapped with OTTL ([ADR 0009](docs/architecture/decisions/0009-remove-the-otel-gateway.md))
@@ -537,7 +538,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Provision Loki for app logs
 - [x] Enforce low-cardinality label strategy
 - [x] Keep high-cardinality investigation fields in log body/payload
-- [x] Keep user, session and request IDs and client IP as structured metadata: the Collector no longer deletes them; Loki indexes only service.name, service.namespace and deployment.environment.name
+- [x] Keep user, session and request IDs and client IP as structured metadata: the Collector no longer deletes them; Loki indexes only service.name, service.namespace, deployment.environment.name and outsystems.log_type
 
 ### 9.3 Grafana
 - [x] Provision datasources as code
@@ -565,11 +566,11 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 
 ### 10.2 Normalization contract
 - [ ] Define canonical application event envelope
-- [ ] Map OutSystems default logs faithfully first
+- [x] Map OutSystems default logs faithfully first (OutSystems column names as log attributes [3.3])
 - [ ] Validate consistent environment/application/session fields
 
 ### 10.3 Telemetry wiring
-- [ ] Route sample OutSystems telemetry into Loki
+- [x] Route sample OutSystems telemetry into Loki (`make kind-e2e`: fixture error rows → Loki)
 - [ ] Generate/derive application metrics in Prometheus
 - [ ] Validate Grafana queries against both
 
@@ -785,6 +786,7 @@ production with the defaults in
 It follows the Web UI so the first production deploy carries a usable product;
 pull it forward if a production SQL Server must be monitored sooner.
 
+- [ ] First: review the observability platform, the organization's ELK stack (Elastic Cloud) against the bundled Grafana stack, on the same data (the Collector sends to both); compare search, investigation queries, alerting, cost and operations; record the choice in an ADR ([ADR 0011](docs/architecture/decisions/0011-platform-agnostic-telemetry-boundary.md)). If ELK wins: its content pack (Kibana dashboards, rules, index templates and ILM) and log/metric query adapters
 - [ ] `heartbeat-deploy` config repository with Argo CD Applications and per-environment values
 - [ ] The release workflow [0.5] also publishes the images and the chart to ECR through GitHub OIDC
 - [ ] EKS infrastructure as code; AWS Secrets Manager with External Secrets

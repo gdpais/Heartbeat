@@ -40,7 +40,7 @@ is still pending.
 | Component | Endpoints | Notes |
 | --- | --- | --- |
 | DB collector | `:8082` — `/metrics`, `/healthz`, `/readyz`, `/admin/config`, `POST /admin/config/reload` | Reload also on SIGHUP, and on file change when `HEARTBEAT_CONFIG_WATCH_INTERVAL` is set. Credentials resolved from `HEARTBEAT_CREDENTIAL_*`. |
-| OTel Collector | OTLP `:4317` gRPC / `:4318` HTTP; Prometheus export `:8889`; health `:13133` | Exports logs to Loki's OTLP endpoint. Loki indexes only `service.name`, `service.namespace` and `deployment.environment.name` as labels; every other attribute, including user, session and request IDs and client IP, is kept as structured metadata. |
+| OTel Collector | OTLP `:4317` gRPC / `:4318` HTTP; Prometheus export `:8889`; health `:13133` | Exports logs to Loki's OTLP endpoint. Loki indexes only `service.name`, `service.namespace`, `deployment.environment.name` and `outsystems.log_type` as labels; every other attribute, including user, session and request IDs and client IP, is kept as structured metadata. |
 | Prometheus | `:9090` | 15s scrape. Rule files `heartbeat.rules.yml` and `generated/` (currently empty). Sends alerts to Alertmanager. |
 | Alertmanager | `:9093` | `default` and `deadmans-switch` receivers with no integrations on kind ([ADR 0009](decisions/0009-remove-the-otel-gateway.md)); the always-firing `Watchdog` alert routes to `deadmans-switch`. The production example adds chat receivers and healthchecks.io. |
 | Loki / Grafana | `:3100` / `:3000` | Grafana provisioned with Prometheus (default) and Loki data sources. |
@@ -78,7 +78,7 @@ current evidence sink does not retain them.
 | System | Owns | Boundary |
 | --- | --- | --- |
 | PostgreSQL | Inventory, policy intent, investigation summaries, evidence links, baseline versions, report-run metadata | No raw telemetry, raw sessions, audit streams, or report binaries |
-| YAML / Kubernetes | Integration endpoints, Grafana URL templates, collector desired runtime state, credential references | Active collector targets/probes come from config, not PostgreSQL |
+| YAML / Kubernetes | Integration endpoints, dashboard URL templates, collector desired runtime state, credential references | Active collector targets/probes come from config, not PostgreSQL |
 | Prometheus | Metric time series and executable recording/alert rules | Metrics are scraped from collectors; no SQL metric buffering in Redis/PostgreSQL |
 | Loki | Logs and queryable operational evidence | High-cardinality investigation identifiers are kept as structured metadata, never index labels |
 | Redis | Transient job queues, retries, locks, short-lived caches | Not the durable source of investigation or report state |
@@ -121,6 +121,12 @@ Heartbeat is organized into four planes, the same four groups as the
 
 Rules every subsystem follows. The reasoning is recorded in the
 [architecture decisions](decisions/README.md).
+
+- Services emit only OTLP (to the OpenTelemetry Collector) and Prometheus
+  exposition (`/metrics`), never a platform's own write API. Only the Collector
+  config and the chart name the observability platform; dashboards, rules and
+  link templates are per-platform content
+  ([ADR 0011](decisions/0011-platform-agnostic-telemetry-boundary.md)).
 
 - The API never queries SQL Server directly; all database-specific collection
   stays in `db-collector`.

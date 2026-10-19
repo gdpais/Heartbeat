@@ -120,11 +120,11 @@ func TestAdminEndpointsDisabledWithoutConfiguredToken(t *testing.T) {
 
 func TestAdminConfigRedactsSecretsAndListsWarnings(t *testing.T) {
 	manager, path := newTestConfigManager(t)
-	content := `grafana:
+	content := `dashboards:
   base_url: http://grafana:3000
-loki:
+logs:
   base_url: http://loki:3100
-alertmanager:
+alerting:
   base_url: http://alertmanager:9093
 notification_channels:
   - id: mail

@@ -13,7 +13,7 @@ explains what is deployed and how to work with it.
 | --- | --- |
 | `infra/helm/heartbeat/` | The chart: Heartbeat templates, `values.yaml` defaults, `values.schema.json`, `Chart.yaml`/`Chart.lock` |
 | `infra/helm/heartbeat/files/` | Prometheus rules (and their promtool tests) and Grafana dashboards, shipped as ConfigMaps |
-| `infra/helm/values/` | Environment values: `kind.yaml`, `minimal.yaml`, `sqlserver-dev.yaml`, `production.example.yaml` |
+| `infra/helm/values/` | Environment values: `kind.yaml`, `minimal.yaml`, `sqlserver-dev.yaml`, `production.example.yaml`, and `external-platform.example.yaml` (no bundled engines; the OTel Collector sends everything as OTLP to another platform, [ADR 0011](../architecture/decisions/0011-platform-agnostic-telemetry-boundary.md)) |
 | `infra/kind/cluster.yaml` | kind cluster: one node, host port mappings on 127.0.0.1 |
 | `scripts/kind.sh` | Cluster, image and deploy workflow behind the `make kind-*` targets |
 | `scripts/kind-e2e.sh` | Acceptance checks on an isolated, temporary cluster (`make kind-e2e`) |
@@ -27,7 +27,7 @@ Heartbeat's own objects (fixed names; one release per namespace):
 | `StatefulSet/db-collector` | Always one replica: a replacement pod starts only after the old one is gone, so SQL targets are never polled twice. Liveness `/healthz` (process only), readiness `/readyz`. No config checksum: ConfigMap changes hot-reload without a restart |
 | `Service/db-collector-headless` | Headless, `publishNotReadyAddresses`; Prometheus discovers the collector through it even while it is unready |
 | `Service/db-collector` | Operator access (health, admin endpoints); ready pods only. kind: NodePort with `externalTrafficPolicy: Local`, so the NetworkPolicy sees the host's address |
-| `NetworkPolicy/db-collector` | Ingress to port 8082 only from the bundled Prometheus and the `dbCollector.networkPolicy.prometheus` (shared Prometheus) and `.operators` peers; no peers means deny all. kind adds every source outside the pod subnet `10.244.0.0/16` (the host through the loopback NodePort, and containers on the Docker `kind` network); the production example adds a VPN range. Kubelet probes and `kubectl port-forward` are not affected. Needs a CNI that enforces NetworkPolicy (kind's kindnet does) |
+| `NetworkPolicy/db-collector` | Ingress to port 8082 only from the bundled Prometheus and the `dbCollector.networkPolicy.scrapers` (a shared Prometheus or another platform's scraper) and `.operators` peers; no peers means deny all. kind adds every source outside the pod subnet `10.244.0.0/16` (the host through the loopback NodePort, and containers on the Docker `kind` network); the production example adds a VPN range. Kubelet probes and `kubectl port-forward` are not affected. Needs a CNI that enforces NetworkPolicy (kind's kindnet does) |
 | `ConfigMap/heartbeat-integrations` | `integrations.yaml`, rendered from the `integrations` values |
 | `ConfigMap/heartbeat-prometheus-rules` | Rule files; Prometheus mounts them at `/etc/prometheus-rules` and its config reloader reloads on change |
 | `ConfigMap/heartbeat-dashboards` | Dashboards; label `grafana_dashboard: "1"` for shared Grafanas with a dashboard sidecar |

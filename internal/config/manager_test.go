@@ -215,11 +215,11 @@ func TestReconcileUpdatesCollectorsConcurrently(t *testing.T) {
 
 func writeManagerConfig(t *testing.T, path, env string) {
 	t.Helper()
-	content := fmt.Sprintf(`grafana:
+	content := fmt.Sprintf(`dashboards:
   base_url: http://grafana:3000
-loki:
+logs:
   base_url: http://loki:3100
-alertmanager:
+alerting:
   base_url: http://alertmanager:9093
 collectors:
   - id: sql-prod
@@ -265,7 +265,7 @@ func TestReloadApplyingRecordsDivergenceUntilSuccessfulReload(t *testing.T) {
 	}
 
 	// An invalid candidate keeps the divergence flag: nothing was repaired.
-	if err := os.WriteFile(path, []byte("loki: ["), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("logs: ["), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := manager.Reload(); !errors.Is(err, ErrInvalidCandidate) {

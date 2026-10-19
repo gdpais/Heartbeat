@@ -291,12 +291,13 @@ config straight into the ConfigMap, bypassing Helm:
 
 ```bash
 hb_k get configmap heartbeat-integrations -o json > .tmp/integrations-good.json
-jq '.data["integrations.yaml"] = "collectors: [{id: broken, kind: sqlserver, enabled: true}]\n"' .tmp/integrations-good.json | hb_k replace -f -
+jq '.data["integrations.yaml"] = "platform: unsupported\ncollectors: [{id: broken, kind: sqlserver, enabled: true}]\n"' .tmp/integrations-good.json | hb_k replace -f -
 until [ -n "$(hb_admin -r .last_reload_err)" ]; do sleep 3; done   # kubelet syncs the file in up to ~60s
 hb_admin '{version, last_reload_err, status: .readiness.status, target: .readiness.collectors[0].targets[0].state}'
 ```
 
-`last_reload_err` says `grafana.base_url is required`; the version, the
+`last_reload_err` says `platform "unsupported" is not supported (supported:
+grafana, generic)`; the version, the
 readiness and the target are unchanged. Restore it as Helm's field manager,
 so the next `make kind-deploy` does not conflict:
 

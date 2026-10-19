@@ -10,7 +10,7 @@ shared validation inventory [16] throughout rather than as a final stage.
 | --- | --- | --- |
 | 0 | Foundations, including kind + Helm delivery | Done |
 | 1 | DB collector (SQL Server) | Done |
-| 2 | OutSystems ingest (OutSystems 11 log extraction) | Designed ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)); not built |
+| 2 | OutSystems ingest (OutSystems 11 log extraction) | In progress: extraction to Loki built ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)); real-database survey, derived metrics and dashboards pending |
 | 3 | API / control plane | Not started |
 | 4 | Web UI | Not started |
 | 5 | Production delivery (EKS + Argo CD) | Not started; decisions recorded |
@@ -160,6 +160,12 @@ the defaults in
 It comes after the Web UI so the first production deploy carries a usable
 product; pull it forward if a production SQL Server must be monitored sooner.
 
+- **First, review the observability platform:** the organization's ELK stack
+  (Elastic Cloud) against the bundled Grafana stack, on the same data, with
+  the OpenTelemetry Collector sending to both. Compare search, the
+  investigation queries, alerting, cost and operations, and record the choice
+  in an ADR. Heartbeat's services stay as they are either way
+  ([ADR 0011](../architecture/decisions/0011-platform-agnostic-telemetry-boundary.md)) [18]
 - `heartbeat-deploy` repository with Argo CD Applications and per-environment
   values; optional Argo CD rehearsal on kind
 - CI publishes multi-arch images and the chart to ECR through GitHub OIDC

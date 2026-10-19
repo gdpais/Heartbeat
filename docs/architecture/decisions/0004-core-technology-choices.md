@@ -35,6 +35,10 @@ is installed on monitored database hosts.
 - MVP stack: Grafana + Prometheus + Loki + PostgreSQL + Redis.
 - Scale-out (Mimir) and richer search (OpenSearch) are explicit later decisions,
   not defaults.
+- These engines are the bundled platform, not a dependency of Heartbeat's
+  services: [ADR 0011](0011-platform-agnostic-telemetry-boundary.md) keeps the
+  platform replaceable and reconsiders it, against the organization's ELK
+  stack, before production.
 - A late-roadmap evaluation compares the custom SQL Server collector with
   Grafana Alloy; see
   [database observability](../database-observability.md#custom-collector-and-alloy-comparison-late-roadmap).

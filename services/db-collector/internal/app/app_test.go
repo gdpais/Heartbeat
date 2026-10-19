@@ -54,7 +54,7 @@ type testCollector struct {
 func writeTestConfig(t *testing.T, path string, collectors ...testCollector) {
 	t.Helper()
 	var b strings.Builder
-	b.WriteString("grafana:\n  base_url: http://grafana:3000\n  dashboard_templates: {}\nloki:\n  base_url: http://loki:3100\nalertmanager:\n  base_url: http://alertmanager:9093\n")
+	b.WriteString("dashboards:\n  base_url: http://grafana:3000\n  dashboard_templates: {}\nlogs:\n  base_url: http://loki:3100\nalerting:\n  base_url: http://alertmanager:9093\n")
 	if len(collectors) == 0 {
 		b.WriteString("collectors: []\n")
 	} else {
@@ -260,7 +260,7 @@ func TestReloadRouteRejectsUnauthorizedAndInvalidCandidates(t *testing.T) {
 			t.Fatalf("reload returned %d, want %d", rec.Code, tc.want)
 		}
 	}
-	if err := os.WriteFile(path, []byte("loki: ["), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("logs: ["), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	rec := serve(handler, http.MethodPost, "/admin/config/reload", "Bearer test-token")
