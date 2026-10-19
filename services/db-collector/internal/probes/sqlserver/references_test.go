@@ -102,6 +102,11 @@ var queryMetricRef = regexp.MustCompile(`\bheartbeat_[a-z0-9_]+`)
 // irate() or increase().
 var rateCall = regexp.MustCompile(`\b(rate|irate|increase)\(\s*$`)
 
+// labelValuesCall matches the end of the text before a Grafana variable's
+// label_values(metric, label): it lists label values and reads no samples,
+// so any metric type is fine there.
+var labelValuesCall = regexp.MustCompile(`\blabel_values\(\s*$`)
+
 // rateWindow bounds how far back rateCall looks, so checking a file is linear
 // in its size.
 const rateWindow = 32
@@ -136,7 +141,11 @@ func TestQueriesReadCountersThroughRate(t *testing.T) {
 		rel, _ := filepath.Rel(repoRoot, file)
 		for _, loc := range queryMetricRef.FindAllStringIndex(text, -1) {
 			name := text[loc[0]:loc[1]]
-			throughRate := rateCall.MatchString(text[max(0, loc[0]-rateWindow):loc[0]])
+			before := text[max(0, loc[0]-rateWindow):loc[0]]
+			if labelValuesCall.MatchString(before) {
+				continue
+			}
+			throughRate := rateCall.MatchString(before)
 			cumulative := isCumulative(name, catalog)
 			if cumulative == throughRate {
 				continue

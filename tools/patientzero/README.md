@@ -12,9 +12,9 @@ It is test tooling: its own Go module, image and Helm chart, never part of
 the Heartbeat module, chart, images or releases.
 
 > **Status:** first slice [16.5]: the service, its two databases on the
-> sandbox SQL Server, and three entry points. Timers, extension calls, the
-> fake REST partner, k6 load, scenarios, the compressed calendar and the run
-> journal come later. The logging schema is the collector fixtures' stand-in
+> sandbox SQL Server, three entry points and k6 load. Timers, extension
+> calls, the fake REST partner, scenarios, the compressed calendar and the
+> run journal come later. The logging schema is the collector fixtures' stand-in
 > until the logging-database survey replaces it.
 
 ## Run it on kind
@@ -34,6 +34,11 @@ curl -H 'X-PatientZero-User: maria.santos' -H 'X-PatientZero-Session: s1' -H 'X-
 About a minute later the rows are in Loki as `{service_name="PatientZero"}`
 (the screen log's `lag` is longer, because a screen row is stamped with the
 request's start).
+
+With [load](#load) running (`make patientzero-load`), Grafana's *OutSystems
+Overview* shows the application `PatientZero`, and the other OutSystems
+dashboards drill into it
+([dashboards](../../docs/architecture/application-observability.md#dashboards)).
 
 ```bash
 make patientzero-down    # remove PatientZero, its databases and its login
@@ -68,6 +73,62 @@ business database, created on first use; its id is the `User_Id` in the logs.
 
 `GET /healthz` reports that the process runs; `GET /readyz` that both
 databases answer and the schemas are in place.
+
+## Load
+
+[k6](https://grafana.com/docs/k6/) drives the entry points with virtual
+users of stable identity, so distinct-user counts and per-user timelines in
+Heartbeat have a known answer
+([`load/patientzero.js`](load/patientzero.js)):
+
+```bash
+make patientzero-load                          # steady, 10 minutes
+make patientzero-load LOAD=peak                # 3x the users and API rate
+make patientzero-load LOAD=soak LOAD_DURATION=8h
+make patientzero-load-stop
+```
+
+The load runs in the cluster as the `patientzero-load` Job, so no
+port-forward limits it, and the command follows its output. Interrupting the
+command stops following, not the load. The command fails when a k6 threshold
+is crossed: more than 1% of checks failing, or more than 1% of requests
+failing for a reason other than a refused order.
+
+| Profile | Shoppers | API calls | Holds for |
+| --- | --- | --- | --- |
+| `smoke` | 2 | 30 a minute from one partner | 30s |
+| `steady` | 20 | 60 a minute from three partners | 10m |
+| `peak` | 20, ramped to 60 over 2 minutes and back down after | 60 a minute, ramped to 180 | 5m at the top |
+| `soak` | as steady | as steady | 2h |
+
+`LOAD_DURATION` sets how long a profile holds (peak: at the top).
+
+- **Shoppers.** Virtual user *n* is `shopper.<n>` (`shopper.0001`, ...)
+  from client IP `10.20.x.y`, the same on every run. One k6 iteration is one
+  session, with the session id `<run>.v<n>.<session number>`. A session opens
+  the order list, then opens it again or places an order, with think time
+  between steps and a pause between sessions. One session in ten is
+  anonymous: it only opens the order list. 3% of orders name an unknown
+  product, so they get HTTP 400 and an `error` row.
+- **Partners.** `partner.<k>` call the exposed REST API from `10.30.0.<k>`,
+  with no session: each call gets a new one, as a stateless API client does.
+- **Run id.** `<profile>-<UTC start time>`, printed at the start, begins
+  every session id, so runs never share a session and a run's rows can be
+  found in Loki with `| Session_Id=~"steady-20261019T101500Z.*"`.
+- **Choices.** Every virtual user has its own seeded random sequence, so the
+  same `LOAD_SEED` (default 1) gives every user the same steps on every run.
+  Timing still varies with response times.
+
+The mix (users, session length, order and anonymous shares, refused orders,
+think times, API rate, peak factor) is in [`load/traffic.js`](load/traffic.js).
+Those numbers are stand-ins until the logging-database survey gives the
+replica's aggregates; only that file changes then.
+
+Against PatientZero running anywhere else, for example a port-forward:
+
+```bash
+k6 run -e BASE_URL=http://localhost:8080 -e PROFILE=smoke tools/patientzero/load/patientzero.js
+```
 
 ## Databases and privileges
 
@@ -146,6 +207,12 @@ PATIENTZERO_TEST_SQLSERVER="sqlserver://sa:$(grep '^MSSQL_SA_PASSWORD=' .env.sql
 ```
 
 It creates two databases with random names and drops them at the end.
+
+`TestLoadSmokeProfile` runs the load script's smoke profile for a few
+seconds against the real handlers and checks the identities in the rows
+written. It is skipped when `k6` is not on the `PATH` (CI does not install
+it); `TestLoadScriptUsesTheServersPathsAndHeaders` always checks that the
+script calls the paths and headers the server serves.
 
 ## Why it lives in this repository
 

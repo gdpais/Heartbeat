@@ -173,6 +173,31 @@ fires when a log type's extraction lag passes 30 minutes. These are
 guardrails; per-application objectives and adaptive baselines come in
 phase 7.
 
+### Dashboards
+
+Four dashboards in Grafana's **Heartbeat** folder read these metrics and the
+log records
+([`files/grafana/dashboards/`](../../infra/helm/heartbeat/files/grafana/dashboards/)).
+Each one filters by environment and application. A header link opens the
+others with the same filters and time range, and another opens the SQL Server
+Overview for the same time.
+
+| Dashboard | What it answers | From |
+| --- | --- | --- |
+| *OutSystems Overview* (`outsystems-overview`) | Are users served well right now: requests, failed and slow shares against the objectives, p95, error-budget burn, active users and sessions, extraction lag; then the busiest operations, front-end skew, integrations, slow SQL, timers and Heartbeat's own extraction | Metrics; users and sessions from Loki |
+| *OutSystems Errors* (`outsystems-errors`) | What fails, where and for whom: errors by module and front-end, failed operations, the top fingerprints, users affected, and the error log | Metrics and Loki |
+| *OutSystems Latency* (`outsystems-latency`) | Where time goes: percentiles and the duration distribution, slowest operations by mean, p95 by module, integrations, screen state size, and the requests over 2 s | Metrics and Loki |
+| *OutSystems Request Timeline* (`outsystems-request`) | Everything one request logged, by `Request_Key`; the requests of a user or session; how many rows of each log type carry a `Request_Key` ([step A](#step-a-request-timeline-from-logs-with-phase-2)) | Loki |
+
+Drill-down goes from the overview's top operations to a module's latency
+or errors, then from any `Request_Key` in a table to the request timeline.
+A fingerprint in the top errors filters the error log to that error. The
+metric panels trail real time by the extraction delay (about a minute); the
+Loki panels show rows as soon as they are in Loki. A Go test checks every
+dashboard's datasources, variables and links
+([`tests/dashboards_test.go`](../../tests/dashboards_test.go)); the
+metric-reference test covers the metric names.
+
 ## Request traces
 
 ### The gap
@@ -198,7 +223,10 @@ build request timelines from that key, in OutSystems terms, without any agent.
   find.
 
 This needs no new storage and proves whether `Request_Key` is reliably
-present in each log type. Until the dashboard exists,
+present in each log type. The *OutSystems Request Timeline* dashboard does
+both ([dashboards](#dashboards)); its *Rows carrying a Request_Key* panel is
+the measurement, which needs a real installation's logs to mean anything
+(PatientZero writes the key on every row).
 [`scripts/outsystems-log-queries.sql`](../../scripts/outsystems-log-queries.sql)
 holds the SQL the SRE team runs against the logging database for the same
 timelines.
