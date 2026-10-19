@@ -273,7 +273,7 @@ follow the ingest path.
 - [x] Extractor: watermarked reads per target and log type, full-batch tie handling, watermark file on a persistent volume, same session settings, deadline, backoff and readiness as the `sqlserver` kind
 - [x] Export OTLP/HTTP logs to the OTel Collector: OutSystems column names as attributes, `Message` body, severity, resource attributes `service.name`, `deployment.environment.name`, `outsystems.log_type`; `error.fingerprint` on error records; watermark moves only after delivery
 - [x] Persistent volume for the collector in the chart; NetworkPolicy egress from the collector to the OTel Collector (none needed: the collector's policy restricts ingress only)
-- [ ] Add `outsystems.log_type` to Loki's index labels
+- [x] Add `outsystems.log_type` to Loki's index labels
 - [x] Extraction self-metrics: rows, lag, export failures, OutSystems log delay
 - [x] Derived metrics from the [catalog](docs/architecture/application-observability.md#derived-metrics), with bounded labels; recording rules, SLO burn-rate alerts and promtool tests; a Go test fails when a rule, dashboard or doc names an OutSystems metric the collector does not export
 - [ ] Active users and sessions, and new error fingerprints: left out of the collector on purpose ([why](docs/architecture/application-observability.md#not-built-on-purpose)); active users come from Loki in the dashboards [10.4], new fingerprints need a persisted fingerprint set first
@@ -538,7 +538,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Provision Loki for app logs
 - [x] Enforce low-cardinality label strategy
 - [x] Keep high-cardinality investigation fields in log body/payload
-- [x] Keep user, session and request IDs and client IP as structured metadata: the Collector no longer deletes them; Loki indexes only service.name, service.namespace and deployment.environment.name
+- [x] Keep user, session and request IDs and client IP as structured metadata: the Collector no longer deletes them; Loki indexes only service.name, service.namespace, deployment.environment.name and outsystems.log_type
 
 ### 9.3 Grafana
 - [x] Provision datasources as code
@@ -566,11 +566,11 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 
 ### 10.2 Normalization contract
 - [ ] Define canonical application event envelope
-- [ ] Map OutSystems default logs faithfully first
+- [x] Map OutSystems default logs faithfully first (OutSystems column names as log attributes [3.3])
 - [ ] Validate consistent environment/application/session fields
 
 ### 10.3 Telemetry wiring
-- [ ] Route sample OutSystems telemetry into Loki
+- [x] Route sample OutSystems telemetry into Loki (`make kind-e2e`: fixture error rows → Loki)
 - [ ] Generate/derive application metrics in Prometheus
 - [ ] Validate Grafana queries against both
 

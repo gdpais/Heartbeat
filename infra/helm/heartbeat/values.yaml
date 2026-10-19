@@ -385,6 +385,8 @@ loki:
                 - service.name
                 - service.namespace
                 - deployment.environment.name
+                # OutSystems 11 log type (error, screen, ...): eight values.
+                - outsystems.log_type
   # Namespaced RBAC only.
   rbac:
     namespaced: true
