@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	mssql "github.com/microsoft/go-mssqldb"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -32,6 +33,7 @@ const (
 	attrCollector   = "heartbeat.collector"
 	attrTarget      = "heartbeat.target"
 	attrFingerprint = "error.fingerprint"
+	attrTruncated   = "outsystems.truncated"
 	// unknownService is service.name for rows without an application or
 	// module name.
 	unknownService = "unknown"
@@ -41,6 +43,15 @@ const (
 	// scopeName is the instrumentation scope of every record.
 	scopeName = "heartbeat/db-collector/outsystems_logs"
 )
+
+// maxValueBytes caps the body and each string attribute of a record.  Stack
+// and Environment_Information are unbounded text and can run to hundreds of
+// KiB; Loki keeps attributes as structured metadata, at most 64 KB per line
+// by default, so two capped values and the short ones still fit.
+const maxValueBytes = 16 << 10
+
+// truncatedMarker ends a value cut to maxValueBytes.
+const truncatedMarker = "…[truncated]"
 
 // severities maps the Severity values the contract allows to OTLP severity
 // numbers.
@@ -74,8 +85,11 @@ type recordContext struct {
 //   - Every other non-NULL column is an attribute under its exact name (see
 //     [attributeValue] for the types).  Application_Name, Espace_Name and
 //     Module_Name stay attributes as well as naming the service.
+//   - The body and string attributes longer than maxValueBytes are cut (see
+//     [truncate]), and the record gets outsystems.truncated = true.
 //   - Records of the error log type get error.fingerprint (see
-//     [Fingerprint]).
+//     [Fingerprint]), from the whole Message and Stack, so cutting them never
+//     changes it.
 //   - Resource attributes: service.name (Application_Name, else Espace_Name,
 //     else Module_Name, else "unknown"), deployment.environment.name (when set),
 //     outsystems.log_type, heartbeat.collector and heartbeat.target.
@@ -100,21 +114,33 @@ func buildLogs(batch Batch, rows [][]any, instants []time.Time, rc recordContext
 			SeverityNumber:       number,
 			SeverityText:         text,
 		}
+		truncated := false
 		if message := value(row, columnMessage); message != nil {
-			record.Body = stringValue(textOf(message))
+			body, cut := truncate(textOf(message))
+			record.Body, truncated = stringValue(body), cut
 		}
 		for i, column := range batch.Columns {
 			switch column.Name {
 			case columnInstant, columnMessage, columnSeverity:
 				continue
 			}
-			if attribute, ok := attributeValue(row[i], column.DatabaseType, rc.location); ok {
-				record.Attributes = append(record.Attributes, &commonpb.KeyValue{Key: column.Name, Value: attribute})
+			attribute, ok := attributeValue(row[i], column.DatabaseType, rc.location)
+			if !ok {
+				continue
 			}
+			if text, ok := attribute.Value.(*commonpb.AnyValue_StringValue); ok {
+				var cut bool
+				text.StringValue, cut = truncate(text.StringValue)
+				truncated = truncated || cut
+			}
+			record.Attributes = append(record.Attributes, &commonpb.KeyValue{Key: column.Name, Value: attribute})
 		}
 		if rc.logType == errorLogType {
 			message, stack := optionalText(value(row, columnMessage)), optionalText(value(row, columnStack))
 			record.Attributes = append(record.Attributes, &commonpb.KeyValue{Key: attrFingerprint, Value: stringValue(Fingerprint(message, stack))})
+		}
+		if truncated {
+			record.Attributes = append(record.Attributes, &commonpb.KeyValue{Key: attrTruncated, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}}})
 		}
 		scope.LogRecords = append(scope.LogRecords, record)
 	}
@@ -231,6 +257,19 @@ func attributeValue(v any, databaseType string, location *time.Location) (*commo
 	default:
 		return stringValue(fmt.Sprint(v)), true
 	}
+}
+
+// truncate returns s cut to at most maxValueBytes on a UTF-8 character
+// boundary and ending in truncatedMarker, and whether it was cut.
+func truncate(s string) (string, bool) {
+	if len(s) <= maxValueBytes {
+		return s, false
+	}
+	cut := maxValueBytes - len(truncatedMarker)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + truncatedMarker, true
 }
 
 // textOf returns v as text: strings as they are, byte slices as UTF-8, and

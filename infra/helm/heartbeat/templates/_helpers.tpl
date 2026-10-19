@@ -43,3 +43,28 @@ Call with (dict "root" $ "image" .Values.dbCollector.image).
 {{- define "heartbeat.integrationsYaml" -}}
 {{ toYaml .Values.integrations }}
 {{- end }}
+
+{{/*
+GOMEMLIMIT for a Go container: 80% of its memory limit, in whole MiB, so the
+garbage collector works harder before the kernel OOM-kills the container; the
+rest is for goroutine stacks, the runtime and memory outside the Go heap.
+Empty when there is no limit. Call with (dict "limit" $c.resources.limits.memory
+"name" "dbCollector").
+*/}}
+{{- define "heartbeat.goMemLimit" -}}
+{{- with .limit -}}
+{{- $bytes := 0.0 -}}
+{{- if kindIs "string" . -}}
+{{- $units := dict "" 1 "k" 1000 "M" 1000000 "G" 1000000000 "T" 1000000000000 "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 -}}
+{{- $number := regexFind "^[0-9]+(\\.[0-9]+)?" . -}}
+{{- $suffix := trimPrefix $number . -}}
+{{- if or (not $number) (not (hasKey $units $suffix)) -}}
+{{- fail (printf "%s.resources.limits.memory %q: use a number with an optional k, M, G, T, Ki, Mi, Gi or Ti suffix, or set %s.goMemLimit" $.name . $.name) -}}
+{{- end -}}
+{{- $bytes = mulf (float64 $number) (get $units $suffix) -}}
+{{- else -}}
+{{- $bytes = float64 . -}}
+{{- end -}}
+{{- printf "%dMiB" (int64 (floor (divf (mulf $bytes 0.8) 1048576))) -}}
+{{- end -}}
+{{- end }}

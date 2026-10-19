@@ -29,10 +29,13 @@ Data path for self-managed OutSystems 11:
 1. The collector runs each enabled log-type query (one `.sql` file per log
    type, see the
    [query contract](../../services/db-collector/internal/probes/outsystems/queries/README.md))
-   for each logging-database target, from its watermark to now minus a lag.
+   for each logging-database target, from its watermark to now minus a lag,
+   in batches of at most `batch_limit` rows and about 8 MiB of row data.
 2. Each row becomes an OTLP log record: `Instant` is the timestamp, `Message`
    the body, every other column an attribute under its OutSystems name. The
-   collector adds `error.fingerprint` to error records.
+   collector adds `error.fingerprint` to error records. Values longer than
+   16 KiB, mostly `Stack` and `Environment_Information`, are cut and the
+   record is marked `outsystems.truncated`.
 3. Records go to the OTel Collector, then to Loki. Loki indexes only
    `service.name`, `deployment.environment.name` and `outsystems.log_type`
    (`service.namespace` too, which the collector does not set).
@@ -59,7 +62,7 @@ columns up by name. Other columns pass through unchanged.
 | `Duration` | Elapsed time of screens, server calls, integrations, extensions, timers and slow queries, in milliseconds (the queries convert the log types the platform logs in seconds and parse the `SLOWSQL` message) | Latency metrics; span duration |
 | `Screen`, `Action_Name` | The entry point and the operation that ran; the queries map each view's own column (`Entrypoint_Name`, `Endpoint`, `Action`, `Cyclic_Job_Name`, the event name) to these two | `operation` metric label (capped); span name |
 | `Error_Id` | Links a row to its error log entry | Outcome `error` |
-| `Message`, `Stack` | Error text and stack | Body; `error.fingerprint` |
+| `Message`, `Stack` | Error text and stack | Body; `error.fingerprint` (from the whole values); cut at 16 KiB |
 | `Session_Bytes`, `Viewstate_Bytes` | Traditional web screen state sizes | Size histograms |
 | `Endpoint`, `Type`, `Is_Expose` | Integration URL, protocol and direction | Attributes; dependency breakdown |
 | `Should_Have_Run_At` | Timer schedule | Timer delay |

@@ -10,6 +10,11 @@
     "dbCollector": {
       "type": "object",
       "properties": {
+        "goMemLimit": {
+          "description": "GOMEMLIMIT for the collector, such as 200MiB, or off. Empty means 80% of resources.limits.memory.",
+          "type": "string",
+          "pattern": "^$|^off$|^[0-9]+(B|KiB|MiB|GiB|TiB)?$"
+        },
         "service": {
           "type": "object",
           "properties": {
