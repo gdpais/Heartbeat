@@ -18,6 +18,10 @@
 #      run make patientzero-up again to restore it.
 # down: uninstalls the chart, redeploys Heartbeat without the collector, and
 # drops the two databases and the login.
+# load: runs the k6 load (tools/patientzero/load) as a Job next to
+# PatientZero, follows its output and exits with k6's result. Interrupting it
+# stops following, not the load.
+# load-stop: deletes the load Job.
 #
 # Every kubectl and helm call names the kind context explicitly.
 #
@@ -28,6 +32,9 @@
 #   SQLSERVER_CONTAINER    sandbox SQL Server container [heartbeat-sqlserver-dev]
 #   SQLSERVER_ENV_FILE     SA password and credentials [.env.sqlserver-dev]
 #   PROFILE, EXTRA_VALUES  passed on to scripts/kind.sh deploy
+#   LOAD                   load profile: smoke, steady, peak or soak [steady]
+#   LOAD_DURATION          how long the profile holds its load [the profile's]
+#   LOAD_SEED              seed of the virtual users' choices [1]
 set -eu
 cd "$(dirname "$0")/../../.."
 
@@ -45,6 +52,10 @@ READER_ROLE=heartbeat_oslog_reader
 DATABASE=patientzero
 LOG_DATABASE=patientzero_log
 HEARTBEAT_VALUES=$STATE_DIR/patientzero-heartbeat.yaml
+LOAD_DIR=tools/patientzero/load
+LOAD_JOB=patientzero-load
+# Renovate keeps this pin current (renovate.json).
+K6_IMAGE=grafana/k6:1.7.1@sha256:4fd3a694926b064d3491d9b02b01cde886583c4931f1223816e3d9a7bdfa7e0f
 
 kubectl_() { kubectl --context "$CONTEXT" "$@"; }
 log() { printf '==> %s\n' "$*"; }
@@ -312,8 +323,122 @@ cmd_down() {
 	fi
 }
 
+# The load runs inside the cluster: a port-forward would be the bottleneck,
+# and the requests reach PatientZero the way kind-e2e's will.
+cmd_load() {
+	profile=${LOAD:-steady}
+	case $profile in
+	smoke | steady | peak | soak) ;;
+	*) die "LOAD must be smoke, steady, peak or soak, not $profile" ;;
+	esac
+	cluster_exists || die "kind cluster $CLUSTER does not exist; run make sqlserver-dev-up and make patientzero-up"
+	helm status "$RELEASE" --kube-context "$CONTEXT" --namespace "$NAMESPACE" >/dev/null 2>&1 ||
+		die "PatientZero is not installed on $CLUSTER; run make patientzero-up"
+	run_id=$profile-$(date -u +%Y%m%dT%H%M%SZ)
+	kubectl_ -n "$NAMESPACE" create configmap "$LOAD_JOB" --from-file="$LOAD_DIR" \
+		--dry-run=client -o yaml | kubectl_ apply -f - >/dev/null
+	kubectl_ -n "$NAMESPACE" delete job "$LOAD_JOB" --ignore-not-found --wait >/dev/null
+	log "starting the $profile load, run $run_id"
+	kubectl_ apply -f - >/dev/null <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: $LOAD_JOB
+  namespace: $NAMESPACE
+  labels:
+    app.kubernetes.io/name: $LOAD_JOB
+    app.kubernetes.io/part-of: patientzero
+spec:
+  backoffLimit: 0
+  # Kept a day for its logs; the next run replaces it.
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: $LOAD_JOB
+        app.kubernetes.io/part-of: patientzero
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        # The k6 image's own user.
+        runAsUser: 12345
+        runAsGroup: 12345
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: k6
+          image: $K6_IMAGE
+          args: [run, --no-color, --no-usage-report, /load/patientzero.js]
+          env:
+            - name: BASE_URL
+              value: http://patientzero.$NAMESPACE.svc:8080
+            - name: PROFILE
+              value: "$profile"
+            - name: DURATION
+              value: "${LOAD_DURATION:-}"
+            - name: RUN_ID
+              value: "$run_id"
+            - name: SEED
+              value: "${LOAD_SEED:-1}"
+          volumeMounts:
+            - name: load
+              mountPath: /load
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: load
+          configMap:
+            name: $LOAD_JOB
+        - name: tmp
+          emptyDir: {}
+EOF
+	# Waits for the pod to leave Pending (the image pull) before following.
+	i=0
+	until kubectl_ -n "$NAMESPACE" get pods -l "job-name=$LOAD_JOB" -o jsonpath='{.items[*].status.phase}' 2>/dev/null |
+		grep -qE 'Running|Succeeded|Failed'; do
+		i=$((i + 1))
+		[ "$i" -le 150 ] || die "the load pod did not start; kubectl --context $CONTEXT -n $NAMESPACE describe job $LOAD_JOB"
+		sleep 2
+	done
+	kubectl_ -n "$NAMESPACE" logs -f "job/$LOAD_JOB" || true
+	i=0
+	while :; do
+		status=$(kubectl_ -n "$NAMESPACE" get job "$LOAD_JOB" -o jsonpath='{.status.succeeded}/{.status.failed}')
+		case $status in
+		1/*) log "load run $run_id finished and k6's thresholds held"; return 0 ;;
+		*/1) die "load run $run_id failed: a k6 threshold was crossed or k6 could not run; see its output above" ;;
+		esac
+		i=$((i + 1))
+		[ "$i" -le 30 ] || die "load run $run_id has not finished; make patientzero-load-stop stops it"
+		sleep 2
+	done
+}
+
+cmd_load_stop() {
+	cluster_exists || return 0
+	kubectl_ -n "$NAMESPACE" delete job "$LOAD_JOB" --ignore-not-found --wait >/dev/null
+	log "stopped the load"
+}
+
 case "${1:-}" in
 up) cmd_up ;;
 down) cmd_down ;;
+load) cmd_load ;;
+load-stop) cmd_load_stop ;;
 *) sed -n '2,/^set -eu/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

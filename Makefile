@@ -1,4 +1,4 @@
-.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down patientzero-up patientzero-down chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet docs-site
+.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down patientzero-up patientzero-down patientzero-load patientzero-load-stop chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet docs-site
 
 SQLSERVER_DEV_ENV_FILE := .env.sqlserver-dev
 # Health checks fail fast on HTTP errors (keeping the body) and never hang.
@@ -47,6 +47,8 @@ help:
 		'  make sqlserver-dev-down  Remove the dev SQL Server container and its data; redeploy without it' \
 		'  make patientzero-up      Run PatientZero on kind against the sandbox SQL Server; Heartbeat reads its logs (needs sqlserver-dev-up)' \
 		'  make patientzero-down    Remove PatientZero, its databases and login; redeploy Heartbeat without its collector' \
+		'  make patientzero-load    Run k6 load against PatientZero on kind and follow it (LOAD=smoke|steady|peak|soak, LOAD_DURATION)' \
+		'  make patientzero-load-stop  Stop the PatientZero load' \
 		'  make kind-e2e            Run the acceptance checks on a separate, temporary kind cluster' \
 		'  make chart-deps          Fetch the chart dependencies listed in Chart.lock' \
 		'  make chart-check         Lint and render the chart for every values profile (needs chart-deps)' \
@@ -129,6 +131,13 @@ patientzero-up:
 
 patientzero-down:
 	@PROFILE=$(PROFILE) SQLSERVER_ENV_FILE=$(SQLSERVER_DEV_ENV_FILE) $(PATIENTZERO_MODULE)/scripts/patientzero.sh down
+
+# LOAD, not PROFILE: PROFILE is the Heartbeat chart's values profile.
+patientzero-load:
+	@LOAD='$(LOAD)' LOAD_DURATION='$(LOAD_DURATION)' LOAD_SEED='$(LOAD_SEED)' $(PATIENTZERO_MODULE)/scripts/patientzero.sh load
+
+patientzero-load-stop:
+	@$(PATIENTZERO_MODULE)/scripts/patientzero.sh load-stop
 
 kind-e2e:
 	@KIND_NODE_IMAGE='$(KIND_NODE_IMAGE)' scripts/kind-e2e.sh
