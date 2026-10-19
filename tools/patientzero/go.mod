@@ -2,7 +2,7 @@
 // the product's module, images and releases (ADR 0010).
 module heartbeat/tools/patientzero
 
-go 1.27.1
+go 1.27.2
 
 require github.com/microsoft/go-mssqldb v1.8.2
 
