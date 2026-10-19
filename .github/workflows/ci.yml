@@ -96,6 +96,8 @@ jobs:
         run: make test-race
       - name: Run Go static checks
         run: make vet
+      - name: Check for reachable known vulnerabilities
+        run: make vulncheck
       - name: Validate Prometheus rules
         run: make rules-check
       - name: Build the HTML docs site (fails on broken links, images or anchors)

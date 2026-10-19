@@ -26,6 +26,13 @@
 // separate those rows, and skipping them would lose logs.  Raising
 // batch_limit is the fix.
 //
+// A batch also ends early once it holds about [DefaultMaxBatchBytes] of row
+// data, at the first row of a new Instant ([Batch.Partial]), and is handled
+// as a full one.  Up to [collectors.DefaultMaxConcurrentTargets] batches are
+// held at once, so this, not batch_limit, bounds the memory of a backlog of
+// error rows with long stacks.  The records keep at most maxValueBytes of
+// each value (records.go).
+//
 // The query contract (queries/README.md) is checked on every batch: a
 // datetime or datetime2 Instant column, at most @limit rows, ascending
 // Instant values within (@from, @to].  A violation fails the call without sending anything.
@@ -52,6 +59,11 @@ import (
 // full, so a large backlog is worked off over several cycles instead of
 // holding the target's other log types back.
 const DefaultMaxBatches = 10
+
+// DefaultMaxBatchBytes bounds the row data of one batch.  At 8 MiB, eight
+// targets extracting at once stay inside the chart's 256Mi memory limit with
+// the records and requests built from their rows.
+const DefaultMaxBatchBytes = 8 << 20
 
 // ErrBatchStuck reports a full batch whose rows all share one Instant.
 var ErrBatchStuck = errors.New("every row of a full batch has the same Instant")
@@ -83,6 +95,9 @@ type Executor struct {
 	// MaxBatches bounds the batches of one call; below 1 means
 	// DefaultMaxBatches.
 	MaxBatches int
+	// MaxBatchBytes bounds the row data of one batch; below 1 means
+	// DefaultMaxBatchBytes.
+	MaxBatchBytes int64
 
 	// now is the clock; tests replace it.
 	now func() time.Time
@@ -136,7 +151,8 @@ func (e *Executor) RunProbe(ctx context.Context, item collectormetadata.Schedule
 }
 
 // extractBatch reads, delivers and acknowledges one batch, moving watermark.
-// full reports a batch of batch_limit rows, after which more rows may wait.
+// full reports a batch of batch_limit rows or a partial one, after which more
+// rows may wait.
 func (e *Executor) extractBatch(ctx context.Context, item collectormetadata.ScheduledProbe, key WatermarkKey, query string, location *time.Location, watermark *Watermark) (full bool, err error) {
 	settings := item.OutSystemsLogs
 	now := e.clock()
@@ -152,7 +168,8 @@ func (e *Executor) extractBatch(ctx context.Context, item collectormetadata.Sche
 		return false, nil
 	}
 	batch, err := e.Source.Query(ctx, item.Target, query, QueryParams{
-		From: watermark.Instant, To: to, Limit: settings.BatchLimit, DateTime: watermark.InstantType == "DATETIME",
+		From: watermark.Instant, To: to, Limit: settings.BatchLimit, MaxBytes: e.maxBatchBytes(),
+		DateTime: watermark.InstantType == "DATETIME",
 	})
 	if err != nil {
 		return false, fmt.Errorf("log type %s: %w", item.Definition.Name, err)
@@ -162,7 +179,7 @@ func (e *Executor) extractBatch(ctx context.Context, item collectormetadata.Sche
 		return false, fmt.Errorf("log type %s: %w", item.Definition.Name, err)
 	}
 	rows, next := batch.Rows, to
-	if len(rows) == settings.BatchLimit {
+	if len(rows) == settings.BatchLimit || batch.Partial {
 		full = true
 		last := instants[len(instants)-1]
 		cut := slices.IndexFunc(instants, func(t time.Time) bool { return t.Equal(last) })
@@ -316,6 +333,13 @@ func (e *Executor) maxBatches() int {
 		return DefaultMaxBatches
 	}
 	return e.MaxBatches
+}
+
+func (e *Executor) maxBatchBytes() int64 {
+	if e.MaxBatchBytes < 1 {
+		return DefaultMaxBatchBytes
+	}
+	return e.MaxBatchBytes
 }
 
 func (e *Executor) logger() *slog.Logger {

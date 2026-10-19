@@ -1,8 +1,10 @@
 package outsystems
 
 import (
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
@@ -180,5 +182,87 @@ func TestBuildLogsAddsNoFingerprintOutsideTheErrorLogType(t *testing.T) {
 	resource := attributes(out[0].Resource.Attributes)
 	if _, ok := resource["deployment.environment.name"]; ok {
 		t.Error("empty environment became a resource attribute")
+	}
+}
+
+func TestTruncateCutsOnACharacterBoundary(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		in   string
+		cut  bool
+	}{
+		{"short", "at A()", false},
+		{"exactly the cap", strings.Repeat("a", maxValueBytes), false},
+		{"one byte over", strings.Repeat("a", maxValueBytes+1), true},
+		// Two-byte characters put the cut inside one: it moves back.
+		{"multi-byte", "a" + strings.Repeat("é", maxValueBytes), true},
+		{"four-byte", strings.Repeat("😀", maxValueBytes), true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, cut := truncate(tt.in)
+			if cut != tt.cut {
+				t.Fatalf("cut = %v, want %v", cut, tt.cut)
+			}
+			if !cut {
+				if got != tt.in {
+					t.Fatal("a value within the cap changed")
+				}
+				return
+			}
+			if len(got) > maxValueBytes || len(got) < maxValueBytes-len(truncatedMarker)-utf8.UTFMax {
+				t.Fatalf("len = %d, want just under %d", len(got), maxValueBytes)
+			}
+			if !utf8.ValidString(got) || !strings.HasSuffix(got, truncatedMarker) || !strings.HasPrefix(tt.in, strings.TrimSuffix(got, truncatedMarker)) {
+				t.Fatalf("got %q…%q, want a valid prefix of the value ending in the marker", got[:8], got[len(got)-24:])
+			}
+		})
+	}
+}
+
+func TestBuildLogsTruncatesLongValuesAndKeepsTheFingerprint(t *testing.T) {
+	instant := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	batch := Batch{Columns: []Column{
+		{"Instant", "DATETIME2"}, {"Message", "NVARCHAR"}, {"Application_Name", "NVARCHAR"},
+		{"Stack", "NVARCHAR"}, {"Environment_Information", "NVARCHAR"}, {"Payload", "VARBINARY"},
+	}}
+	// Long values that differ only past the cap.
+	message := func(tail string) string { return "Timeout calling GetOrders " + strings.Repeat("x", 20<<10) + tail }
+	stack := func(tail string) string {
+		return "   at Shop.GetOrders()\n   at Shop.Checkout()\n" + strings.Repeat("   at OutSystems.Frame()\n", 4<<10) + tail
+	}
+	environment := strings.Repeat("eSpaceVer: 42 ", 8<<10)
+	rows := [][]any{
+		{instant, message("a"), "Shop", stack("a"), environment, make([]byte, 20<<10)},
+		{instant, message("b"), "Shop", stack("b"), nil, nil},
+		{instant, "short", "Shop", "at A()", "env", nil},
+	}
+	out := buildLogs(batch, rows, []time.Time{instant, instant, instant}, recordContext{logType: "error", location: time.UTC})
+	records := out[0].ScopeLogs[0].LogRecords
+
+	first := attributes(records[0].Attributes)
+	if body := records[0].Body.GetStringValue(); len(body) > maxValueBytes || !strings.HasSuffix(body, truncatedMarker) {
+		t.Errorf("body is %d bytes, want it cut to %d", len(body), maxValueBytes)
+	}
+	for _, key := range []string{"Stack", "Environment_Information", "Payload"} {
+		if value := first[key].(string); len(value) > maxValueBytes || !strings.HasSuffix(value, truncatedMarker) {
+			t.Errorf("%s is %d bytes, want it cut to %d", key, len(value), maxValueBytes)
+		}
+	}
+	if first["outsystems.truncated"] != true {
+		t.Errorf("outsystems.truncated = %v, want true", first["outsystems.truncated"])
+	}
+	// The fingerprint comes from the whole values, so it is the one an
+	// uncut record of the same error gets.
+	if want := Fingerprint(message("a"), stack("a")); first["error.fingerprint"] != want {
+		t.Errorf("error.fingerprint = %v, want %v from the whole Message and Stack", first["error.fingerprint"], want)
+	}
+	// Messages that differ only past the cap still tell errors apart.
+	if second := attributes(records[1].Attributes); second["error.fingerprint"] != Fingerprint(message("b"), stack("b")) || second["error.fingerprint"] == first["error.fingerprint"] {
+		t.Errorf("error.fingerprint = %v, want %v from the whole Message", second["error.fingerprint"], Fingerprint(message("b"), stack("b")))
+	}
+
+	third := attributes(records[2].Attributes)
+	if _, ok := third["outsystems.truncated"]; ok || records[2].Body.GetStringValue() != "short" || third["Stack"] != "at A()" {
+		t.Errorf("short record changed: body %q, attributes %v", records[2].Body.GetStringValue(), third)
 	}
 }

@@ -88,8 +88,13 @@ func (s *fakeSource) Query(_ context.Context, _ collectormetadata.DatabaseTarget
 	if s.reverse {
 		slices.Reverse(rows)
 	}
-	for _, row := range rows {
-		batch.Rows = append(batch.Rows, []any{row.instant, "error " + row.key, row.key, "Shop"})
+	values := make([][]any, len(rows))
+	for i, row := range rows {
+		values[i] = []any{row.instant, "error " + row.key, row.key, "Shop"}
+	}
+	// Read as SQLServerSource reads, so MaxBytes applies.
+	if err := readRows(&fakeRows{n: len(values), row: func(i int) []any { return values[i] }}, &batch, params); err != nil {
+		return Batch{}, err
 	}
 	return batch, nil
 }

@@ -59,6 +59,12 @@ spec:
                   name: {{ $c.adminToken.existingSecret }}
                   key: {{ $c.adminToken.key }}
             {{- end }}
+            {{- with $c.goMemLimit | default (include "heartbeat.goMemLimit" (dict "limit" (dig "limits" "memory" "" $c.resources) "name" "dbCollector")) }}
+            # Go's soft memory limit, below the container limit: the collector
+            # collects garbage harder instead of being OOM-killed mid-batch.
+            - name: GOMEMLIMIT
+              value: {{ . | quote }}
+            {{- end }}
             {{- with $c.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
