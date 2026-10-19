@@ -508,7 +508,7 @@ func checkLokiLabelPolicy(t *testing.T, objects map[string]object) {
 		}
 	}
 	sort.Strings(labels)
-	if want := []string{"deployment.environment.name", "service.name", "service.namespace"}; !reflect.DeepEqual(labels, want) {
+	if want := []string{"deployment.environment.name", "outsystems.log_type", "service.name", "service.namespace"}; !reflect.DeepEqual(labels, want) {
 		t.Errorf("Loki OTLP index labels = %q, want %q", labels, want)
 	}
 }

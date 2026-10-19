@@ -40,7 +40,7 @@ is still pending.
 | Component | Endpoints | Notes |
 | --- | --- | --- |
 | DB collector | `:8082` — `/metrics`, `/healthz`, `/readyz`, `/admin/config`, `POST /admin/config/reload` | Reload also on SIGHUP, and on file change when `HEARTBEAT_CONFIG_WATCH_INTERVAL` is set. Credentials resolved from `HEARTBEAT_CREDENTIAL_*`. |
-| OTel Collector | OTLP `:4317` gRPC / `:4318` HTTP; Prometheus export `:8889`; health `:13133` | Exports logs to Loki's OTLP endpoint. Loki indexes only `service.name`, `service.namespace` and `deployment.environment.name` as labels; every other attribute, including user, session and request IDs and client IP, is kept as structured metadata. |
+| OTel Collector | OTLP `:4317` gRPC / `:4318` HTTP; Prometheus export `:8889`; health `:13133` | Exports logs to Loki's OTLP endpoint. Loki indexes only `service.name`, `service.namespace`, `deployment.environment.name` and `outsystems.log_type` as labels; every other attribute, including user, session and request IDs and client IP, is kept as structured metadata. |
 | Prometheus | `:9090` | 15s scrape. Rule files `heartbeat.rules.yml` and `generated/` (currently empty). Sends alerts to Alertmanager. |
 | Alertmanager | `:9093` | `default` and `deadmans-switch` receivers with no integrations on kind ([ADR 0009](decisions/0009-remove-the-otel-gateway.md)); the always-firing `Watchdog` alert routes to `deadmans-switch`. The production example adds chat receivers and healthchecks.io. |
 | Loki / Grafana | `:3100` / `:3000` | Grafana provisioned with Prometheus (default) and Loki data sources. |
