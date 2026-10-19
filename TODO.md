@@ -289,7 +289,8 @@ follow the ingest path.
 
 Design: [request traces](docs/architecture/application-observability.md#request-traces).
 
-- [ ] Step A: request timeline dashboard across log types by `Request_Key`; measure how reliably each log type carries it
+- [x] Step A: request timeline dashboard across log types by `Request_Key`, with the share of each log type's rows that carry it (*OutSystems Request Timeline*)
+- [ ] Read that share on a real installation's logs (the replica, or a soak run against it) and record it per log type in the [request traces](docs/architecture/application-observability.md#request-traces) design
 - [ ] Step B, after step A and the trace store [3.6]: synthesize OTLP spans from `Request_Key` in the extractor, with trace IDs derived from the key and logs ↔ traces links
 
 ### 3.6 OTLP trace ingest
@@ -576,10 +577,10 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [ ] Validate Grafana queries against both
 
 ### 10.4 Dashboards and drill-down
-- [ ] Build OutSystems overview dashboard
-- [ ] Build OutSystems errors dashboard
-- [ ] Build OutSystems latency dashboard
-- [ ] Enable drill-down overview -> latency/errors -> Loki
+- [x] Build OutSystems overview dashboard
+- [x] Build OutSystems errors dashboard
+- [x] Build OutSystems latency dashboard
+- [x] Enable drill-down overview -> latency/errors -> Loki ([dashboards](docs/architecture/application-observability.md#dashboards))
 
 ---
 
@@ -752,7 +753,7 @@ First slice, with phase 2:
 - [x] Service bootstrap: `tools/patientzero/` module, own SQL login with write rights on `patientzero` and `patientzero_log` only, health endpoint, Dockerfile, Helm chart into a `patientzero` namespace, `make patientzero-up` and `make patientzero-down`
 - [x] First entry points: a Traditional screen, a Reactive server action and an exposed REST API; each request runs business SQL and writes its log rows under one `Request_Key`, with the caller's session, user and client IP
 - [ ] More entry points: timers, extension calls and a fake consumed REST partner
-- [ ] k6 load: virtual users with stable identities; steady, peak and soak profiles
+- [x] k6 load: virtual users with stable identities; smoke, steady, peak and soak profiles, run as a Job on kind (`make patientzero-load`); the mix in `load/traffic.js` takes the survey's aggregates
 - [ ] Compressed calendar: weekly rotation on demand, backfill within Loki's 168h limit, commits held back past the `lag`, long-running screens and timers, `Instant` in a configured time zone including daylight saving switches; the collector's clock is never changed
 - [ ] Scenario files (fault, duration, expected PromQL/LogQL/alert signals) and an admin endpoint to start them: `blocking` (and deadlock), `bad-deploy`, `slow-partner`, `slow-sql`, `timer-backlog`, `bad-front-end`, `log-growth`, `log-backlog`, `rotation`
 - [ ] Run journal (JSONL): users, sessions, requests, and each fault with its start and end
