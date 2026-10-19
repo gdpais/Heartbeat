@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patientzero
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "patientzero.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "patientzero.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "patientzero.labels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        # distroless nonroot, by number so the kubelet can check it.
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: patientzero
+          image: "{{ .Values.image.repository }}:{{ required "image.tag is required" .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: PATIENTZERO_SQL_HOST
+              value: {{ required "sql.host is required" .Values.sql.host | quote }}
+            - name: PATIENTZERO_SQL_PORT
+              value: {{ .Values.sql.port | quote }}
+            - name: PATIENTZERO_SQL_TRUST_SERVER_CERTIFICATE
+              value: {{ .Values.sql.trustServerCertificate | quote }}
+            - name: PATIENTZERO_DATABASE
+              value: {{ .Values.sql.database | quote }}
+            - name: PATIENTZERO_LOG_DATABASE
+              value: {{ .Values.sql.logDatabase | quote }}
+            - name: PATIENTZERO_LOG_READER_ROLE
+              value: {{ .Values.logReaderRole | quote }}
+            # Each pod is one front-end server in the log rows.
+            - name: PATIENTZERO_FRONT_END
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: PATIENTZERO_SQL_CREDENTIAL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sql.existingSecret }}
+                  key: PATIENTZERO_SQL_CREDENTIAL
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

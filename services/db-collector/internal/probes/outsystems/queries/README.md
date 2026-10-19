@@ -141,3 +141,7 @@ fixture, as a login with only `SELECT` on the fixture tables and views:
 
 A log type without both files fails `make test`. The fixtures are stand-ins
 until they are built from the real DDL and rows.
+[PatientZero](../../../../../../tools/patientzero/README.md#one-logging-schema)
+builds its logging database from the same `<log type>.sql` files, so a
+schema change made here reaches it too; its tests fail if a fixture loses
+the shape it reads or a column it writes.

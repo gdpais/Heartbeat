@@ -1,4 +1,4 @@
-.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet docs-site
+.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down patientzero-up patientzero-down chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet docs-site
 
 SQLSERVER_DEV_ENV_FILE := .env.sqlserver-dev
 # Health checks fail fast on HTTP errors (keeping the body) and never hang.
@@ -26,6 +26,9 @@ DOCS_REPO_REF := master
 # The generator is its own Go module (tools/docsite/go.mod), so the services'
 # module does not depend on its Markdown parser.
 DOCSITE_MODULE := tools/docsite
+# PatientZero, the synthetic OutSystems test application (ADR 0010), is its
+# own module too: test code stays out of the product's module and releases.
+PATIENTZERO_MODULE := tools/patientzero
 DOCSITE := GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) run ./cmd/docsite -root ../.. -repo-url $(DOCS_REPO_URL) -ref $(DOCS_REPO_REF)
 
 help:
@@ -42,6 +45,8 @@ help:
 		'  make sqlserver-dev-init  Create the ignored .env.sqlserver-dev with random SA and collector passwords' \
 		'  make sqlserver-dev-up    Start a dev-only SQL Server container and point the collector at it' \
 		'  make sqlserver-dev-down  Remove the dev SQL Server container and its data; redeploy without it' \
+		'  make patientzero-up      Run PatientZero on kind against the sandbox SQL Server; Heartbeat reads its logs (needs sqlserver-dev-up)' \
+		'  make patientzero-down    Remove PatientZero, its databases and login; redeploy Heartbeat without its collector' \
 		'  make kind-e2e            Run the acceptance checks on a separate, temporary kind cluster' \
 		'  make chart-deps          Fetch the chart dependencies listed in Chart.lock' \
 		'  make chart-check         Lint and render the chart for every values profile (needs chart-deps)' \
@@ -119,6 +124,12 @@ sqlserver-dev-up:
 sqlserver-dev-down:
 	@PROFILE=$(PROFILE) scripts/kind.sh sqlserver-down
 
+patientzero-up:
+	@PROFILE=$(PROFILE) SQLSERVER_ENV_FILE=$(SQLSERVER_DEV_ENV_FILE) $(PATIENTZERO_MODULE)/scripts/patientzero.sh up
+
+patientzero-down:
+	@PROFILE=$(PROFILE) SQLSERVER_ENV_FILE=$(SQLSERVER_DEV_ENV_FILE) $(PATIENTZERO_MODULE)/scripts/patientzero.sh down
+
 kind-e2e:
 	@KIND_NODE_IMAGE='$(KIND_NODE_IMAGE)' scripts/kind-e2e.sh
 
@@ -137,6 +148,7 @@ rules-check:
 test:
 	GOCACHE=$$(pwd)/.tmp/gocache go test ./...
 	GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) test ./...
+	GOCACHE=$$(pwd)/.tmp/gocache go -C $(PATIENTZERO_MODULE) test ./...
 
 test-integration:
 	GOCACHE=$$(pwd)/.tmp/gocache go test -tags=integration -count=1 -timeout=10m ./tests
@@ -147,10 +159,12 @@ test-sqlserver:
 test-race:
 	GOCACHE=$$(pwd)/.tmp/gocache go test -race ./...
 	GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) test -race ./...
+	GOCACHE=$$(pwd)/.tmp/gocache go -C $(PATIENTZERO_MODULE) test -race ./...
 
 vet:
 	GOCACHE=$$(pwd)/.tmp/gocache go vet ./...
 	GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) vet ./...
+	GOCACHE=$$(pwd)/.tmp/gocache go -C $(PATIENTZERO_MODULE) vet ./...
 
 docs-site:
 	$(DOCSITE)
