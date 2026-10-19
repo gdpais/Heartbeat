@@ -1,6 +1,6 @@
 # 0010. PatientZero, a synthetic OutSystems application to test against
 
-- Status: Accepted; not built
+- Status: Accepted; first slice being built (service, databases, three entry points)
 - Date: 2026-10-18
 
 ## Context
@@ -71,6 +71,17 @@ Considered and not chosen:
 - **OpenTelemetry Demo, Online Boutique and similar.** They emit OTLP, which
   OutSystems 11 self-managed does not. For the OutSystems Cloud and ODC
   streams and OTLP traces, PatientZero gains an OTLP mode instead.
+- **Its own repository, a dependency of this one.** It would keep
+  Heartbeat's repository smaller, but the logging schema and the scenarios'
+  expected signals (Heartbeat's metric names and queries) change together
+  with the product: every such change would become two coordinated pull
+  requests and a version bump. Revisit when PatientZero has users outside
+  Heartbeat, its own release cadence, or grows into a general simulator; its
+  own module, Dockerfile and chart, with no imports from Heartbeat's module,
+  keep that move cheap.
+- **Outside git (a local tool).** It produces the known answers the phase
+  exit checks compare against, and CI must build it from the same commit, so
+  it needs review and history like any test.
 - **HammerDB or WideWorldImporters as the main target.** SQL Server load
   only, with no application logs and no exact expectations. HammerDB stays
   an option for probe-overhead soak tests.
@@ -93,7 +104,9 @@ Considered and not chosen:
   Prometheus TSDB backfill; phase 7 decides which.
 - PatientZero follows the OutSystems schema the replica shows. The survey's
   DDL feeds both PatientZero and the collector's fixtures, so a schema
-  change is made once.
+  change is made once: PatientZero builds its ten cycle tables and two views
+  per log type from the fixtures' DDL at startup, so the fixtures are the
+  only copy.
 - PatientZero is the application onboarded in the end-to-end tests of
   phases 3 and 4, and the source of known answers in phase 7.
 - Later modes, each when its phase needs it: OTLP logs and traces (OutSystems

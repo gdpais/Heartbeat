@@ -39,6 +39,8 @@ which is not committed.
 - [Contributing](../CONTRIBUTING.md): branches, commits, checks, pull requests
   and releases; [changelog](../CHANGELOG.md)
 - Service internals: [DB collector](../services/db-collector/README.md)
+- Test application: [PatientZero](../tools/patientzero/README.md), the
+  synthetic OutSystems application Heartbeat is tested against
 - [TODO.md](../TODO.md): implementation task list
 
 **Operators and SREs**

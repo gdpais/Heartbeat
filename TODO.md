@@ -747,10 +747,11 @@ nothing copied from it reaches git unanonymized.
 
 First slice, with phase 2:
 - [ ] Read-only login on the replica, kept in an ignored env file like `.env.sqlserver-dev`; run the survey [3.3]
-- [ ] Logging schema from the replica's DDL (ten cycle tables per log type, current and `_Previous` views), shared with the collector's fixtures so a schema change is made once
+- [ ] Logging schema from the replica's DDL (ten cycle tables per log type, current and `_Previous` views), shared with the collector's fixtures so a schema change is made once (PatientZero already builds its schema from the fixtures: replacing them is the whole change)
 - [ ] Traffic profile from the replica's aggregates only: rows per minute per log type, duration distributions, error ratio, identifier coverage, `Duration` units, time zone
-- [ ] Service bootstrap: `tools/patientzero/` module, own SQL login with write rights on `patientzero` and `patientzero_log` only, health endpoint, Dockerfile, Helm chart into a `patientzero` namespace, `make patientzero-up` and `make patientzero-down`
-- [ ] Entry points: Traditional screens, Reactive server actions, an exposed REST API, timers, extension calls and a fake consumed REST partner; each request runs business SQL and writes its log rows under one `Request_Key`, with the caller's session, user and client IP
+- [x] Service bootstrap: `tools/patientzero/` module, own SQL login with write rights on `patientzero` and `patientzero_log` only, health endpoint, Dockerfile, Helm chart into a `patientzero` namespace, `make patientzero-up` and `make patientzero-down`
+- [x] First entry points: a Traditional screen, a Reactive server action and an exposed REST API; each request runs business SQL and writes its log rows under one `Request_Key`, with the caller's session, user and client IP
+- [ ] More entry points: timers, extension calls and a fake consumed REST partner
 - [ ] k6 load: virtual users with stable identities; steady, peak and soak profiles
 - [ ] Compressed calendar: weekly rotation on demand, backfill within Loki's 168h limit, commits held back past the `lag`, long-running screens and timers, `Instant` in a configured time zone including daylight saving switches; the collector's clock is never changed
 - [ ] Scenario files (fault, duration, expected PromQL/LogQL/alert signals) and an admin endpoint to start them: `blocking` (and deadlock), `bad-deploy`, `slow-partner`, `slow-sql`, `timer-backlog`, `bad-front-end`, `log-growth`, `log-backlog`, `rotation`

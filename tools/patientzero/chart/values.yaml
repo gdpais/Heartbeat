@@ -1,0 +1,36 @@
+# PatientZero on kind: tools/patientzero/scripts/patientzero.sh installs this
+# chart into the patientzero namespace and sets the image tag and SQL host.
+
+image:
+  repository: heartbeat/patientzero
+  # Set by the script to a content-derived tag; the image is loaded into the
+  # kind node, never pulled.
+  tag: ""
+  pullPolicy: Never
+
+sql:
+  # The sandbox SQL Server (make sqlserver-dev-up): the Docker container's
+  # name on the kind network.
+  host: ""
+  port: 1433
+  # Only for the disposable sandbox, whose certificate is self-signed.
+  trustServerCertificate: false
+  database: patientzero
+  logDatabase: patientzero_log
+  # Secret with PATIENTZERO_SQL_CREDENTIAL=<login>:<password>, PatientZero's
+  # own login (db_owner of the two databases above, nothing else).
+  existingSecret: patientzero-sql
+
+# Database role in the logging database that is granted SELECT on the log
+# views; the setup script adds the Heartbeat collector's login to it.
+logReaderRole: heartbeat_oslog_reader
+
+service:
+  port: 8080
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi

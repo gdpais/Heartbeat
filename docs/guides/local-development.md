@@ -112,11 +112,23 @@ container's self-signed certificate
 because the container is throwaway; production targets need a trusted
 certificate.
 
+### PatientZero
+
+[PatientZero](../../tools/patientzero/README.md), the synthetic OutSystems
+application Heartbeat is tested against, runs next to the chart and writes
+into its own two databases on the sandbox; the collector reads its logging
+database.
+
+```bash
+make patientzero-up         # needs make sqlserver-dev-up; adds PatientZero's login to .env.sqlserver-dev
+make patientzero-down       # remove it, its databases and its login
+```
+
 ## Run tests
 
 | Command | What it runs | Needs |
 | --- | --- | --- |
-| `make test` | All Go unit and repository contract tests | Go |
+| `make test` | All Go unit and repository contract tests, including the docs generator's and PatientZero's modules | Go |
 | `make test-race` | The same suite with the race detector | Go |
 | `make vet` | Go static checks | Go |
 | `make rules-check` | promtool rule validation and unit tests | Docker |
