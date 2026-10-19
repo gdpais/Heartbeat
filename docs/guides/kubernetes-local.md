@@ -66,6 +66,13 @@ can only run what was loaded. The tag changes whenever the binary changes, so a
 code change always produces a new pod. Production references ECR images by
 digest (`image.digest`).
 
+The tags are kept in `.tmp/kind/<cluster>/images.env`. `make kind-deploy`, and
+everything that deploys through it (`make sqlserver-dev-up`, PatientZero),
+rebuilds first when a file under `services/` or `internal/`, `go.mod` or
+`go.sum` is newer than that file, so a pull or a branch switch never leaves the
+current chart running an image built from older code. Unchanged code builds
+from cache to the same tag, and nothing rolls out.
+
 ## The cluster
 
 `make kind-up` creates `heartbeat` from the node image pinned in the Makefile
