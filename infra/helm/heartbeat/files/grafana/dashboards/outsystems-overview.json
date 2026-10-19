@@ -329,7 +329,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "count(sum by (User_Id) (count_over_time({service_name=~\"$application\",deployment_environment_name=~\"$environment\"} | User_Id!=\"\" | User_Id!=\"0\" [5m])))",
+          "expr": "count(sum by (User_Id) (count_over_time({service_name=~\"$application\",deployment_environment_name=~\"$environment\"} | User_Id!=\"\" | User_Id!=\"0\" [5m]))) or vector(0)",
           "refId": "A",
           "queryType": "instant"
         }
@@ -374,7 +374,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "count(sum by (Session_Id) (count_over_time({service_name=~\"$application\",deployment_environment_name=~\"$environment\"} | Session_Id!=\"\" [5m])))",
+          "expr": "count(sum by (Session_Id) (count_over_time({service_name=~\"$application\",deployment_environment_name=~\"$environment\"} | Session_Id!=\"\" [5m]))) or vector(0)",
           "refId": "A",
           "queryType": "instant"
         }

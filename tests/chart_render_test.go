@@ -326,6 +326,7 @@ func TestChartProfiles(t *testing.T) {
 			checkCollectorPipelines(t, objects, profile.collectorReceivers)
 			checkLogIdentifiers(t, objects)
 			checkLokiLabelPolicy(t, objects)
+			checkGrafanaGzip(t, objects)
 		})
 	}
 }
@@ -604,6 +605,7 @@ func checkLokiLabelPolicy(t *testing.T, objects map[string]object) {
 	var config struct {
 		LimitsConfig struct {
 			AllowStructuredMetadata bool `yaml:"allow_structured_metadata"`
+			MaxQuerySeries          int  `yaml:"max_query_series"`
 			OTLPConfig              struct {
 				ResourceAttributes struct {
 					IgnoreDefaults   bool `yaml:"ignore_defaults"`
@@ -619,6 +621,10 @@ func checkLokiLabelPolicy(t *testing.T, objects map[string]object) {
 	limits := config.LimitsConfig
 	if !limits.AllowStructuredMetadata {
 		t.Error("Loki limits_config.allow_structured_metadata is not true")
+	}
+	// The active users and sessions panels hold one series per distinct ID.
+	if limits.MaxQuerySeries < 10000 {
+		t.Errorf("Loki limits_config.max_query_series is %d; the active sessions count needs at least 10000", limits.MaxQuerySeries)
 	}
 	resource := limits.OTLPConfig.ResourceAttributes
 	if !resource.IgnoreDefaults {
@@ -701,6 +707,33 @@ func peerString(peer networkPolicyPeer) string {
 		parts = append(parts, block)
 	}
 	return strings.Join(parts, " ")
+}
+
+// Grafana's response gzip allocates buffers per CPU on every request, health
+// probes included; with it on, a dashboard on a 5 s refresh OOM-killed the
+// pod at its 512Mi limit.
+func checkGrafanaGzip(t *testing.T, objects map[string]object) {
+	t.Helper()
+	cm, ok := objects["ConfigMap/grafana"]
+	if !ok {
+		return
+	}
+	section := ""
+	for _, line := range strings.Split(cm.Data["grafana.ini"], "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			section = line
+			continue
+		}
+		key, value, found := strings.Cut(line, "=")
+		if found && section == "[server]" && strings.TrimSpace(key) == "enable_gzip" {
+			if strings.TrimSpace(value) != "false" {
+				t.Errorf("Grafana server.enable_gzip = %s, want false", strings.TrimSpace(value))
+			}
+			return
+		}
+	}
+	t.Error("Grafana grafana.ini does not set server.enable_gzip = false; Grafana 13 gzips by default")
 }
 
 // The db-collector NetworkPolicy must select exactly the collector pod, admit
