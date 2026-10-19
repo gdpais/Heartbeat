@@ -47,6 +47,9 @@ type chartProfile struct {
 	// stateEmptyDir means the collector's state is an emptyDir instead of the
 	// db-collector-state claim (dbCollector.persistence.enabled=false).
 	stateEmptyDir bool
+	// goMemLimit is the collector's GOMEMLIMIT; empty means 204MiB, 80% of
+	// the default 256Mi limit, and "-" means none.
+	goMemLimit string
 	// wantError, when set, is part of the error helm must fail with; nothing
 	// else is checked.
 	wantError string
@@ -148,6 +151,38 @@ var chartProfiles = []chartProfile{
 		present:        []string{"StatefulSet/db-collector"},
 		collectorPeers: []string{bundledPrometheusPeer},
 		stateEmptyDir:  true,
+	},
+	{
+		name:           "collector-memory-limit",
+		set:            []string{"dbCollector.resources.limits.memory=1Gi"},
+		present:        []string{"StatefulSet/db-collector"},
+		collectorPeers: []string{bundledPrometheusPeer},
+		goMemLimit:     "819MiB",
+	},
+	{
+		name:           "collector-go-memory-limit-override",
+		set:            []string{"dbCollector.goMemLimit=300MiB"},
+		present:        []string{"StatefulSet/db-collector"},
+		collectorPeers: []string{bundledPrometheusPeer},
+		goMemLimit:     "300MiB",
+	},
+	{
+		name:           "collector-without-memory-limit",
+		set:            []string{"dbCollector.resources.limits.memory=null"},
+		present:        []string{"StatefulSet/db-collector"},
+		collectorPeers: []string{bundledPrometheusPeer},
+		goMemLimit:     "-",
+	},
+	{
+		name:      "collector-memory-limit-unparsable",
+		set:       []string{"dbCollector.resources.limits.memory=256m"},
+		wantError: "dbCollector.resources.limits.memory",
+	},
+	{
+		// Go rejects SI units such as M in GOMEMLIMIT.
+		name:      "collector-go-memory-limit-invalid",
+		set:       []string{"dbCollector.goMemLimit=300M"},
+		wantError: "values don't meet the specifications of the schema",
 	},
 	{
 		name:      "collector-state-without-size",
@@ -284,6 +319,7 @@ func TestChartProfiles(t *testing.T) {
 
 			checkIntegrations(t, objects)
 			checkCollectorSingleton(t, objects)
+			checkCollectorGoMemLimit(t, objects, profile.goMemLimit)
 			checkInClusterEndpoints(t, objects)
 			checkCollectorNetworkPolicy(t, objects, profile.collectorPeers)
 			checkCollectorState(t, objects, profile.stateEmptyDir)
@@ -335,6 +371,44 @@ func checkCollectorSingleton(t *testing.T, objects map[string]object) {
 	}
 	if image := spec.Template.Spec.Containers[0].Image; strings.HasSuffix(image, ":") {
 		t.Errorf("db-collector image %q has no tag", image)
+	}
+}
+
+// The collector's GOMEMLIMIT keeps the Go heap below the container's memory
+// limit, so a large outsystems_logs backlog is collected instead of
+// OOM-killing the pod, which would read the same batch again on restart.
+func checkCollectorGoMemLimit(t *testing.T, objects map[string]object, want string) {
+	t.Helper()
+	sts, ok := objects["StatefulSet/db-collector"]
+	if !ok {
+		return
+	}
+	var spec struct {
+		Template struct {
+			Spec struct {
+				Containers []struct {
+					Env []struct {
+						Name  string `yaml:"name"`
+						Value string `yaml:"value"`
+					} `yaml:"env"`
+				} `yaml:"containers"`
+			} `yaml:"spec"`
+		} `yaml:"template"`
+	}
+	if err := sts.Spec.Decode(&spec); err != nil {
+		t.Fatal(err)
+	}
+	if want == "" {
+		want = "204MiB"
+	}
+	got := "-"
+	for _, env := range spec.Template.Spec.Containers[0].Env {
+		if env.Name == "GOMEMLIMIT" {
+			got = env.Value
+		}
+	}
+	if got != want {
+		t.Errorf("db-collector GOMEMLIMIT = %q, want %q", got, want)
 	}
 }
 

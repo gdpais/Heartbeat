@@ -174,7 +174,7 @@ collectors:
 | --- | --- | --- |
 | `lag` | `60s` | Go duration, > 0. Rows the log service commits later than this after their `Instant` are missed |
 | `probes[].lag` | the collector's `lag` | Go duration, > 0. Replaces `lag` for one log type. A `screen` or `cyclic_job` row has the operation's start as `Instant` and is written when it ends, so set it above the longest screen request or timer (the timer timeout, 20 minutes by default) |
-| `batch_limit` | `5000` | 1–50000. A full batch is followed at once by the next, up to 10 per cycle. If every row of a full batch has the same `Instant`, the cycle fails and `heartbeat_outsystems_extract_stuck_batches_total` grows: raise `batch_limit` |
+| `batch_limit` | `5000` | 1–50000. A full batch is followed at once by the next, up to 10 per cycle. If every row of a full batch has the same `Instant`, the cycle fails and `heartbeat_outsystems_extract_stuck_batches_total` grows: raise `batch_limit`. A batch also ends early at about 8 MiB of row data (below) |
 | `initial_lookback` | `15m` | Go duration, > 0. Also used when the stored watermark is unreadable or belongs to another database |
 | `log_timezone` | `UTC` | IANA name such as `Europe/Lisbon`; `Local` is rejected. With a zone that has daylight saving time, rows logged in the hour that repeats when clocks go back can be missed: `Instant` itself is ambiguous then |
 
@@ -190,6 +190,17 @@ Rules:
   only; two would send every row twice.
 - `lag`, `batch_limit`, `initial_lookback`, `log_timezone` and `probes[].lag`
   are rejected on other kinds.
+- A batch stops reading once it holds about 8 MiB of row data, at the next
+  row with a new `Instant`, and is then handled as a full batch: rows that
+  share an `Instant` are never split. This bounds the collector's memory when
+  a backlog of error rows with long stacks builds up, which `batch_limit`
+  alone does not; a smaller batch is followed at once by the next.
+- The body and every text attribute of a record are cut at 16 KiB, on a
+  character boundary and ending in `…[truncated]`, and the record gets
+  `outsystems.truncated = true`. `Stack` and `Environment_Information` are
+  the usual ones; Loki keeps attributes as structured metadata, 64 KB per
+  line by default. `error.fingerprint` is computed from the whole `Message`
+  and `Stack`, so it does not change.
 - The watermark of each collector, target and log type is a file under
   `HEARTBEAT_STATE_DIR` (`outsystems_logs/<collector>.<target>.<log type>.json`).
   It moves only after the OTel Collector accepted the batch, so delivery is at
@@ -251,6 +262,7 @@ environment variable. Changing it requires restarting the collector
 | `HEARTBEAT_STATE_DIR` | `/var/lib/heartbeat` | Writable directory for state that must survive a restart: the `outsystems_logs` watermarks. Created on the first save; the `sqlserver` kind never uses it. The chart mounts the `dbCollector.persistence` volume there |
 | `HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE` | `false` | Skip TLS certificate verification. **Local dev container only**; applies to every target. When set, startup logs a warning and `GET /admin/config` lists it under `warnings` |
 | `HEARTBEAT_CREDENTIAL_<REF>` | — | Target credentials, see above |
+| `GOMEMLIMIT` | unset | Go's soft memory limit, such as `200MiB`. The chart sets 80% of `dbCollector.resources.limits.memory` (`204MiB` for the default `256Mi`), so the garbage collector works harder before the pod is OOM-killed; `dbCollector.goMemLimit` overrides it, `off` disables it |
 
 ### Local development files
 

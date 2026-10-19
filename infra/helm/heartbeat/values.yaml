@@ -88,6 +88,9 @@ dbCollector:
       memory: 64Mi
     limits:
       memory: 256Mi
+  # Go's soft memory limit (GOMEMLIMIT), such as 200MiB, or "off". Empty sets
+  # it to 80% of resources.limits.memory, or leaves it unset without a limit.
+  goMemLimit: ""
   extraEnv: []
   podAnnotations: {}
   nodeSelector: {}
