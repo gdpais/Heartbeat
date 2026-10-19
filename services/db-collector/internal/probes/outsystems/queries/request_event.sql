@@ -1,6 +1,6 @@
 -- The request event log: custom events apps attach to a request, written from the OutSystems 11 Log data reference
--- (view oslog_RequestEvent); confirm the column names, types and units against
--- the real logging database before the probe review.
+-- (view oslog_RequestEvent); column names and types checked against the logging-database
+-- survey [3.3].
 --
 -- oslog_RequestEvent is a view over the current week's cycle table and
 -- oslog_RequestEvent_Previous over last week's; the platform switches them every

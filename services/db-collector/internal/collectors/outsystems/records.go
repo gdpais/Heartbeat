@@ -45,7 +45,7 @@ const (
 )
 
 // maxValueBytes caps the body and each string attribute of a record.  Stack
-// and Environment_Information are unbounded text and can run to hundreds of
+// and EnvironmentInformation are unbounded text and can run to hundreds of
 // KiB; Loki keeps attributes as structured metadata, at most 64 KB per line
 // by default, so two capped values and the short ones still fit.
 const maxValueBytes = 16 << 10

@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"heartbeat/tools/patientzero/internal/oslog"
@@ -69,8 +68,6 @@ type Server struct {
 	Ready func(context.Context) error
 	Now   func() time.Time
 	Log   *slog.Logger
-
-	errorSeq atomic.Int64
 }
 
 // Handler routes the health endpoints and the entry points.
@@ -166,7 +163,6 @@ func (c *call) user(cols map[string]any) map[string]any {
 func (s *Server) errorRow(c *call, at time.Time, err error) (oslog.Row, string) {
 	id := newGUID()
 	cols := c.common()
-	delete(cols, "Request_Key")
 	cols["Id"] = id
 	cols["Instant"] = at
 	cols["Session_Id"] = c.Session
@@ -174,28 +170,10 @@ func (s *Server) errorRow(c *call, at time.Time, err error) (oslog.Row, string) 
 	cols["Stack"] = fmt.Sprintf("at %s.%s()\nat %s.%s()", c.module.Name, c.action, c.module.Name, c.entryPoint)
 	cols["Module_Name"] = c.module.Name
 	cols["Server"] = s.FrontEnd
-	cols["Request_key"] = c.RequestKey // the error view's spelling
 	cols["Entrypoint_Name"] = c.entryPoint
 	cols["Action_Name"] = c.action
-	cols["Environment_Information"] = fmt.Sprintf("FrontEnd: %s, Module: %s (Id=%d)", s.FrontEnd, c.module.Name, c.module.ID)
+	cols["EnvironmentInformation"] = fmt.Sprintf("FrontEnd: %s, Module: %s (Id=%d)", s.FrontEnd, c.module.Name, c.module.ID)
 	return oslog.Row{Type: "error", Columns: c.user(cols)}, id
-}
-
-// errorRef is what a row's Error_Id column holds for an error: the error
-// row's Id where the column is text, or a number where the stand-in schema
-// types it int (the mobile request log); none is "" or 0.
-func (s *Server) errorRef(logType, errID string) any {
-	isInt := strings.Contains(s.Schema[logType].ColumnType("Error_Id"), "int")
-	switch {
-	case errID == "" && isInt:
-		return 0
-	case errID == "":
-		return ""
-	case isInt:
-		return s.errorSeq.Add(1)
-	default:
-		return errID
-	}
 }
 
 // finish writes the call's log rows. A failed write is logged and does not
@@ -292,6 +270,7 @@ func (s *Server) placeOrder(w http.ResponseWriter, r *http.Request) {
 	// The mobile request log's Instant is when the request completed; its
 	// Duration is in seconds, as the OutSystems reference documents it.
 	req := c.common()
+	req["Id"] = newGUID()
 	req["Instant"] = end
 	req["Duration"] = int64(end.Sub(c.Start).Round(time.Second) / time.Second)
 	req["Screen"] = c.entryPoint
@@ -299,7 +278,7 @@ func (s *Server) placeOrder(w http.ResponseWriter, r *http.Request) {
 	req["Source"] = c.ClientIP
 	req["Executed_By"] = s.FrontEnd
 	req["Login_Id"] = c.Session
-	req["Error_Id"] = s.errorRef("mobile_request", errID)
+	req["Error_Id"] = errID
 	rows = append([]oslog.Row{{Type: "mobile_request", Columns: c.user(req)}}, rows...)
 	s.finish(r.Context(), c, rows)
 
@@ -338,10 +317,11 @@ func (s *Server) apiOrders(w http.ResponseWriter, r *http.Request) {
 	general["Module_Name"] = c.module.Name
 	general["Action_Name"] = c.action
 	general["Entrypoint_Name"] = c.entryPoint
-	general["Error_Id"] = s.errorRef("general", errID)
+	general["Error_Id"] = errID
 	// The integration log's Instant is when the call completed. Source is
 	// the caller of an exposed API; Endpoint is empty for exposed ones.
 	integration := c.common()
+	integration["Id"] = newGUID()
 	integration["Instant"] = end
 	integration["Duration"] = millis(end.Sub(c.Start))
 	integration["Source"] = c.ClientIP
@@ -350,7 +330,7 @@ func (s *Server) apiOrders(w http.ResponseWriter, r *http.Request) {
 	integration["Type"] = "REST"
 	integration["Executed_By"] = s.FrontEnd
 	integration["Is_Expose"] = true
-	integration["Error_Id"] = s.errorRef("integration", errID)
+	integration["Error_Id"] = errID
 	rows = append([]oslog.Row{
 		{Type: "general", Columns: c.user(general)},
 		{Type: "integration", Columns: integration},

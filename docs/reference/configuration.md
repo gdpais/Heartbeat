@@ -197,7 +197,7 @@ Rules:
   alone does not; a smaller batch is followed at once by the next.
 - The body and every text attribute of a record are cut at 16 KiB, on a
   character boundary and ending in `…[truncated]`, and the record gets
-  `outsystems.truncated = true`. `Stack` and `Environment_Information` are
+  `outsystems.truncated = true`. `Stack` and `EnvironmentInformation` are
   the usual ones; Loki keeps attributes as structured metadata, 64 KB per
   line by default. `error.fingerprint` is computed from the whole `Message`
   and `Stack`, so it does not change.

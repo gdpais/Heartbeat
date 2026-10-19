@@ -2,6 +2,7 @@ package logschema
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -45,11 +46,11 @@ func TestStatementsBuildTenCycleTablesAndTwoViews(t *testing.T) {
 			if !strings.Contains(s, "CREATE TABLE dbo."+table+" (") {
 				t.Errorf("%s: statement %d does not create %s:\n%s", lt.Name, c, table, s)
 			}
-			if !strings.Contains(strings.ToUpper(s), fmt.Sprintf("CYCLE INT NOT NULL DEFAULT %d", c)) {
+			if !regexp.MustCompile(fmt.Sprintf(`CYCLE INT (NOT )?NULL DEFAULT %d\b`, c)).MatchString(strings.ToUpper(s)) {
 				t.Errorf("%s: %s does not default Cycle to %d:\n%s", lt.Name, table, c, s)
 			}
-			if !strings.Contains(s, "CLUSTERED INDEX") {
-				t.Errorf("%s: %s has no clustered index on Instant:\n%s", lt.Name, table, s)
+			if !strings.Contains(s, "INDEX ") {
+				t.Errorf("%s: %s has no index on Instant:\n%s", lt.Name, table, s)
 			}
 			for _, other := range []int{2, 3} {
 				if other != c && strings.Contains(s, fmt.Sprintf("%s_%d", lt.View, other)) {
@@ -127,12 +128,13 @@ func TestColumnTypes(t *testing.T) {
 		byName[lt.Name] = lt
 	}
 	for _, c := range []struct{ log, col, want string }{
-		{"screen", "Instant", "datetime"},
-		{"screen", "request_key", "char"},
-		{"error", "Id", "char"},
+		{"screen", "Instant", "datetime2"},
+		{"screen", "request_key", "varchar"},
+		{"error", "Id", "varchar"},
 		{"integration", "Is_Expose", "bit"},
-		{"mobile_request", "Error_Id", "int"},
-		{"request_event", "INSTANT", "datetime"},
+		{"integration", "Cycle", "int"},
+		{"mobile_request", "Error_Id", "varchar"},
+		{"request_event", "INSTANT", "datetime2"},
 		{"screen", "Constraint", ""},
 		{"error", "CONSTRAINT", ""},
 	} {

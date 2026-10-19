@@ -21,7 +21,6 @@ import (
 	"testing"
 	"time"
 
-	mssql "github.com/microsoft/go-mssqldb"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	"google.golang.org/protobuf/proto"
 
@@ -360,6 +359,13 @@ func (r *otlpReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// sameRows reports whether got holds each of want exactly once.  Rows that
+// share an Instant come back in no particular order: the surveyed cycle
+// tables are clustered on Id, not Instant.
+func sameRows(got, want []string) bool {
+	return slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(want)))
+}
+
 func (r *otlpReceiver) received() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -368,9 +374,9 @@ func (r *otlpReceiver) received() []string {
 
 // Extracts dbo.oslog_Error through the production path (connector, the
 // embedded error.sql, OTLP/HTTP, watermark file) over several cycles and a
-// restart, with ties on Instant at batch boundaries, datetime's 1/300 s
-// ticks, and a row committed after its Instant.  Every row must arrive
-// exactly once.
+// restart, with ties on Instant at batch boundaries, millisecond instants
+// (the surveyed datetime2), and a row committed after its Instant.  Every
+// row must arrive exactly once.
 func TestExtractionAgainstSQLServer(t *testing.T) {
 	server := newLiveServer(t)
 	setupFixtures(t, server)
@@ -380,10 +386,10 @@ func TestExtractionAgainstSQLServer(t *testing.T) {
 	// week's cycle table) or into a cycle table by name.
 	insertInto := func(object, key string, offset time.Duration) {
 		t.Helper()
-		exec(t, sa, `DECLARE @sql nvarchar(max) = N'INSERT INTO dbo.' + QUOTENAME(@object) + N' (Instant, Message, Espace_Name, Request_Key, User_Id, Stack)
-VALUES (@instant, @message, N''ShopCore'', @key, 7, N''at Shop.Checkout()'')';
-EXEC sys.sp_executesql @sql, N'@instant datetime, @message nvarchar(2000), @key char(36)', @instant, @message, @key;`,
-			sql.Named("object", object), sql.Named("instant", mssql.DateTime1(base.Add(offset))), sql.Named("message", "Order failed: "+key), sql.Named("key", key))
+		exec(t, sa, `DECLARE @sql nvarchar(max) = N'INSERT INTO dbo.' + QUOTENAME(@object) + N' (Id, Instant, Session_Id, User_Id, Espace_Id, Tenant_Id, Message, Stack, Module_Name, Server, Espace_Name, Request_Key)
+VALUES (CONVERT(varchar(50), NEWID()), @instant, '''', 7, 1, 0, @message, ''at Shop.Checkout()'', ''ShopCore'', ''FE-01'', ''ShopCore'', @key)';
+EXEC sys.sp_executesql @sql, N'@instant datetime2(3), @message varchar(2000), @key varchar(36)', @instant, @message, @key;`,
+			sql.Named("object", object), sql.Named("instant", base.Add(offset)), sql.Named("message", "Order failed: "+key), sql.Named("key", key))
 	}
 	insert := func(key string, offset time.Duration) {
 		t.Helper()
@@ -391,9 +397,9 @@ EXEC sys.sp_executesql @sql, N'@instant datetime, @message nvarchar(2000), @key 
 	}
 	ms := time.Millisecond
 	insert("a", time.Minute)
-	insert("b", 2*time.Minute+3*ms) // b and c share a datetime tick
+	insert("b", 2*time.Minute+3*ms) // b and c share an Instant
 	insert("c", 2*time.Minute+3*ms)
-	insert("d", 2*time.Minute+7*ms) // the next tick (.00667 s)
+	insert("d", 2*time.Minute+4*ms) // the next millisecond
 	insert("e", 3*time.Minute)
 	insert("f", 4*time.Minute) // f and g share an Instant
 	insert("g", 4*time.Minute)
@@ -432,11 +438,11 @@ EXEC sys.sp_executesql @sql, N'@instant datetime, @message nvarchar(2000), @key 
 	executor := newExecutor(&now)
 	// Reads (11:55, 12:09] in batches of 3: a | b c | d e | f g | h.
 	run(executor)
-	if got := receiver.received(); !slices.Equal(got, []string{"a", "b", "c", "d", "e", "f", "g", "h"}) {
+	if got := receiver.received(); !sameRows(got, []string{"a", "b", "c", "d", "e", "f", "g", "h"}) {
 		t.Fatalf("first cycle delivered %v", got)
 	}
 	watermark, _, _ := executor.Store.Load(WatermarkKey{Collector: "oslogs", Target: "logging-db", LogType: "error"})
-	if watermark.InstantType != "DATETIME" || !watermark.Instant.Equal(base.Add(9*time.Minute)) {
+	if watermark.InstantType != "DATETIME2" || !watermark.Instant.Equal(base.Add(9*time.Minute)) {
 		t.Fatalf("watermark %+v", watermark)
 	}
 
@@ -454,7 +460,7 @@ EXEC sys.sp_executesql @sql, N'@instant datetime, @message nvarchar(2000), @key 
 	run(restarted)
 
 	want := []string{"a", "b", "c", "d", "e", "f", "g", "h", "late", "after-restart"}
-	if got := receiver.received(); !slices.Equal(got, want) {
+	if got := receiver.received(); !sameRows(got, want) {
 		t.Fatalf("delivered %v, want each of %v once", got, want)
 	}
 
@@ -475,7 +481,7 @@ EXEC sys.sp_executesql @sql, N'@instant datetime, @message nvarchar(2000), @key 
 	now = now.Add(2 * time.Minute)
 	run(restarted)
 	want = append(want, "before-rotation", "after-rotation")
-	if got := receiver.received(); !slices.Equal(got, want) {
+	if got := receiver.received(); !sameRows(got, want) {
 		t.Fatalf("after the rotation delivered %v, want %v", got, want)
 	}
 }

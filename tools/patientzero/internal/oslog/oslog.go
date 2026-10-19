@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	mssql "github.com/microsoft/go-mssqldb"
-
 	"heartbeat/tools/patientzero/internal/logschema"
 )
 
@@ -98,24 +96,17 @@ func (w *SQLWriter) insert(r Row) (string, []any) {
 	for i, c := range cols {
 		names[i] = "[" + c + "]"
 		params[i] = fmt.Sprintf("@p%d", i+1)
-		args[i] = value(t.ColumnType(c), r.Columns[c])
+		args[i] = value(r.Columns[c])
 	}
 	return fmt.Sprintf("INSERT INTO dbo.%s (%s) VALUES (%s);", t.View,
 		strings.Join(names, ", "), strings.Join(params, ", ")), args
 }
 
-// value binds times with the column's own type: a datetime2 parameter
-// compared with or stored into a datetime column is converted by SQL Server,
-// and the logging database stores Instant in UTC (the collector's default
-// log_timezone).
-func value(sqlType string, v any) any {
-	t, ok := v.(time.Time)
-	if !ok {
-		return v
+// value binds times in UTC, the zone the logging database stores Instant
+// in (the collector's default log_timezone).
+func value(v any) any {
+	if t, ok := v.(time.Time); ok {
+		return t.UTC()
 	}
-	t = t.UTC()
-	if sqlType == "datetime" {
-		return mssql.DateTime1(t)
-	}
-	return t
+	return v
 }

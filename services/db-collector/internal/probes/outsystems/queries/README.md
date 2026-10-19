@@ -5,13 +5,13 @@ OutSystems 11 logging database, one file per log type. Why they live here:
 [ADR 0008](../../../../../../docs/architecture/decisions/0008-outsystems-11-log-extraction.md).
 
 > **Status:** the db-collector runs these files (`outsystems_logs`
-> collectors). The eight queries and their fixtures (tables, views and rows
-> under [`testdata/oslog/`](../../../collectors/outsystems/testdata/oslog/))
-> are written from the OutSystems 11 Log data reference, not from a logging
-> database: run [`scripts/outsystems-log-survey.sql`](../../../../../../scripts/outsystems-log-survey.sql)
-> against one, correct column names, types and `Duration` units from its
-> output, replace the fixtures with its DDL and rows, then review each query
-> with the probe checklist.
+> collectors). The eight queries are written from the OutSystems 11 Log data
+> reference; their fixtures' tables and views under
+> [`testdata/oslog/`](../../../collectors/outsystems/testdata/oslog/) are the
+> DDL of a surveyed logging database
+> ([`scripts/outsystems-log-survey.sql`](../../../../../../scripts/outsystems-log-survey.sql)),
+> their rows are synthetic. Each query still needs its review with the probe
+> checklist.
 
 ## Files
 

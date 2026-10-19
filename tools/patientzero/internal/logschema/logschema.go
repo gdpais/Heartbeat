@@ -1,8 +1,8 @@
 // Package logschema builds PatientZero's OutSystems 11 logging schema from
 // the db-collector's oslog fixtures
 // (services/db-collector/internal/collectors/outsystems/testdata/oslog/), so a
-// schema change, such as the one the logging-database survey brings, is made
-// once, in the fixtures, and PatientZero follows it (ADR 0010).
+// schema change is made once, in the fixtures, and PatientZero follows it
+// (ADR 0010).
 //
 // A fixture creates two cycle tables and the two views of one log type. This
 // package reads the first cycle table and the current view's column list, and
@@ -41,7 +41,7 @@ type LogType struct {
 	// Columns are the view's columns, in the fixture's order.
 	Columns []string
 	// types maps each cycle-table column, upper case, to its SQL type name
-	// in lower case (int, nvarchar, char, datetime, bit, ...).
+	// in lower case (int, varchar, datetime2, bit, ...).
 	types map[string]string
 
 	body    string // the CREATE TABLE body, with the cycle as %[1]d
@@ -55,7 +55,7 @@ func (t LogType) PreviousView() string { return t.View + "_Previous" }
 func (t LogType) Table(c int) string { return fmt.Sprintf("%s_%d", t.View, c) }
 
 // ColumnType is the column's SQL type name in lower case, without its
-// length (int, nvarchar, char, datetime, bit, ...), or "" when the cycle
+// length (int, varchar, datetime2, bit, ...), or "" when the cycle
 // table has no such column. Names compare case-insensitively.
 func (t LogType) ColumnType(name string) string { return t.types[strings.ToUpper(name)] }
 
@@ -76,7 +76,7 @@ var (
 	indexRE       = `CREATE (?:UNIQUE )?(?:CLUSTERED |NONCLUSTERED )?INDEX \w+ ON dbo\.%s_%s \([^)]*\);`
 	columnDefRE   = regexp.MustCompile(`(?m)^\s*([A-Za-z_][A-Za-z0-9_]*) ([A-Za-z0-9]+)\b`)
 	columnRE      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	cycleRE       = regexp.MustCompile(`(?im)^(\s*CYCLE int NOT NULL DEFAULT )(\d+)(,?)$`)
+	cycleRE       = regexp.MustCompile(`(?im)^(\s*CYCLE int (?:NOT )?NULL DEFAULT )(\d+)(,?)$`)
 )
 
 // Load reads every <log type>.sql fixture in dir (the *.rows.sql files are
@@ -120,7 +120,7 @@ func Parse(name, src string) (LogType, error) {
 	view, num, body := m[1], m[2], m[3]
 	cycles := cycleRE.FindAllStringSubmatch(body, -1)
 	if len(cycles) != 1 || cycles[0][2] != num {
-		return LogType{}, fmt.Errorf("%s_%s: want one Cycle int NOT NULL DEFAULT %s column", view, num, num)
+		return LogType{}, fmt.Errorf("%s_%s: want one Cycle int [NOT] NULL DEFAULT %s column", view, num, num)
 	}
 	vm := regexp.MustCompile(fmt.Sprintf(viewRE, regexp.QuoteMeta(view), regexp.QuoteMeta(view))).FindStringSubmatch(src)
 	if vm == nil {

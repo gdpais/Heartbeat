@@ -223,7 +223,7 @@ func TestBuildLogsTruncatesLongValuesAndKeepsTheFingerprint(t *testing.T) {
 	instant := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	batch := Batch{Columns: []Column{
 		{"Instant", "DATETIME2"}, {"Message", "NVARCHAR"}, {"Application_Name", "NVARCHAR"},
-		{"Stack", "NVARCHAR"}, {"Environment_Information", "NVARCHAR"}, {"Payload", "VARBINARY"},
+		{"Stack", "NVARCHAR"}, {"EnvironmentInformation", "NVARCHAR"}, {"Payload", "VARBINARY"},
 	}}
 	// Long values that differ only past the cap.
 	message := func(tail string) string { return "Timeout calling GetOrders " + strings.Repeat("x", 20<<10) + tail }
@@ -243,7 +243,7 @@ func TestBuildLogsTruncatesLongValuesAndKeepsTheFingerprint(t *testing.T) {
 	if body := records[0].Body.GetStringValue(); len(body) > maxValueBytes || !strings.HasSuffix(body, truncatedMarker) {
 		t.Errorf("body is %d bytes, want it cut to %d", len(body), maxValueBytes)
 	}
-	for _, key := range []string{"Stack", "Environment_Information", "Payload"} {
+	for _, key := range []string{"Stack", "EnvironmentInformation", "Payload"} {
 		if value := first[key].(string); len(value) > maxValueBytes || !strings.HasSuffix(value, truncatedMarker) {
 			t.Errorf("%s is %d bytes, want it cut to %d", key, len(value), maxValueBytes)
 		}

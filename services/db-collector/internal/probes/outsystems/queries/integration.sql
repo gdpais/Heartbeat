@@ -1,6 +1,6 @@
 -- The integration log: REST, SOAP and SAP calls, consumed and exposed, written from the OutSystems 11 Log data reference
--- (view oslog_Integration); confirm the column names, types and units against
--- the real logging database before the probe review.
+-- (view oslog_Integration); column names and types checked against the logging-database
+-- survey [3.3].
 --
 -- oslog_Integration is a view over the current week's cycle table and
 -- oslog_Integration_Previous over last week's; the platform switches them every

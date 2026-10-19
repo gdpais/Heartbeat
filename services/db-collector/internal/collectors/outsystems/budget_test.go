@@ -168,7 +168,7 @@ func TestDefaultBatchBudgetApplies(t *testing.T) {
 
 // errorBacklog is an error log of n rows, 10 ms apart from t0 − 10m, with
 // the columns of queries/error.sql, an 8 KB Stack and 2 KB of
-// Environment_Information.  It reads them through readRows, making each row's
+// EnvironmentInformation.  It reads them through readRows, making each row's
 // values as it is scanned, like SQLServerSource.
 type errorBacklog struct{ n int }
 
@@ -181,7 +181,7 @@ func (b errorBacklog) Query(_ context.Context, _ collectormetadata.DatabaseTarge
 		{"Instant", "DATETIME2"}, {"Message", "NVARCHAR"}, {"Severity", "VARCHAR"}, {"Application_Name", "NVARCHAR"},
 		{"Espace_Name", "NVARCHAR"}, {"Module_Name", "NVARCHAR"}, {"Screen", "NVARCHAR"}, {"Action_Name", "NVARCHAR"},
 		{"Request_Key", "NVARCHAR"}, {"Session_Id", "NVARCHAR"}, {"User_Id", "INT"}, {"Username", "NVARCHAR"},
-		{"Tenant_Id", "INT"}, {"Server", "NVARCHAR"}, {"Stack", "NVARCHAR"}, {"Environment_Information", "NVARCHAR"},
+		{"Tenant_Id", "INT"}, {"Server", "NVARCHAR"}, {"Stack", "NVARCHAR"}, {"EnvironmentInformation", "NVARCHAR"},
 	}}
 	first := 0
 	for first < b.n && !b.instant(first).After(params.From) {
@@ -265,7 +265,7 @@ func extractBacklog(t *testing.T, budget int64) (peak uint64, records int) {
 }
 
 // A 5,000-row error batch (the default batch_limit) with 8 KB stacks and 2 KB
-// of Environment_Information is about 50 MiB of row data.  Eight targets
+// of EnvironmentInformation is about 50 MiB of row data.  Eight targets
 // extracting one at once would exceed the chart's 256Mi limit; the byte
 // budget keeps each export well under heapBudget.
 func TestErrorBacklogStaysWithinTheHeapBudget(t *testing.T) {

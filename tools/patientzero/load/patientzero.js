@@ -6,9 +6,10 @@
 //
 // Environment (defaults in brackets):
 //   BASE_URL     PatientZero's address [http://localhost:8080]
-//   PROFILE      smoke | steady | peak | soak [steady]
-//   DURATION     how long the profile holds its load, a k6 duration
-//                [smoke 30s, steady 10m, peak 5m at peak, soak 2h]
+//   PROFILE      smoke | steady | peak | soak | day [steady]
+//   DURATION     how long the profile holds its load, a k6 duration such as
+//                90s, 10m or 1h30m [smoke 30s, steady 10m, peak 5m at peak,
+//                soak 2h, day 24m: the 24 hours of a day, one minute each]
 //   RUN_ID       prefix of every session id, so runs never share one [PROFILE-<start time>]
 //   SEED         seed of every virtual user's choices [1]
 //   THINK_SCALE  multiplies think times and pauses; tests use a small one [1]
@@ -32,7 +33,7 @@ const SEED = parseInt(__ENV.SEED || '1', 10);
 const THINK_SCALE = parseFloat(__ENV.THINK_SCALE || '1');
 const RUN_ID = __ENV.RUN_ID || `${PROFILE}-${new Date().toISOString().replace(/[-:]|\.\d+/g, '')}`;
 
-const DEFAULT_DURATION = { smoke: '30s', steady: '10m', peak: '5m', soak: '2h' };
+const DEFAULT_DURATION = { smoke: '30s', steady: '10m', peak: '5m', soak: '2h', day: '24m' };
 if (!(PROFILE in DEFAULT_DURATION)) {
   throw new Error(`PROFILE must be one of ${Object.keys(DEFAULT_DURATION).join(', ')}, not ${PROFILE}`);
 }
@@ -46,7 +47,47 @@ const shopperUsers = smoke ? 2 : shoppers.users;
 const apiClients = smoke ? 1 : api.clients;
 const apiRate = smoke ? 30 : api.requestsPerMinute;
 
+// seconds reads a k6 duration made of hours, minutes and seconds (1h30m).
+function seconds(duration) {
+  const parts = [...duration.matchAll(/(\d+(?:\.\d+)?)(h|m|s)/g)];
+  if (parts.length === 0 || parts.map((p) => p[0]).join('') !== duration) {
+    throw new Error(`DURATION ${duration} is not made of hours, minutes and seconds`);
+  }
+  return parts.reduce((sum, [, n, unit]) => sum + n * { h: 3600, m: 60, s: 1 }[unit], 0);
+}
+
+// dayStages follows traffic.hourlyRows: one stage per hour of the day, each
+// a 24th of the run, its target the steady value times the hour's share of
+// the average hour (at least min). k6 ramps linearly to each target.
+function dayStages(steady, min) {
+  const rows = traffic.hourlyRows;
+  const average = rows.reduce((sum, n) => sum + n, 0) / rows.length;
+  const hour = `${Math.max(1, Math.round(seconds(DURATION) / rows.length))}s`;
+  return rows.map((n) => ({ duration: hour, target: Math.max(min, Math.round((steady * n) / average)) }));
+}
+
 function scenarios() {
+  if (PROFILE === 'day') {
+    const busiest = Math.max(...traffic.hourlyRows) / (traffic.hourlyRows.reduce((sum, n) => sum + n, 0) / 24);
+    return {
+      shoppers: {
+        executor: 'ramping-vus',
+        exec: 'shopper',
+        startVUs: dayStages(shopperUsers, 1)[23].target,
+        stages: dayStages(shopperUsers, 1),
+        gracefulRampDown: '30s',
+      },
+      api: {
+        executor: 'ramping-arrival-rate',
+        exec: 'apiClient',
+        startRate: dayStages(apiRate, 1)[23].target,
+        timeUnit: '1m',
+        preAllocatedVUs: Math.ceil(apiClients * busiest),
+        maxVUs: Math.ceil(apiClients * busiest) * 4,
+        stages: dayStages(apiRate, 1),
+      },
+    };
+  }
   if (PROFILE === 'peak') {
     const users = shopperUsers;
     const top = users * traffic.peakFactor;

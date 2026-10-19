@@ -5,8 +5,8 @@
 -- values are shared with the other log types' rows: one request appears
 -- across screen, integration, extension, error and general.
 --
--- Stand-in rows until rows copied from the logging database replace them
--- (TODO 3.3); copy them as they are, user ids, sessions and IPs included.
+-- Synthetic rows in the surveyed schema [3.3]: rows from a real logging
+-- database never reach this public repository.
 INSERT INTO dbo.oslog_Extension_2 (Instant, Duration, Action_Name, Session_Id, User_Id, Espace_Id, Tenant_Id, Extension_Id, Executed_By, Error_Id, Request_Key, Espace_Name, Extension_Name, Application_Name, Application_Key, Username) VALUES
     ('2025-09-26T23:30:14.200', 1, N'RenderInvoice', 'm2n4p6q8r0s2t4u6v8w0x2y4', 1042, 17, 0, 44, N'FE-02', '',
      'a1b2c3d4-0006-4a00-8000-000000000006', N'Shop_RW', N'ExtPdf', N'Shop', 'a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d', N'maria.santos');
