@@ -167,13 +167,51 @@ func (s *Server) errorRow(c *call, at time.Time, err error) (oslog.Row, string) 
 	cols["Instant"] = at
 	cols["Session_Id"] = c.Session
 	cols["Message"] = err.Error()
-	cols["Stack"] = fmt.Sprintf("at %s.%s()\nat %s.%s()", c.module.Name, c.action, c.module.Name, c.entryPoint)
+	cols["Stack"] = stack(c, err)
 	cols["Module_Name"] = c.module.Name
 	cols["Server"] = s.FrontEnd
 	cols["Entrypoint_Name"] = c.entryPoint
 	cols["Action_Name"] = c.action
 	cols["EnvironmentInformation"] = fmt.Sprintf("FrontEnd: %s, Module: %s (Id=%d)", s.FrontEnd, c.module.Name, c.module.ID)
 	return oslog.Row{Type: "error", Columns: c.user(cols)}, id
+}
+
+// dataProviderFrames are the innermost frames of a failed database call, as
+// the .NET SQL Server data provider throws it. With them a trace runs past
+// the 2000 characters the error cycle table's Stack keeps, so the writer
+// stores it in oslog_Error_Detail too, as the platform does with long
+// traces.
+var dataProviderFrames = []string{
+	"at System.Data.SqlClient.SqlConnection.OnError(SqlException exception, Boolean breakConnection, Action`1 wrapCloseInAction)",
+	"at System.Data.SqlClient.SqlInternalConnection.OnError(SqlException exception, Boolean breakConnection, Action`1 wrapCloseInAction)",
+	"at System.Data.SqlClient.TdsParser.ThrowExceptionAndWarning(TdsParserStateObject stateObj, Boolean callerHasConnectionLock, Boolean asyncClose)",
+	"at System.Data.SqlClient.TdsParser.TryRun(RunBehavior runBehavior, SqlCommand cmdHandler, SqlDataReader dataStream, BulkCopySimpleResultSet bulkCopyHandler, TdsParserStateObject stateObj, Boolean& dataReady)",
+	"at System.Data.SqlClient.SqlDataReader.TryConsumeMetaData()",
+	"at System.Data.SqlClient.SqlDataReader.get_MetaData()",
+	"at System.Data.SqlClient.SqlCommand.FinishExecuteReader(SqlDataReader ds, RunBehavior runBehavior, String resetOptionsString, Boolean isInternal, Boolean forDescribeParameterEncryption, Boolean shouldCacheForAlwaysEncrypted)",
+	"at System.Data.SqlClient.SqlCommand.RunExecuteReaderTds(CommandBehavior cmdBehavior, RunBehavior runBehavior, Boolean returnStream, Boolean async, Int32 timeout, Task& task, Boolean asyncWrite, Boolean inRetry, SqlDataReader ds, Boolean describeParameterEncryptionRequest)",
+	"at System.Data.SqlClient.SqlCommand.RunExecuteReader(CommandBehavior cmdBehavior, RunBehavior runBehavior, Boolean returnStream, String method, TaskCompletionSource`1 completion, Int32 timeout, Task& task, Boolean& usedCache, Boolean asyncWrite, Boolean inRetry)",
+	"at System.Data.SqlClient.SqlCommand.RunExecuteReader(CommandBehavior cmdBehavior, RunBehavior runBehavior, Boolean returnStream, String method)",
+	"at System.Data.SqlClient.SqlCommand.ExecuteReader(CommandBehavior behavior, String method)",
+	"at System.Data.SqlClient.SqlCommand.ExecuteDbDataReader(CommandBehavior behavior)",
+	"at System.Data.Common.DbCommand.System.Data.IDbCommand.ExecuteReader(CommandBehavior behavior)",
+	"at System.Data.Common.DbDataAdapter.FillInternal(DataSet dataset, DataTable[] datatables, Int32 startRecord, Int32 maxRecords, String srcTable, IDbCommand command, CommandBehavior behavior)",
+	"at System.Data.Common.DbDataAdapter.Fill(DataSet dataSet, Int32 startRecord, Int32 maxRecords, String srcTable, IDbCommand command, CommandBehavior behavior)",
+	"at System.Data.Common.DbDataAdapter.Fill(DataSet dataSet)",
+}
+
+// stack is the error's stack trace: the module's action and entry point,
+// under the data provider's frames when the database failed. A refused
+// order (shop.ErrInvalid) is the action's own.
+func stack(c *call, err error) string {
+	var frames []string
+	if !errors.Is(err, shop.ErrInvalid) {
+		frames = append(frames, dataProviderFrames...)
+	}
+	frames = append(frames,
+		fmt.Sprintf("at %s.%s()", c.module.Name, c.action),
+		fmt.Sprintf("at %s.%s()", c.module.Name, c.entryPoint))
+	return strings.Join(frames, "\n")
 }
 
 // finish writes the call's log rows. A failed write is logged and does not

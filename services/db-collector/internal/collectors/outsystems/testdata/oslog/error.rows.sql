@@ -28,3 +28,12 @@ INSERT INTO dbo.oslog_Error_3 (Id, Instant, Session_Id, User_Id, Espace_Id, Tena
      N'The remote server returned an error: (503) Service Unavailable.',
      N'at ssShop_IS.Actions.Payments_Charge()\r\nat ssShop_RW.Actions.ActionPay()', N'Shop_IS', N'FE-02', NULL,
      'a1b2c3d4-0004-4a00-8000-000000000004', N'Checkout', N'Pay', N'Shop_IS', N'Shop', 'a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d', N'maria.santos');
+-- A stack trace longer than the cycle table's varchar(2000) Stack, and than
+-- varchar(8000): the full trace lives only in the detail table, the cycle
+-- table keeps its first 2000 characters, and the view returns the full one.
+DECLARE @trace varchar(max) = REPLICATE(CAST('at ssShop_RW.Actions.ActionRecalculateTotals(HeContext heContext, Int32 inParamDepth)' + CHAR(13) + CHAR(10) AS varchar(max)), 150);
+INSERT INTO dbo.oslog_Error_3 (Id, Instant, Session_Id, User_Id, Espace_Id, Tenant_Id, Message, Stack, Module_Name, Server, EnvironmentInformation, Request_Key, Entrypoint_Name, Action_Name, Espace_Name, Application_Name, Application_Key, Username) VALUES
+    ('e0000000-0000-4000-8000-000000000006', '2025-09-27T09:30:12.456', 'l9a8b7c6d5e4f3g2h1i0j9k8', 1042, 29, 0,
+     N'Exception of type ''System.InsufficientExecutionStackException'' was thrown.', LEFT(@trace, 2000), N'Shop_RW', N'FE-01', NULL,
+     'a1b2c3d4-0009-4a00-8000-000000000009', N'Checkout', N'RecalculateTotals', N'Shop_RW', N'Shop', 'a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d', N'maria.santos');
+INSERT INTO dbo.oslog_Error_Detail_3 (Id, FullStackTrace) VALUES ('e0000000-0000-4000-8000-000000000006', @trace);

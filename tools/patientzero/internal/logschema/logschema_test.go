@@ -52,8 +52,11 @@ func TestStatementsBuildTenCycleTablesAndTwoViews(t *testing.T) {
 			if !strings.Contains(s, "INDEX ") {
 				t.Errorf("%s: %s has no index on Instant:\n%s", lt.Name, table, s)
 			}
+			if lt.Detail != nil && !strings.Contains(s, "IF OBJECT_ID(N'dbo."+lt.Detail.Table(c)+"', N'U') IS NULL\nBEGIN\nCREATE TABLE dbo."+lt.Detail.Table(c)+" (") {
+				t.Errorf("%s: statement %d does not create %s:\n%s", lt.Name, c, lt.Detail.Table(c), s)
+			}
 			for _, other := range []int{2, 3} {
-				if other != c && strings.Contains(s, fmt.Sprintf("%s_%d", lt.View, other)) {
+				if other != c && regexp.MustCompile(fmt.Sprintf(`oslog_\w+_%d\b`, other)).MatchString(s) {
 					t.Errorf("%s: %s still names the fixture's cycle %d:\n%s", lt.Name, table, other, s)
 				}
 			}
@@ -61,12 +64,17 @@ func TestStatementsBuildTenCycleTablesAndTwoViews(t *testing.T) {
 				t.Errorf("%s: formatting error in %s:\n%s", lt.Name, table, s)
 			}
 		}
-		current, previous := stmts[Cycles], stmts[Cycles+1]
-		if !strings.Contains(current, "CREATE VIEW dbo."+lt.View+" AS") || !strings.HasSuffix(current, "FROM dbo."+lt.Table(InitialCurrent)+"');") {
-			t.Errorf("%s: current view:\n%s", lt.Name, current)
-		}
-		if !strings.Contains(previous, "CREATE VIEW dbo."+lt.PreviousView()+" AS") || !strings.HasSuffix(previous, "FROM dbo."+lt.Table(InitialPrevious)+"');") {
-			t.Errorf("%s: previous view:\n%s", lt.Name, previous)
+		for _, v := range []struct {
+			stmt, view string
+			cycle      int
+		}{{stmts[Cycles], lt.View, InitialCurrent}, {stmts[Cycles+1], lt.PreviousView(), InitialPrevious}} {
+			from := "FROM dbo." + lt.Table(v.cycle) + "');"
+			if lt.Detail != nil {
+				from = fmt.Sprintf("FROM dbo.%s error\n    LEFT JOIN dbo.%s errorDetail ON errorDetail.Id = error.Id');", lt.Table(v.cycle), lt.Detail.Table(v.cycle))
+			}
+			if !strings.HasPrefix(v.stmt, "IF OBJECT_ID(N'dbo."+v.view+"', N'V') IS NULL\n    EXEC (N'CREATE VIEW dbo."+v.view+" AS") || !strings.HasSuffix(v.stmt, from) {
+				t.Errorf("%s: view %s, want it FROM cycle %d:\n%s", lt.Name, v.view, v.cycle, v.stmt)
+			}
 		}
 		if got := stmts[Cycles+2]; got != "GRANT SELECT ON dbo."+lt.View+" TO [oslog_reader];" {
 			t.Errorf("%s: grant %q", lt.Name, got)
@@ -88,11 +96,21 @@ func TestStatementsWithoutReaderGrantNothing(t *testing.T) {
 
 func TestParseRejectsAnUnexpectedShape(t *testing.T) {
 	for name, src := range map[string]string{
-		"no table":     "SELECT 1;",
-		"no cycle":     strings.Replace(screenFixture, "    Cycle int NOT NULL DEFAULT 2,\n", "", 1),
-		"no view":      screenFixture[:strings.Index(screenFixture, "EXEC")],
-		"wrong cycle":  strings.Replace(screenFixture, "DEFAULT 2,", "DEFAULT 7,", 1),
-		"star in view": strings.Replace(screenFixture, "SELECT Instant, Duration, Cycle", "SELECT *", 1),
+		"no table":                   "SELECT 1;",
+		"no cycle":                   strings.Replace(screenFixture, "    Cycle int NOT NULL DEFAULT 2,\n", "", 1),
+		"no view":                    screenFixture[:strings.Index(screenFixture, "EXEC")],
+		"wrong cycle":                strings.Replace(screenFixture, "DEFAULT 2,", "DEFAULT 7,", 1),
+		"star in view":               strings.Replace(screenFixture, "SELECT Instant, Duration, Cycle", "SELECT *", 1),
+		"expression":                 strings.Replace(screenFixture, "Duration,", "Duration * 2 AS Duration,", 1),
+		"unknown column":             strings.Replace(screenFixture, "Duration,", "Elapsed,", 1),
+		"inner join":                 strings.Replace(errorFixture, "LEFT JOIN", "JOIN", 1),
+		"join of another cycle":      strings.Replace(errorFixture, "LEFT JOIN dbo.oslog_Error_Detail_3", "LEFT JOIN dbo.oslog_Error_Detail_2", 1),
+		"join on an unknown column":  strings.Replace(errorFixture, "ON d.Id = e.Id", "ON d.Id = e.Error_Id", 1),
+		"no detail table":            strings.Replace(errorFixture, "CREATE TABLE dbo.oslog_Error_Detail_2", "CREATE TABLE dbo.oslog_Other_2", 1),
+		"detail not returned":        strings.Replace(errorFixture, "CASE WHEN d.FullStackTrace IS NULL THEN e.Stack ELSE d.FullStackTrace END AS Stack", "e.Stack", 1),
+		"mixed values":               strings.Replace(errorFixture, "ELSE d.FullStackTrace", "ELSE d.Id", 1),
+		"plain column of the detail": strings.Replace(errorFixture, "e.Instant,", "d.Id,", 1),
+		"fallback without a length":  strings.Replace(errorFixture, "Stack varchar(2000)", "Stack text", 1),
 	} {
 		if _, err := Parse("screen", src); err == nil {
 			t.Errorf("%s: parsed", name)
@@ -118,6 +136,68 @@ EXEC (N'CREATE VIEW dbo.oslog_Screen AS
     FROM dbo.oslog_Screen_3');
 `
 
+const errorFixture = `CREATE TABLE dbo.oslog_Error_2 (
+    Id varchar(50) NOT NULL,
+    Instant datetime2(3) NOT NULL,
+    Session_Id varchar(50) NOT NULL,
+    Stack varchar(2000) NULL,
+    Cycle int NOT NULL DEFAULT 2,
+    CONSTRAINT PK_oslog_Error_2 PRIMARY KEY CLUSTERED (Id)
+);
+CREATE TABLE dbo.oslog_Error_Detail_2 (
+    Id varchar(50) NOT NULL,
+    FullStackTrace varchar(max) NOT NULL,
+    CONSTRAINT PK_oslog_Error_Detail_2 PRIMARY KEY CLUSTERED (Id)
+);
+EXEC (N'CREATE VIEW dbo.oslog_Error AS
+    SELECT e.Id, e.Instant,
+        CASE WHEN d.FullStackTrace IS NULL THEN e.Stack ELSE d.FullStackTrace END AS Stack,
+        e.Cycle
+    FROM dbo.oslog_Error_3 e
+    LEFT JOIN dbo.oslog_Error_Detail_3 d ON d.Id = e.Id');
+`
+
+func TestParseReadsTheDetailJoin(t *testing.T) {
+	lt, err := Parse("error", errorFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Detail{Name: "oslog_Error_Detail", Key: "Id", On: "Id", Column: "Stack", Value: "FullStackTrace", Fallback: "Stack", Limit: 2000}
+	if lt.Detail == nil || *lt.Detail != want {
+		t.Fatalf("detail %+v, want %+v", lt.Detail, want)
+	}
+	if got := strings.Join(lt.Columns, " "); got != "Id Instant Stack Cycle" {
+		t.Fatalf("columns %s", got)
+	}
+	if !lt.HasColumn("stack") || lt.ColumnType("Stack") != "varchar" || lt.CycleColumn("STACK") != "Stack" || lt.CycleColumn("Id") != "Id" {
+		t.Fatalf("Stack: has %v, type %q, stored in %q", lt.HasColumn("stack"), lt.ColumnType("Stack"), lt.CycleColumn("STACK"))
+	}
+	stmts := lt.Statements("")
+	if want := "IF OBJECT_ID(N'dbo.oslog_Error_Detail_4', N'U') IS NULL\nBEGIN\nCREATE TABLE dbo.oslog_Error_Detail_4 (\n    Id varchar(50) NOT NULL,\n    FullStackTrace varchar(max) NOT NULL,\n    CONSTRAINT PK_oslog_Error_Detail_4 PRIMARY KEY CLUSTERED (Id)\n);\nEND"; !strings.HasSuffix(stmts[4], want) {
+		t.Fatalf("cycle 4:\n%s\nwant it to end in\n%s", stmts[4], want)
+	}
+	// The join's ON may name the cycle table first.
+	swapped, err := Parse("error", strings.Replace(errorFixture, "ON d.Id = e.Id", "ON e.Id = d.Id", 1))
+	if err != nil || swapped.Detail.Key != "Id" || swapped.Detail.On != "Id" {
+		t.Fatalf("ON e.Id = d.Id: %+v, %v", swapped.Detail, err)
+	}
+}
+
+func TestRotateStatementsOnlyMoveTheViews(t *testing.T) {
+	lt, err := Parse("error", errorFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := lt.RotateStatements(5, 4)
+	want := []string{
+		"EXEC (N'CREATE OR ALTER VIEW dbo.oslog_Error AS\n    SELECT e.Id, e.Instant,\n        CASE WHEN d.FullStackTrace IS NULL THEN e.Stack ELSE d.FullStackTrace END AS Stack,\n        e.Cycle\n    FROM dbo.oslog_Error_5 e\n    LEFT JOIN dbo.oslog_Error_Detail_5 d ON d.Id = e.Id');",
+		"EXEC (N'CREATE OR ALTER VIEW dbo.oslog_Error_Previous AS\n    SELECT e.Id, e.Instant,\n        CASE WHEN d.FullStackTrace IS NULL THEN e.Stack ELSE d.FullStackTrace END AS Stack,\n        e.Cycle\n    FROM dbo.oslog_Error_4 e\n    LEFT JOIN dbo.oslog_Error_Detail_4 d ON d.Id = e.Id');",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 func TestColumnTypes(t *testing.T) {
 	types, err := Load(fixtureDir)
 	if err != nil {
@@ -131,6 +211,7 @@ func TestColumnTypes(t *testing.T) {
 		{"screen", "Instant", "datetime2"},
 		{"screen", "request_key", "varchar"},
 		{"error", "Id", "varchar"},
+		{"error", "Stack", "varchar"},
 		{"integration", "Is_Expose", "bit"},
 		{"integration", "Cycle", "int"},
 		{"mobile_request", "Error_Id", "varchar"},

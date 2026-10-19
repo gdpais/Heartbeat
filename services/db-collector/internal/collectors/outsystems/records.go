@@ -45,9 +45,10 @@ const (
 )
 
 // maxValueBytes caps the body and each string attribute of a record.  Stack
-// and EnvironmentInformation are unbounded text and can run to hundreds of
-// KiB; Loki keeps attributes as structured metadata, at most 64 KB per line
-// by default, so two capped values and the short ones still fit.
+// is unbounded text (oslog_Error returns oslog_Error_Detail's varchar(max)
+// FullStackTrace for long traces) and can run to hundreds of KiB; Loki keeps
+// attributes as structured metadata, at most 64 KB per line by default, so
+// two capped values and the short ones still fit.
 const maxValueBytes = 16 << 10
 
 // truncatedMarker ends a value cut to maxValueBytes.

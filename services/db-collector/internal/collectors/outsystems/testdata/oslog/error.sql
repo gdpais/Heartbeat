@@ -12,12 +12,19 @@
 -- nullability, defaults and indexes are the surveyed database's, except:
 -- - datetime2 precision was not surveyed; (3) is inferred from the
 --   millisecond timestamps the surveyed database held;
--- - the platform's views are SELECT * over one cycle table; these list the
---   columns, which is the same thing and lets PatientZero read them;
--- - Cycle has a default, so an insert need not name it.
--- - the platform's oslog_Error view also left-joins oslog_Error_Detail_<cycle>
---   and returns its FullStackTrace as Stack when there is one; here Stack
---   is the cycle table's own.
+-- - the views list their columns, which lets PatientZero read them (the
+--   other log types' platform views are SELECT * over one cycle table);
+-- - Cycle has a default, so an insert need not name it;
+-- - what the platform leaves in the cycle table's Stack when the full trace
+--   is in the detail table was not surveyed; the rows put its first 2000
+--   characters there.
+--
+-- As on the platform, oslog_Error left-joins oslog_Error_Detail_<cycle>,
+-- which holds the full stack trace of an error whose trace is longer than
+-- the cycle table's Stack, and returns that as Stack. The view's Stack is
+-- computed, so an error row cannot be inserted through the view: a writer
+-- inserts into the current cycle table and, for a long trace, into its
+-- detail table.
 --
 -- CREATE VIEW must be alone in its batch and the tests run this file as one
 -- batch, so the views are created through EXEC.
@@ -44,6 +51,11 @@ CREATE TABLE dbo.oslog_Error_2 (
     CONSTRAINT PK_oslog_Error_2 PRIMARY KEY CLUSTERED (Id)
 );
 CREATE NONCLUSTERED INDEX idx_oslog_Error_2_espace_id ON dbo.oslog_Error_2 (Instant, Espace_Id);
+CREATE TABLE dbo.oslog_Error_Detail_2 (
+    Id varchar(50) NOT NULL,
+    FullStackTrace varchar(max) NOT NULL,
+    CONSTRAINT PK_oslog_Error_Detail_2 PRIMARY KEY CLUSTERED (Id)
+);
 CREATE TABLE dbo.oslog_Error_3 (
     Id varchar(50) NOT NULL,
     Instant datetime2(3) NOT NULL,
@@ -67,9 +79,20 @@ CREATE TABLE dbo.oslog_Error_3 (
     CONSTRAINT PK_oslog_Error_3 PRIMARY KEY CLUSTERED (Id)
 );
 CREATE NONCLUSTERED INDEX idx_oslog_Error_3_espace_id ON dbo.oslog_Error_3 (Instant, Espace_Id);
+CREATE TABLE dbo.oslog_Error_Detail_3 (
+    Id varchar(50) NOT NULL,
+    FullStackTrace varchar(max) NOT NULL,
+    CONSTRAINT PK_oslog_Error_Detail_3 PRIMARY KEY CLUSTERED (Id)
+);
 EXEC (N'CREATE VIEW dbo.oslog_Error AS
-    SELECT Id, Instant, Session_Id, User_Id, Espace_Id, Tenant_Id, Message, Stack, Module_Name, Server, Cycle, EnvironmentInformation, Entrypoint_Name, Action_Name, Request_Key, Espace_Name, Application_Name, Application_Key, Username
-    FROM dbo.oslog_Error_3');
+    SELECT error.Id, error.Instant, error.Session_Id, error.User_Id, error.Espace_Id, error.Tenant_Id, error.Message,
+        CASE WHEN errorDetail.FullStackTrace IS NULL THEN error.Stack ELSE errorDetail.FullStackTrace END AS Stack,
+        error.Module_Name, error.Server, error.Cycle, error.EnvironmentInformation, error.Entrypoint_Name, error.Action_Name, error.Request_Key, error.Espace_Name, error.Application_Name, error.Application_Key, error.Username
+    FROM dbo.oslog_Error_3 error
+    LEFT JOIN dbo.oslog_Error_Detail_3 errorDetail ON errorDetail.Id = error.Id');
 EXEC (N'CREATE VIEW dbo.oslog_Error_Previous AS
-    SELECT Id, Instant, Session_Id, User_Id, Espace_Id, Tenant_Id, Message, Stack, Module_Name, Server, Cycle, EnvironmentInformation, Entrypoint_Name, Action_Name, Request_Key, Espace_Name, Application_Name, Application_Key, Username
-    FROM dbo.oslog_Error_2');
+    SELECT error.Id, error.Instant, error.Session_Id, error.User_Id, error.Espace_Id, error.Tenant_Id, error.Message,
+        CASE WHEN errorDetail.FullStackTrace IS NULL THEN error.Stack ELSE errorDetail.FullStackTrace END AS Stack,
+        error.Module_Name, error.Server, error.Cycle, error.EnvironmentInformation, error.Entrypoint_Name, error.Action_Name, error.Request_Key, error.Espace_Name, error.Application_Name, error.Application_Key, error.Username
+    FROM dbo.oslog_Error_2 error
+    LEFT JOIN dbo.oslog_Error_Detail_2 errorDetail ON errorDetail.Id = error.Id');

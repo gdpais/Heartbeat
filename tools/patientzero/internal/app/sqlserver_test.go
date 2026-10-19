@@ -54,8 +54,15 @@ func TestLiveSQLServer(t *testing.T) {
 		(SELECT COUNT(*) FROM sys.views WHERE name LIKE 'oslog[_]%')`).Scan(&tables, &views); err != nil {
 		t.Fatal(err)
 	}
-	if tables != len(types)*logschema.Cycles || views != len(types)*2 {
-		t.Fatalf("%d cycle tables and %d views, want %d and %d", tables, views, len(types)*logschema.Cycles, len(types)*2)
+	wantTables := 0
+	for _, lt := range types {
+		wantTables += logschema.Cycles
+		if lt.Detail != nil {
+			wantTables += logschema.Cycles
+		}
+	}
+	if tables != wantTables || views != len(types)*2 {
+		t.Fatalf("%d cycle and detail tables and %d views, want %d and %d", tables, views, wantTables, len(types)*2)
 	}
 
 	schema := oslog.NewSchema(types)
@@ -123,6 +130,49 @@ func TestLiveSQLServer(t *testing.T) {
 	for _, col := range []string{"Session_Id", "Username", "Client_IP"} {
 		if got["screen"][0][col] == nil || got["mobile_request"][0][col] == nil || got["general"][0][col] == nil {
 			t.Errorf("%s missing from the screen, mobile request or general row", col)
+		}
+	}
+
+	// A trace longer than the error cycle table's Stack goes into the
+	// current cycle's detail table too, and the collector's query returns it
+	// in full through the view. A rotation only moves the views; the next
+	// error goes into the tables of the cycle the current view now reads.
+	errType := schema["error"]
+	trace := strings.Repeat("at PatientZero_App.ActionRecalculateTotals(HeContext heContext)\n", 150)
+	for i, cycle := range []int{logschema.InitialCurrent, logschema.InitialCurrent + 1} {
+		if i > 0 {
+			for _, stmt := range errType.RotateStatements(cycle, cycle-1) {
+				if _, err := logging.ExecContext(ctx, stmt); err != nil {
+					t.Fatalf("rotation: %v", err)
+				}
+			}
+		}
+		id, key := newGUID(), newGUID()
+		row := oslog.Row{Type: "error", Columns: map[string]any{
+			"Id": id, "Instant": time.Now(), "Session_Id": "", "User_Id": 0, "Espace_Id": appModule.ID, "Tenant_Id": TenantID,
+			"Message": "Insufficient stack to continue executing the program safely.", "Stack": trace,
+			"Module_Name": appModule.Name, "Server": "FE-PZ-1", "Request_Key": key, "Application_Name": Application,
+		}}
+		if err := s.Logs.Write(ctx, []oslog.Row{row}); err != nil {
+			t.Fatalf("cycle %d: %v", cycle, err)
+		}
+		var stored, full int
+		if err := logging.QueryRow(fmt.Sprintf("SELECT (SELECT DATALENGTH(Stack) FROM dbo.%s WHERE Id = @p1), (SELECT DATALENGTH(FullStackTrace) FROM dbo.%s WHERE Id = @p1)",
+			errType.Table(cycle), errType.Detail.Table(cycle)), id).Scan(&stored, &full); err != nil {
+			t.Fatalf("cycle %d: %v", cycle, err)
+		}
+		if stored != errType.Detail.Limit || full != len(trace) {
+			t.Fatalf("cycle %d: %s.Stack holds %d characters and %s.FullStackTrace %d; want %d and %d",
+				cycle, errType.Table(cycle), stored, errType.Detail.Table(cycle), full, errType.Detail.Limit, len(trace))
+		}
+		var read []map[string]any
+		for _, r := range collect(t, logging, "error", from, time.Now().UTC().Add(time.Minute)) {
+			if r["Request_Key"] == key {
+				read = append(read, r)
+			}
+		}
+		if len(read) != 1 || read[0]["Stack"] != trace {
+			t.Fatalf("cycle %d: the collector's query returned %d rows for the long trace, want 1 with all %d characters of it", cycle, len(read), len(trace))
 		}
 	}
 }

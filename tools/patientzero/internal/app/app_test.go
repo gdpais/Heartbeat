@@ -234,6 +234,13 @@ func TestFailedRequestsWriteALinkedErrorRow(t *testing.T) {
 			if errRow["Message"] == "" || errRow["Entrypoint_Name"] == "" {
 				t.Errorf("error row %v", errRow)
 			}
+			// A database failure's trace is longer than the error cycle
+			// table keeps, so it goes to the detail table; a refused order's
+			// is not.
+			detail := s.Schema["error"].Detail
+			if long := len(errRow["Stack"].(string)) > detail.Limit; long != (store.fail != nil) {
+				t.Errorf("Stack of %d characters with the store failing %v:\n%s", len(errRow["Stack"].(string)), store.fail != nil, errRow["Stack"])
+			}
 			for _, typ := range []string{"mobile_request", "integration", "general"} {
 				for _, row := range rec.byType()[typ] {
 					if ref := row["Error_Id"]; ref != errRow["Id"] {

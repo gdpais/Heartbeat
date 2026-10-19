@@ -149,22 +149,32 @@ k6 run -e BASE_URL=http://localhost:8080 -e PROFILE=smoke tools/patientzero/load
   `patientzero_log` it is a member of `heartbeat_oslog_reader`, which has
   `SELECT` on the log views only: what a real logging database grants it.
 - Log rows are inserted through the current week's views, so a rotation
-  only has to move the views. A request's rows across log types commit in one
-  transaction.
+  only has to move the views. The error view's `Stack` is computed from a
+  join with `oslog_Error_Detail_<cycle>`, so error rows go into the cycle
+  table that `oslog_Error` reads, looked up in
+  `sys.sql_expression_dependencies` on every write; a trace longer than the
+  cycle table's `Stack` (2000 characters) also goes, whole, into that
+  cycle's detail table. A database failure's trace is that long. A
+  request's rows across log types commit in one transaction.
 
 ## One logging schema
 
 The logging schema is not defined here. PatientZero reads the db-collector's
 fixtures,
 [`services/db-collector/internal/collectors/outsystems/testdata/oslog/<log type>.sql`](../../services/db-collector/internal/collectors/outsystems/testdata/oslog/),
-takes the first cycle table and the current view's columns of each, and
-builds the ten cycle tables and two views from them
+takes the first cycle table and the current view of each (the error
+view's join with its detail table included), and builds the ten cycle
+tables, the error log's ten detail tables and the two views from them
 ([`internal/logschema`](internal/logschema/logschema.go)). The fixtures are
 the DDL of a surveyed OutSystems 11 logging database, so when they change,
 PatientZero follows without a change here. A fixture whose shape it cannot
 read (no cycle table with a `Cycle` default, no current view with a column
-list) fails `make test`, and a column PatientZero writes that the fixture no
-longer has fails the entry-point tests.
+list over it, or over it left-joined to a detail table) fails `make test`,
+and a column PatientZero writes that the fixture no longer has fails the
+entry-point tests. Existing tables and views are kept, so a logging
+database built from older fixtures keeps their schema: `make
+patientzero-down` drops it and the next `make patientzero-up` builds the
+current one.
 
 The image copies the fixtures to `/app/oslog`
 ([`Dockerfile`](Dockerfile), built from the repository root);

@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -168,26 +169,79 @@ EXEC sys.sp_executesql @sql;`).Scan(&count)
 	return count
 }
 
+// viewTables returns the tables a view reads: its cycle table, and for
+// oslog_Error the detail table it joins too.
+func viewTables(t *testing.T, db *sql.DB, view string) []string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	rows, err := db.QueryContext(ctx, `SELECT referenced_entity_name FROM sys.sql_expression_dependencies WHERE referencing_id = OBJECT_ID(@view)`,
+		sql.Named("view", "dbo."+view))
+	if err != nil {
+		t.Fatalf("tables behind dbo.%s: %v", view, err)
+	}
+	defer rows.Close()
+	var tables []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			t.Fatal(err)
+		}
+		tables = append(tables, table)
+	}
+	if err := rows.Err(); err != nil || len(tables) == 0 {
+		t.Fatalf("tables behind dbo.%s: %v %v", view, tables, err)
+	}
+	return tables
+}
+
+// cycleTable returns the cycle table behind the log type's view, for
+// example oslog_Error_3 behind oslog_Error.
+func cycleTable(t *testing.T, db *sql.DB, logView, view string) string {
+	t.Helper()
+	cycle := regexp.MustCompile(`^` + regexp.QuoteMeta(logView) + `_\d+$`)
+	for _, table := range viewTables(t, db, view) {
+		if cycle.MatchString(table) {
+			return table
+		}
+	}
+	t.Fatalf("no %s_<cycle> table behind dbo.%s", logView, view)
+	return ""
+}
+
 // rotateLogTables does what the platform does every Friday at 23:45: the
 // current week's view moves to an empty cycle table and the previous week's
 // view to the table the current one used.  With two fixture tables the
-// views swap.
+// views swap: each view's definition is kept, with the other view's cycle
+// in its table names (the cycle table, and the detail table it joins).
 func rotateLogTables(t *testing.T, db *sql.DB, view string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	tables := map[string]string{}
-	for _, name := range []string{view, view + "_Previous"} {
-		var table string
-		if err := db.QueryRowContext(ctx, `SELECT referenced_entity_name FROM sys.sql_expression_dependencies WHERE referencing_id = OBJECT_ID(@view)`,
-			sql.Named("view", "dbo."+name)).Scan(&table); err != nil {
-			t.Fatalf("table behind dbo.%s: %v", name, err)
+	views := []string{view, view + "_Previous"}
+	suffix := regexp.MustCompile(`_\d+$`)
+	tables := map[string][]string{}
+	cycles := map[string]string{}
+	definitions := map[string]string{}
+	for _, name := range views {
+		tables[name] = viewTables(t, db, name)
+		cycles[name] = suffix.FindString(cycleTable(t, db, view, name))
+		var definition string
+		if err := db.QueryRowContext(ctx, `SELECT OBJECT_DEFINITION(OBJECT_ID(@view))`, sql.Named("view", "dbo."+name)).Scan(&definition); err != nil {
+			t.Fatalf("definition of dbo.%s: %v", name, err)
 		}
-		tables[name] = table
+		definitions[name] = definition
 	}
-	for name, table := range map[string]string{view: tables[view+"_Previous"], view + "_Previous": tables[view]} {
-		exec(t, db, `DECLARE @sql nvarchar(max) = N'ALTER VIEW dbo.' + QUOTENAME(@view) + N' AS SELECT * FROM dbo.' + QUOTENAME(@table);
-EXEC sys.sp_executesql @sql;`, sql.Named("view", name), sql.Named("table", table))
+	for i, name := range views {
+		var pairs []string
+		for _, table := range tables[name] {
+			pairs = append(pairs, table, suffix.ReplaceAllLiteralString(table, cycles[views[1-i]]))
+		}
+		definition := strings.NewReplacer(pairs...).Replace(definitions[name])
+		if !strings.HasPrefix(definition, "CREATE VIEW ") {
+			t.Fatalf("definition of dbo.%s: %q", name, definition)
+		}
+		exec(t, db, `EXEC sys.sp_executesql @definition`, sql.Named("definition", "ALTER VIEW "+strings.TrimPrefix(definition, "CREATE VIEW ")))
 	}
 }
 
@@ -226,6 +280,9 @@ func TestLogQueriesAgainstSQLServer(t *testing.T) {
 				if len(batch.Rows) != want {
 					t.Fatalf("query returned %d rows, want the %d rows of %s.rows.sql (the current and the previous week's tables)", len(batch.Rows), want, logType)
 				}
+				if logType == errorLogType {
+					checkLongStack(t, sa, batch)
+				}
 			}
 		})
 	}
@@ -234,6 +291,29 @@ func TestLogQueriesAgainstSQLServer(t *testing.T) {
 	_, err := source.Query(ctx, target, "SELECT TOP (@limit) Id FROM dbo.not_granted WHERE @from < @to", QueryParams{From: from, To: to, Limit: 1})
 	if err == nil || !strings.Contains(err.Error(), "SELECT permission was denied") {
 		t.Fatalf("query of a table that was not granted: %v; want a permission error", err)
+	}
+}
+
+// checkLongStack checks that the error query returns the stack trace that
+// lives only in oslog_Error_Detail in full: past the cycle table's 2000
+// characters, and past varchar(8000).
+func checkLongStack(t *testing.T, sa *sql.DB, batch Batch) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var full string
+	if err := sa.QueryRowContext(ctx, `SELECT FullStackTrace FROM dbo.oslog_Error_Detail_3`).Scan(&full); err != nil {
+		t.Fatalf("detail row: %v", err)
+	}
+	stack := slices.IndexFunc(batch.Columns, func(c Column) bool { return c.Name == columnStack })
+	var long []string
+	for _, row := range batch.Rows {
+		if text := optionalText(row[stack]); len(text) > 2000 {
+			long = append(long, text)
+		}
+	}
+	if len(full) <= 8000 || len(long) != 1 || long[0] != full {
+		t.Fatalf("the query returned %d stacks longer than 2000 characters, want the detail table's %d-character trace", len(long), len(full))
 	}
 }
 
@@ -382,8 +462,9 @@ func TestExtractionAgainstSQLServer(t *testing.T) {
 	setupFixtures(t, server)
 	sa := server.sa(t, fixtureDatabase)
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	// insertInto writes a row through a view (dbo.oslog_Error is the current
-	// week's cycle table) or into a cycle table by name.
+	// insertInto writes a row into a cycle table by name; insert into the
+	// one dbo.oslog_Error reads.  The view computes Stack from the detail
+	// table, so rows cannot be inserted through it.
 	insertInto := func(object, key string, offset time.Duration) {
 		t.Helper()
 		exec(t, sa, `DECLARE @sql nvarchar(max) = N'INSERT INTO dbo.' + QUOTENAME(@object) + N' (Id, Instant, Session_Id, User_Id, Espace_Id, Tenant_Id, Message, Stack, Module_Name, Server, Espace_Name, Request_Key)
@@ -393,7 +474,7 @@ EXEC sys.sp_executesql @sql, N'@instant datetime2(3), @message varchar(2000), @k
 	}
 	insert := func(key string, offset time.Duration) {
 		t.Helper()
-		insertInto("oslog_Error", key, offset)
+		insertInto(cycleTable(t, sa, "oslog_Error", "oslog_Error"), key, offset)
 	}
 	ms := time.Millisecond
 	insert("a", time.Minute)
@@ -469,13 +550,11 @@ EXEC sys.sp_executesql @sql, N'@instant datetime2(3), @message varchar(2000), @k
 	// dbo.oslog_Error_Previous.  A row of the old week committed after the
 	// rotation, within the lag, is only in the previous table; the query
 	// reads both, so it arrives with the first row of the new week.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	var oldTable string
-	if err := sa.QueryRowContext(ctx, `SELECT referenced_entity_name FROM sys.sql_expression_dependencies WHERE referencing_id = OBJECT_ID('dbo.oslog_Error')`).Scan(&oldTable); err != nil {
-		t.Fatalf("table behind dbo.oslog_Error: %v", err)
-	}
-	cancel()
+	oldTable := cycleTable(t, sa, "oslog_Error", "oslog_Error")
 	rotateLogTables(t, sa, "oslog_Error")
+	if got := cycleTable(t, sa, "oslog_Error", "oslog_Error_Previous"); got != oldTable {
+		t.Fatalf("after the rotation dbo.oslog_Error_Previous reads %s, want %s", got, oldTable)
+	}
 	insertInto(oldTable, "before-rotation", 12*time.Minute+30*time.Second)
 	insert("after-rotation", 13*time.Minute)
 	now = now.Add(2 * time.Minute)
