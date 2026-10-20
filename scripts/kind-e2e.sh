@@ -311,16 +311,20 @@ step "OutSystems logs are extracted to Loki (outsystems_logs)"
 # readable by the collector's login through SELECT on the two views only, with
 # rows from a few minutes ago.
 oslog_login=$(sed -n 's/^HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV=\([^:]*\):.*/\1/p' "$SQLSERVER_ENV_FILE")
-{
+# The surveyed schema has no defaults for Id and the other NOT NULL columns,
+# so the rows name them all. They go into oslog_Error_3, the cycle table the
+# oslog_Error view reads, as the platform writes them.
+fixture_output=$({
 	printf 'CREATE DATABASE heartbeat_oslog_e2e;\nGO\nUSE heartbeat_oslog_e2e;\nGO\n'
 	cat services/db-collector/internal/collectors/outsystems/testdata/oslog/error.sql
 	printf '\nGO\nCREATE USER [%s] FOR LOGIN [%s];\nGRANT SELECT ON dbo.oslog_Error TO [%s];\nGRANT SELECT ON dbo.oslog_Error_Previous TO [%s];\n' "$oslog_login" "$oslog_login" "$oslog_login" "$oslog_login"
-	printf '%s\n' "INSERT INTO dbo.oslog_Error (Instant, Message, Espace_Name, Request_Key) VALUES" \
-		"(DATEADD(SECOND, -180, GETUTCDATE()), N'e2e order 1 failed', N'E2eShop', 'e2e-1')," \
-		"(DATEADD(SECOND, -120, GETUTCDATE()), N'e2e order 2 failed', N'E2eShop', 'e2e-2')," \
-		"(DATEADD(SECOND, -120, GETUTCDATE()), N'e2e order 3 failed', N'E2eShop', 'e2e-3');" GO
+	printf '%s\n' "INSERT INTO dbo.oslog_Error_3 (Id, Instant, Session_Id, User_Id, Espace_Id, Tenant_Id, Message, Module_Name, Server, Espace_Name, Request_Key) VALUES" \
+		"('e2e-error-1', DATEADD(SECOND, -180, GETUTCDATE()), '', 0, 1, 0, 'e2e order 1 failed', 'E2eShop', 'e2e', 'E2eShop', 'e2e-1')," \
+		"('e2e-error-2', DATEADD(SECOND, -120, GETUTCDATE()), '', 0, 1, 0, 'e2e order 2 failed', 'E2eShop', 'e2e', 'E2eShop', 'e2e-2')," \
+		"('e2e-error-3', DATEADD(SECOND, -120, GETUTCDATE()), '', 0, 1, 0, 'e2e order 3 failed', 'E2eShop', 'e2e', 'E2eShop', 'e2e-3');" GO
 } | SQLCMDPASSWORD=$password docker exec -i -e SQLCMDPASSWORD "$SQL_CONTAINER" \
-	/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b >/dev/null
+	/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b 2>&1) ||
+	fail "loading the oslog_Error fixture failed: $fixture_output"
 cp "$WORK/e2e.yaml" "$WORK/e2e-oslogs.yaml"
 cat >>"$WORK/e2e-oslogs.yaml" <<EOF
     - id: oslogs-e2e
