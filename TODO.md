@@ -267,11 +267,10 @@ follow the ingest path.
 - [x] Decide the ingest path and where the queries live ([ADR 0008](docs/architecture/decisions/0008-outsystems-11-log-extraction.md)); query contract in [`services/db-collector/internal/probes/outsystems/queries/`](services/db-collector/internal/probes/outsystems/queries/README.md)
 - [x] Write the log-type queries (`general`, `error`, `screen`, `integration`, `extension`, `mobile_request`, `request_event`, `cyclic_job`) for Traditional and Reactive apps, from the OutSystems 11 Log data reference, with a fixture and rows each
 - [x] Review each log-type query with the probe checklist against the surveyed schema (below): one read-only `SELECT` over the two weekly views each, now cut to `@limit` rows per view before the union, so a backlog no longer costs a read of the whole range (a SQL Server test holds it)
-- [ ] Measure the eight queries' cost on a production-sized logging database (the checklist's last step; the SQL Server tests use 100,000 synthetic rows per log type)
+- [x] Measure the eight queries' cost on a production-sized logging database (the checklist's last step): no production database before go-live, so `make patientzero-scale` fills a test one, `patientzero_scale`, with two weeks of the surveyed installation's log (9.8 M rows, 3.0 GB) and measures each query over the busiest minute and 1 h, 1 day and 7 day backlogs; the slowest took 160 ms (error, 7 day backlog) against a 10 s probe deadline ([results](tools/patientzero/README.md#production-sized-logging-database))
 - [x] Answer the [open questions](docs/architecture/application-observability.md#open-questions) from the OutSystems 11 docs: `Instant` is the start for screen and timer rows and the end for integration and mobile request rows; `Request_Key` is on all eight current log types; ten weekly cycle tables behind `oslog_<TYPE>` and `oslog_<TYPE>_Previous`, rotated Friday 23:45; the time zone is the servers' own
 - [x] Read the current and the previous week's views in every query (no Friday gap) and allow a `lag` per log type for the start-stamped ones (`probes[].lag`); the SQL Server tests load `<log type>.rows.sql` and replay a rotation
 - [x] Run [`scripts/outsystems-log-survey.sql`](scripts/outsystems-log-survey.sql) against a real logging database (read only; [ADR 0010](docs/architecture/decisions/0010-patientzero-test-application.md)) and replace the stand-in fixtures with its DDL; the rows stay synthetic. Answers in the [open questions](docs/architecture/application-observability.md#open-questions): `Duration` in milliseconds for screen, integration and extension, about 3,800 rows a minute at peak (the default `batch_limit` covers it)
-- [ ] On a live logging database (the surveyed one was a stale extract): the installation's time zone (`log_timezone`), entry-point row coverage, the mobile request and cyclic job `Duration` units, and the `screen` and `cyclic_job` lags from the longest screen request and timer
 - [x] The real `oslog_Error` view left-joins `oslog_Error_Detail` and returns its `FullStackTrace` as `Stack`: the fixture has the detail tables and the join, with a trace that lives only in the detail table; PatientZero writes error rows into the current cycle table and traces longer than its `Stack` into the detail table
 - [x] Config: `outsystems_logs` kind in the schema and Go config (`probes` select log types; `scrape_interval` is the poll interval; `lag`, `batch_limit`, `initial_lookback`, `log_timezone`)
 - [x] Extractor: watermarked reads per target and log type, full-batch tie handling, watermark file on a persistent volume, same session settings, deadline, backoff and readiness as the `sqlserver` kind
@@ -280,7 +279,7 @@ follow the ingest path.
 - [x] Add `outsystems.log_type` to Loki's index labels
 - [x] Extraction self-metrics: rows, lag, export failures, OutSystems log delay
 - [x] Derived metrics from the [catalog](docs/architecture/application-observability.md#derived-metrics), with bounded labels; recording rules, SLO burn-rate alerts and promtool tests; a Go test fails when a rule, dashboard or doc names an OutSystems metric the collector does not export
-- [ ] Active users and sessions, and new error fingerprints: left out of the collector on purpose ([why](docs/architecture/application-observability.md#not-built-on-purpose)); active users come from Loki in the dashboards [10.4], new fingerprints need a persisted fingerprint set first
+- [x] Active users and sessions, and new error fingerprints: left out of the collector on purpose ([why](docs/architecture/application-observability.md#not-built-on-purpose)); active users come from Loki in the dashboards [10.4], new fingerprints need a persisted fingerprint set first. `make patientzero-scale` simulates them at production cardinality (4,829 users and 13,871 sessions a week, 40 recurring error kinds and 3 new ones a day) with their known answers in `expected.json`
 - [x] Decide the OTel gateway's future: removed with its JSON event endpoint and alert sink; Alertmanager's default receiver has no integrations; push sources go to the OTel Collector over OTLP, mapped with OTTL ([ADR 0009](docs/architecture/decisions/0009-remove-the-otel-gateway.md))
 
 ### 3.4 Generic telemetry expansion
@@ -293,7 +292,6 @@ follow the ingest path.
 Design: [request traces](docs/architecture/application-observability.md#request-traces).
 
 - [x] Step A: request timeline dashboard across log types by `Request_Key`, with the share of each log type's rows that carry it (*OutSystems Request Timeline*)
-- [ ] Read that share on a real installation's logs and record it per log type in the [request traces](docs/architecture/application-observability.md#request-traces) design
 - [ ] Step B, after step A and the trace store [3.6]: synthesize OTLP spans from `Request_Key` in the extractor, with trace IDs derived from the key and logs ↔ traces links
 
 ### 3.6 OTLP trace ingest
@@ -584,6 +582,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Build OutSystems errors dashboard
 - [x] Build OutSystems latency dashboard
 - [x] Enable drill-down overview -> latency/errors -> Loki ([dashboards](docs/architecture/application-observability.md#dashboards))
+- [ ] Check the active users and sessions panels and the top fingerprints at production cardinality: a collector target on `patientzero_scale`, compared with its `expected.json` ([production-sized logging database](tools/patientzero/README.md#production-sized-logging-database)); within Loki's `max_query_series` of 20000?
 
 ---
 
