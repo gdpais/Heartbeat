@@ -134,12 +134,85 @@ Against PatientZero running anywhere else, for example a port-forward:
 k6 run -e BASE_URL=http://localhost:8080 -e PROFILE=smoke tools/patientzero/load/patientzero.js
 ```
 
+## Production-sized logging database
+
+A production logging database cannot be load-tested before go-live, so a
+test one is filled to the same size: two weeks of the surveyed
+installation's log, written straight into the cycle tables of
+`patientzero_scale` on the sandbox SQL Server, then every collector query
+measured against it ([`cmd/oslog-scale`](cmd/oslog-scale/main.go),
+[`internal/scale`](internal/scale/profile.go)). PatientZero on kind and its
+`patientzero_log` are not touched.
+
+```bash
+make patientzero-scale                    # generate, then measure (about 2 minutes)
+make patientzero-scale SCALE=2            # twice the surveyed installation
+make patientzero-scale-measure            # measure again, on the data as it is
+make patientzero-scale-down               # drop patientzero_scale
+```
+
+- **What it writes.** The previous week (full) and the current week up to
+  now, each in the cycle table its view reads, with the surveyed week's
+  volume and shape: 4.51 M screen, 1.43 M integration and 160 k extension
+  rows a week, about 72 k slow-SQL rows, the hourly curve, a busiest minute
+  about 3.8 times the average one. The survey's extract held no other
+  general rows (here 90 k a week, 80% of them slow SQL), no errors (0.5% of
+  requests), timers (20, every 10 minutes), mobile requests or request
+  events (none): those are assumptions, in
+  [`Surveyed`](internal/scale/profile.go).
+- **Users, sessions and errors.** 4,829 users and 13,871 sessions a week,
+  every user in every week; requests go to the sessions open at the time.
+  Errors come from 40 recurring kinds with a long tail, and 3 new kinds a
+  day after the first, at known times; a quarter of the kinds are database
+  failures whose trace goes to `oslog_Error_Detail`. Each kind is one
+  `error.fingerprint`.
+- **Known answers.** `.tmp/patientzero-scale/expected.json`: per week, day
+  and hour, the requests, rows per log type, distinct users and sessions,
+  error rows, error kinds and new error kinds; the busiest minute; every
+  error kind and when it was first seen. Dashboards that count distinct
+  users or sessions in Loki, or fingerprints, can be checked against it once
+  a collector reads `patientzero_scale` (its login is in the reader role, as
+  in `patientzero_log`).
+- **The measurement.** `.tmp/patientzero-scale/report.md`: the rows and
+  space per log type, then each query, run as the collector runs it
+  (`batch_limit` 5000, `datetime2` bounds), over the busiest minute and
+  backlogs of an hour, a day and a week (an outage; a week is
+  `initial_lookback`'s limit), with logical reads, CPU and elapsed time.
+  `SCALE_SEED` and `SCALE_END` (RFC 3339) make a run reproducible.
+- **Memory.** Loading and reading 3 GB fills the sandbox SQL Server's
+  buffer pool, and SQL Server keeps it after
+  `make patientzero-scale-down`. On Docker Desktop's default 8 GB, next to
+  kind, that starves the disposable server of `make test-sqlserver` (its
+  tests time out). Restart the sandbox afterwards
+  (`docker restart heartbeat-sqlserver-dev`; its data stays) or give Docker
+  more memory.
+
+On 2026-10-20, at `SCALE=1` (9.8 M rows, 3.0 GB, generated in 53 s), no
+query took more than 160 ms, against a probe deadline of half the scrape
+interval and at most 10 s:
+
+| Log type | Busiest minute | 1 h backlog | 1 day backlog | 7 day backlog |
+| --- | ---: | ---: | ---: | ---: |
+| `screen` | 6 ms, 1,871 reads | 17 ms, 5,024 | 17 ms, 5,037 | 29 ms, 10,801 |
+| `integration` | 4 ms, 2,340 | 34 ms, 20,273 | 34 ms, 20,296 | 59 ms, 41,813 |
+| `extension` | 0 ms, 76 | 4 ms, 1,097 | 16 ms, 5,254 | 23 ms, 10,723 |
+| `general` | 0 ms, 33 | 4 ms, 608 | 36 ms, 5,361 | 45 ms, 10,571 |
+| `error` | 0 ms, 144 | 4 ms, 2,311 | 61 ms, 48,471 | 160 ms, 139,284 |
+| `cyclic_job` | 0 ms, 6 | 1 ms, 124 | 7 ms, 2,894 | 22 ms, 10,404 |
+
+`mobile_request` and `request_event` have no rows in this profile. A
+backlog costs about the same as an hour: each query reads at most
+`batch_limit` rows per weekly view. The error log reads the most per row: a
+lookup into its cycle table, clustered on `Id`, and one into the detail
+table.
+
 ## Databases and privileges
 
 | Database | Holds | Created by |
 | --- | --- | --- |
 | `patientzero` | `Customer`, `Product` (five seeded products), `SalesOrder` | PatientZero, at startup |
 | `patientzero_log` | Ten cycle tables per log type, `oslog_<TYPE>_0` to `_9`, and the views `oslog_<TYPE>` (current week, cycle 1 at first) and `oslog_<TYPE>_Previous` (cycle 0) | PatientZero, at startup |
+| `patientzero_scale` | The same schema, with two weeks of a production-sized log ([above](#production-sized-logging-database)) | `make patientzero-scale`, as `sa`; dropped by `make patientzero-scale-down` |
 
 - PatientZero logs in as `patientzero`, whose password `make patientzero-up`
   generates into `.env.sqlserver-dev` (`PATIENTZERO_SQL_CREDENTIAL`). The
@@ -221,10 +294,15 @@ run it on its own against the sandbox's `sa`:
 
 ```bash
 PATIENTZERO_TEST_SQLSERVER="sqlserver://sa:$(grep '^MSSQL_SA_PASSWORD=' .env.sqlserver-dev | cut -d= -f2-)@127.0.0.1:11433?encrypt=true&TrustServerCertificate=true" \
-  go -C tools/patientzero test -count=1 -run TestLiveSQLServer ./internal/app/
+  go -C tools/patientzero test -count=1 -run '^TestLive' ./internal/...
 ```
 
 It creates two databases with random names and drops them at the end.
+`TestLiveScale`, in the same runs, generates a small production-shaped log
+into a `patientzero_scale_test_<random>` database, checks it against its
+known answers and the long traces against the detail tables, measures the
+queries on it, and drops it. The generator's own tests (no SQL Server)
+check the profile's volumes, shape, users, sessions and error kinds.
 
 `TestLoadSmokeProfile` runs the load script's smoke profile for a few
 seconds against the real handlers and checks the identities in the rows

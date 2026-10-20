@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs every built-in SQL Server probe and every OutSystems log query, then
-# PatientZero's live test (tools/patientzero, ADR 0010), against a disposable
+# PatientZero's live tests (tools/patientzero, ADR 0010), against a disposable
 # SQL Server container (make test-sqlserver). The container has a
 # random SA password, no volume and a random loopback port, and is removed on
 # exit. It never touches the sqlserver-dev sandbox.
@@ -9,7 +9,7 @@
 # (scripts/sqlserver-login.sh), so a probe that needs more fails here. The log
 # queries run as heartbeat_oslog, a login with no server permissions that the
 # tests give SELECT on their fixture tables only. sa is used for setup and by
-# PatientZero's live test, which creates and drops its own databases. sa and
+# PatientZero's live tests, which create and drop their own databases. sa and
 # a CONTROL SERVER login, under their own credential references, are used
 # only by the test of the sysadmin-equivalence check.
 #
@@ -86,8 +86,8 @@ HEARTBEAT_TEST_SQLSERVER_ADDR="127.0.0.1:$port" \
 # The URL carries sa's password, so it goes in through the environment, not
 # the command line. The password is letters, digits and a hyphen, so it needs
 # no URL escaping.
-log "running PatientZero's live test"
+log "running PatientZero's live tests"
 PATIENTZERO_TEST_SQLSERVER="sqlserver://sa:$password@127.0.0.1:$port?encrypt=true&TrustServerCertificate=true" \
 	GOCACHE=$gocache \
 	go -C tools/patientzero test -count=1 -timeout=5m -v \
-	-run TestLiveSQLServer ./internal/app/
+	-run '^TestLive' ./internal/...

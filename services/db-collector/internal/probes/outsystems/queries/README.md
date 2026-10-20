@@ -150,6 +150,12 @@ fixture, as a login with only `SELECT` on the fixture tables and views:
 
 A log type without both files fails `make test`, and so does a query that
 does not read each week's view with its own `TOP (@limit)` and `ORDER BY`.
+
+Their cost at production size is measured on a test logging database
+filled with two weeks of the surveyed installation's log:
+`make patientzero-scale`
+([results](../../../../../../tools/patientzero/README.md#production-sized-logging-database)).
+Run it again after changing a query.
 [PatientZero](../../../../../../tools/patientzero/README.md#one-logging-schema)
 builds its logging database from the same `<log type>.sql` files, so a
 schema change made here reaches it too; its tests fail if a fixture loses
