@@ -13,7 +13,7 @@ maps fixed NodePorts to these ports on 127.0.0.1 only.
 | --- | --- | --- |
 | DB collector | 8082 | Heartbeat service |
 | Prometheus | 9090 | 15s scrape interval |
-| Grafana | 3000 | Local login `admin`/`admin`, anonymous viewer enabled. **Local only.** |
+| Grafana | 3001 | Local login `admin`/`admin`, anonymous viewer enabled. **Local only.** |
 | Alertmanager | 9093 | |
 | OpenTelemetry Collector | 4317 (OTLP gRPC), 4318 (OTLP HTTP) | `full` profile |
 | Loki | none | In-cluster only (`loki:3100`); query it through Grafana, or `kubectl port-forward svc/loki 3100` |

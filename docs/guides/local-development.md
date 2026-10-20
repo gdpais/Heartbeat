@@ -27,7 +27,7 @@ make sqlserver-dev-up   # SQL Server container, collector login, redeploy agains
 make health
 ```
 
-Grafana is then at http://localhost:3000 (`admin`/`admin`). The sections
+Grafana is then at http://localhost:3001 (`admin`/`admin`). The sections
 below explain each step; [Troubleshooting](#troubleshooting) covers the usual
 failures. To stop: `make sqlserver-dev-down` and `make kind-down`.
 
@@ -53,7 +53,7 @@ Choose one with `PROFILE=minimal make kind-up` (or `make kind-deploy`).
 PostgreSQL and Redis are not deployed until a service uses them.
 
 Services keep the ports Compose used, on 127.0.0.1 only: Grafana
-http://localhost:3000 (`admin`/`admin`), Prometheus :9090, Alertmanager :9093,
+http://localhost:3001 (`admin`/`admin`), Prometheus :9090, Alertmanager :9093,
 collector :8082, OTLP :4317/:4318. The
 [metrics and endpoints reference](../reference/metrics-and-endpoints.md#local-ports-kind)
 lists them.
@@ -222,7 +222,7 @@ change. See the [configuration reference](../reference/configuration.md).
 | Symptom | Cause and fix |
 | --- | --- |
 | `make tools-check` reports a wrong kubectl | Another kubectl (often Docker Desktop's) is earlier in `PATH`; put Homebrew's first |
-| `make kind-up` fails with `port is already allocated` | Something else holds one of the ports in the [port list](../reference/metrics-and-endpoints.md#local-ports-kind) (often an old Compose stack: `docker compose ls`, or a Homebrew Grafana on 3000: `lsof -nP -iTCP:3000 -sTCP:LISTEN`). Stop it and rerun, or move that port: delete the half-created cluster (`make kind-down`), then `sed 's/hostPort: 3000,/hostPort: 3001,/' infra/kind/cluster.yaml > .tmp/kind-cluster.yaml` and `KIND_CONFIG=.tmp/kind-cluster.yaml make kind-up`. Grafana is then on 3001, and `make health` still checks 3000, so check Grafana with `curl localhost:3001/api/health` |
+| `make kind-up` fails with `port is already allocated` | Something else holds one of the ports in the [port list](../reference/metrics-and-endpoints.md#local-ports-kind) (often an old Compose stack: `docker compose ls`; find the holder with `lsof -nP -iTCP:<port> -sTCP:LISTEN`). Grafana uses 3001, so a Grafana on 3000 does not clash. Stop the holder and rerun, or move that port: delete the half-created cluster (`make kind-down`), then, for example, `sed 's/hostPort: 3001,/hostPort: 3002,/' infra/kind/cluster.yaml > .tmp/kind-cluster.yaml` and `KIND_CONFIG=.tmp/kind-cluster.yaml make kind-up`. `make health` still checks 3001, so check a moved Grafana with `curl localhost:3002/api/health` |
 | kind node fails with a cgroup v1 error | kubelet 1.36 needs cgroup v2. Docker Desktop has it; on Linux, use a distribution with cgroup v2 |
 | Pods stay `ErrImageNeverPull` | The images were not loaded into this cluster (for example after recreating it by hand). Run `make kind-images kind-deploy` |
 | `make health` or the browser get "connection reset" or `Empty reply from server` right after Docker or the laptop restarts, or right after `make sqlserver-dev-up` | kube-proxy inside the node is still starting, or still routing the host port to the collector pod that was just replaced. Wait a few seconds (up to a minute after a restart) and rerun |

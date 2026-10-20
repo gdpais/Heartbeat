@@ -41,7 +41,7 @@ make health     # check the collector, Prometheus, Alertmanager and Grafana
 make test       # Docker-free Go tests
 ```
 
-Grafana runs at http://localhost:3000 and Prometheus at http://localhost:9090.
+Grafana runs at http://localhost:3001 and Prometheus at http://localhost:9090.
 The default config monitors no databases. To collect real SQL Server metrics
 locally, use the sandbox:
 

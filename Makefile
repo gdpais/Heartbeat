@@ -92,7 +92,7 @@ health:
 	$(CURL_CHECK) http://localhost:8082/readyz
 	$(CURL_CHECK) http://localhost:9090/-/ready
 	$(CURL_CHECK) http://localhost:9093/-/ready
-	$(CURL_CHECK) http://localhost:3000/api/health
+	$(CURL_CHECK) http://localhost:3001/api/health
 
 # Generates random per-machine passwords instead of copying shared ones: sa
 # for container setup, and the collector's least-privilege login

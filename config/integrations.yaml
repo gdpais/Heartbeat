@@ -1,6 +1,6 @@
 platform: grafana
 dashboards:
-  base_url: http://localhost:3000
+  base_url: http://localhost:3001
   dashboard_templates:
     sqlserver-overview: /d/sqlserver-overview
     heartbeat-overview: /d/heartbeat-overview
