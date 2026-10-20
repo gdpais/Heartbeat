@@ -32,7 +32,7 @@
 #   SQLSERVER_CONTAINER    sandbox SQL Server container [heartbeat-sqlserver-dev]
 #   SQLSERVER_ENV_FILE     SA password and credentials [.env.sqlserver-dev]
 #   PROFILE, EXTRA_VALUES  passed on to scripts/kind.sh deploy
-#   LOAD                   load profile: smoke, steady, peak or soak [steady]
+#   LOAD                   load profile: smoke, steady, peak, soak or day [steady]
 #   LOAD_DURATION          how long the profile holds its load [the profile's]
 #   LOAD_SEED              seed of the virtual users' choices [1]
 set -eu
@@ -328,8 +328,8 @@ cmd_down() {
 cmd_load() {
 	profile=${LOAD:-steady}
 	case $profile in
-	smoke | steady | peak | soak) ;;
-	*) die "LOAD must be smoke, steady, peak or soak, not $profile" ;;
+	smoke | steady | peak | soak | day) ;;
+	*) die "LOAD must be smoke, steady, peak, soak or day, not $profile" ;;
 	esac
 	cluster_exists || die "kind cluster $CLUSTER does not exist; run make sqlserver-dev-up and make patientzero-up"
 	helm status "$RELEASE" --kube-context "$CONTEXT" --namespace "$NAMESPACE" >/dev/null 2>&1 ||

@@ -14,8 +14,8 @@ the Heartbeat module, chart, images or releases.
 > **Status:** first slice [16.5]: the service, its two databases on the
 > sandbox SQL Server, three entry points and k6 load. Timers, extension
 > calls, the fake REST partner, scenarios, the compressed calendar and the
-> run journal come later. The logging schema is the collector fixtures' stand-in
-> until the logging-database survey replaces it.
+> run journal come later. The logging schema is the collector fixtures', the
+> DDL of a surveyed OutSystems 11 logging database.
 
 ## Run it on kind
 
@@ -97,11 +97,13 @@ failing for a reason other than a refused order.
 | Profile | Shoppers | API calls | Holds for |
 | --- | --- | --- | --- |
 | `smoke` | 2 | 30 a minute from one partner | 30s |
-| `steady` | 20 | 60 a minute from three partners | 10m |
-| `peak` | 20, ramped to 60 over 2 minutes and back down after | 60 a minute, ramped to 180 | 5m at the top |
+| `steady` | 20 | 120 a minute from three partners | 10m |
+| `peak` | 20, ramped to 60 over 2 minutes and back down after | 120 a minute, ramped to 360 | 5m at the top |
 | `soak` | as steady | as steady | 2h |
+| `day` | 2 at 04:00 to 38 at 11:00, following a real day's curve | 10 to 227 a minute, the same curve | 24m, a minute per hour |
 
-`LOAD_DURATION` sets how long a profile holds (peak: at the top).
+`LOAD_DURATION` sets how long a profile holds (peak: at the top; day: the
+whole day, split evenly over its 24 hours).
 
 - **Shoppers.** Virtual user *n* is `shopper.<n>` (`shopper.0001`, ...)
   from client IP `10.20.x.y`, the same on every run. One k6 iteration is one
@@ -120,9 +122,11 @@ failing for a reason other than a refused order.
   Timing still varies with response times.
 
 The mix (users, session length, order and anonymous shares, refused orders,
-think times, API rate, peak factor) is in [`load/traffic.js`](load/traffic.js).
-Those numbers are stand-ins until the logging-database survey gives the
-replica's aggregates; only that file changes then.
+think times, API rate, peak factor, the day's curve) is in
+[`load/traffic.js`](load/traffic.js). Its shapes come from the
+logging-database survey [3.3]: the integration-to-screen ratio, the peak
+factor and the hourly curve of one real week; its volume is scaled down to a
+laptop.
 
 Against PatientZero running anywhere else, for example a port-forward:
 
@@ -145,29 +149,43 @@ k6 run -e BASE_URL=http://localhost:8080 -e PROFILE=smoke tools/patientzero/load
   `patientzero_log` it is a member of `heartbeat_oslog_reader`, which has
   `SELECT` on the log views only: what a real logging database grants it.
 - Log rows are inserted through the current week's views, so a rotation
-  only has to move the views. A request's rows across log types commit in one
-  transaction.
+  only has to move the views. The error view's `Stack` is computed from a
+  join with `oslog_Error_Detail_<cycle>`, so error rows go into the cycle
+  table that `oslog_Error` reads, looked up in
+  `sys.sql_expression_dependencies` on every write; a trace longer than the
+  cycle table's `Stack` (2000 characters) also goes, whole, into that
+  cycle's detail table. A database failure's trace is that long. A
+  request's rows across log types commit in one transaction.
 
 ## One logging schema
 
 The logging schema is not defined here. PatientZero reads the db-collector's
 fixtures,
 [`services/db-collector/internal/collectors/outsystems/testdata/oslog/<log type>.sql`](../../services/db-collector/internal/collectors/outsystems/testdata/oslog/),
-takes the first cycle table and the current view's columns of each, and
-builds the ten cycle tables and two views from them
-([`internal/logschema`](internal/logschema/logschema.go)). When the survey's
-DDL replaces the fixtures, PatientZero follows without a change here. A
-fixture whose shape it cannot read (no cycle table with a `Cycle` default, no
-current view with a column list) fails `make test`, and a column PatientZero
-writes that the fixture no longer has fails the entry-point tests.
+takes the first cycle table and the current view of each (the error
+view's join with its detail table included), and builds the ten cycle
+tables, the error log's ten detail tables and the two views from them
+([`internal/logschema`](internal/logschema/logschema.go)). The fixtures are
+the DDL of a surveyed OutSystems 11 logging database, so when they change,
+PatientZero follows without a change here. A fixture whose shape it cannot
+read (no cycle table with a `Cycle` default, no current view with a column
+list over it, or over it left-joined to a detail table) fails `make test`,
+and a column PatientZero writes that the fixture no longer has fails the
+entry-point tests. Existing tables and views are kept, so a logging
+database built from older fixtures keeps their schema: `make
+patientzero-down` drops it and the next `make patientzero-up` builds the
+current one.
 
 The image copies the fixtures to `/app/oslog`
 ([`Dockerfile`](Dockerfile), built from the repository root);
 `PATIENTZERO_SCHEMA_DIR` points elsewhere.
 
-Where the stand-in schema shows: `mobile_request.Duration` is written in
-seconds and its `Error_Id` is an integer, as the OutSystems reference
-documents them; the survey will tell whether that holds.
+What the survey left open: `mobile_request.Duration` is written in seconds,
+as the OutSystems reference documents it; the surveyed database had no
+mobile request rows to confirm the unit. Every other log's `Duration` is in
+milliseconds. `Error_Id` is text in every log, empty when there is none. The
+real `oslog_Error` view also joins `oslog_Error_Detail` for full stack
+traces; PatientZero's does not.
 
 ## Configuration
 

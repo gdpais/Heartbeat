@@ -34,7 +34,7 @@ Data path for self-managed OutSystems 11:
 2. Each row becomes an OTLP log record: `Instant` is the timestamp, `Message`
    the body, every other column an attribute under its OutSystems name. The
    collector adds `error.fingerprint` to error records. Values longer than
-   16 KiB, mostly `Stack` and `Environment_Information`, are cut and the
+   16 KiB, mostly `Stack` and `EnvironmentInformation`, are cut and the
    record is marked `outsystems.truncated`.
 3. Records go to the OTel Collector, then to Loki. Loki indexes only
    `service.name`, `deployment.environment.name` and `outsystems.log_type`
@@ -145,7 +145,8 @@ include the SLO thresholds (0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 30, 60 s).
   identifier of the window in the collector's memory; it resets on a restart
   and would double when collectors run as replicas (phase 8). Loki counts
   them correctly from the structured metadata already sent, so dashboards
-  query Loki instead.
+  query Loki instead. A LogQL distinct count holds one series per ID, so
+  the chart raises Loki's `max_query_series` from 500 to 20000.
 - **New error fingerprints.** "Never seen before" needs a persisted,
   bounded set of fingerprints, or every restart reports all errors as new and
   looks like a bad deployment. It waits until a dashboard or alert needs it;
@@ -286,15 +287,27 @@ Answered from the OutSystems 11 documentation ([Log data reference](https://succ
   weeks, 7 with log separation. `initial_lookback` can reach back one week at
   most, since the queries read two weeks' views.
 
-Still to confirm against the logging database, with
 [`scripts/outsystems-log-survey.sql`](../../scripts/outsystems-log-survey.sql)
-(read-only; its output also supplies the DDL and rows for the test fixtures):
+(read-only) ran against one installation's logging database on 2026-10-19.
+Its native tables were empty and its data a flattened one-week extract, so
+it answered some questions and left others open:
 
-- Whether every request writes an entry-point row (screen or mobile request),
-  or only some.
-- The rows per minute of each log type at peak, which set the batch size and
-  Loki sizing.
-- The `Duration` unit per log type: the reference says seconds for extension,
-  mobile request and cyclic job, milliseconds for the rest.
-- The installation's time zone, from an `Instant` next to the database's
-  `SYSDATETIMEOFFSET()`.
+- **Schema:** answered. The test fixtures are its DDL: `varchar` text,
+  `datetime2` instants, `Error_Id` as text in every log (empty for none), the
+  error log's `EnvironmentInformation`, and cycle tables clustered on `Id`
+  or not clustered at all, so rows that share an `Instant` come back in no
+  particular order. The `oslog_Error` view also joins `oslog_Error_Detail`
+  for full stack traces.
+- **Rows per minute at peak:** about 3,800 across screen, integration,
+  extension and slow-SQL rows at the busiest minute of the week, about 1,000
+  on average; no single log type passed 2,200. The default `batch_limit` of
+  5000 covers it.
+- **`Duration` unit:** milliseconds for screen, integration and extension
+  (the reference says seconds for extension); maxima sit at timeouts in
+  milliseconds. Still open for mobile request and cyclic job: the survey had
+  none of their rows.
+- **Still open:** whether every request writes an entry-point row (screen or
+  mobile request), and the installation's time zone (from an `Instant` next
+  to the database's `SYSDATETIMEOFFSET()`; a stale copy cannot tell). The
+  hourly curve peaks at 11:00 and bottoms at 04:00, which reads as local
+  time.

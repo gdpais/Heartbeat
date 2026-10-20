@@ -10,7 +10,7 @@ shared validation inventory [16] throughout rather than as a final stage.
 | --- | --- | --- |
 | 0 | Foundations, including kind + Helm delivery | Done |
 | 1 | DB collector (SQL Server) | Done |
-| 2 | OutSystems ingest (OutSystems 11 log extraction) | In progress: extraction to Loki, derived metrics, SLO alerts and dashboards built ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)); PatientZero has k6 load; real-database survey and scenarios pending |
+| 2 | OutSystems ingest (OutSystems 11 log extraction) | In progress: extraction to Loki, derived metrics, SLO alerts and dashboards built ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)); real-database survey done; PatientZero has k6 load; query review and scenarios pending |
 | 3 | API / control plane | Not started |
 | 4 | Web UI | Not started |
 | 5 | Production delivery (EKS + Argo CD) | Not started; decisions recorded |
@@ -29,11 +29,11 @@ synthetic application that behaves like an OutSystems 11 application
 Each request runs real SQL against its business database on the sandbox SQL
 Server and writes the log rows the platform would into its own logging
 database, so database load and application logs share a cause. Its logging
-schema and traffic profile come from a replica of a real OutSystems 11
+schema and traffic profile come from a survey of a real OutSystems 11
 logging database, which is only read.
 
-- k6 load with virtual users of stable identity, in steady, peak and soak
-  profiles
+- k6 load with virtual users of stable identity, in steady, peak, soak and
+  day profiles
 - Named fault scenarios (blocking, a bad deploy, a slow partner, slow SQL,
   late timers, a bad front-end, log growth and backlog, weekly rotation),
   each with the signals it must produce, checked by `make kind-e2e`
@@ -99,8 +99,8 @@ by a new db-collector kind
 ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md);
 design in [application observability](../architecture/application-observability.md)).
 
-- PatientZero's first slice: the logging-database survey run against the
-  replica, its schema and traffic profile, the business and logging
+- PatientZero's first slice: the logging-database survey, its schema and
+  traffic profile, the business and logging
   databases on the sandbox, k6 load and the first scenarios, which are part of
   this phase's exit checks [16.5]
 - One reviewed `.sql` query per log type (error, screen, integration, ...),

@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	mssql "github.com/microsoft/go-mssqldb"
+	"github.com/golang-sql/civil"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	"google.golang.org/protobuf/proto"
 
@@ -169,26 +170,79 @@ EXEC sys.sp_executesql @sql;`).Scan(&count)
 	return count
 }
 
+// viewTables returns the tables a view reads: its cycle table, and for
+// oslog_Error the detail table it joins too.
+func viewTables(t *testing.T, db *sql.DB, view string) []string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	rows, err := db.QueryContext(ctx, `SELECT referenced_entity_name FROM sys.sql_expression_dependencies WHERE referencing_id = OBJECT_ID(@view)`,
+		sql.Named("view", "dbo."+view))
+	if err != nil {
+		t.Fatalf("tables behind dbo.%s: %v", view, err)
+	}
+	defer rows.Close()
+	var tables []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			t.Fatal(err)
+		}
+		tables = append(tables, table)
+	}
+	if err := rows.Err(); err != nil || len(tables) == 0 {
+		t.Fatalf("tables behind dbo.%s: %v %v", view, tables, err)
+	}
+	return tables
+}
+
+// cycleTable returns the cycle table behind the log type's view, for
+// example oslog_Error_3 behind oslog_Error.
+func cycleTable(t *testing.T, db *sql.DB, logView, view string) string {
+	t.Helper()
+	cycle := regexp.MustCompile(`^` + regexp.QuoteMeta(logView) + `_\d+$`)
+	for _, table := range viewTables(t, db, view) {
+		if cycle.MatchString(table) {
+			return table
+		}
+	}
+	t.Fatalf("no %s_<cycle> table behind dbo.%s", logView, view)
+	return ""
+}
+
 // rotateLogTables does what the platform does every Friday at 23:45: the
 // current week's view moves to an empty cycle table and the previous week's
 // view to the table the current one used.  With two fixture tables the
-// views swap.
+// views swap: each view's definition is kept, with the other view's cycle
+// in its table names (the cycle table, and the detail table it joins).
 func rotateLogTables(t *testing.T, db *sql.DB, view string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	tables := map[string]string{}
-	for _, name := range []string{view, view + "_Previous"} {
-		var table string
-		if err := db.QueryRowContext(ctx, `SELECT referenced_entity_name FROM sys.sql_expression_dependencies WHERE referencing_id = OBJECT_ID(@view)`,
-			sql.Named("view", "dbo."+name)).Scan(&table); err != nil {
-			t.Fatalf("table behind dbo.%s: %v", name, err)
+	views := []string{view, view + "_Previous"}
+	suffix := regexp.MustCompile(`_\d+$`)
+	tables := map[string][]string{}
+	cycles := map[string]string{}
+	definitions := map[string]string{}
+	for _, name := range views {
+		tables[name] = viewTables(t, db, name)
+		cycles[name] = suffix.FindString(cycleTable(t, db, view, name))
+		var definition string
+		if err := db.QueryRowContext(ctx, `SELECT OBJECT_DEFINITION(OBJECT_ID(@view))`, sql.Named("view", "dbo."+name)).Scan(&definition); err != nil {
+			t.Fatalf("definition of dbo.%s: %v", name, err)
 		}
-		tables[name] = table
+		definitions[name] = definition
 	}
-	for name, table := range map[string]string{view: tables[view+"_Previous"], view + "_Previous": tables[view]} {
-		exec(t, db, `DECLARE @sql nvarchar(max) = N'ALTER VIEW dbo.' + QUOTENAME(@view) + N' AS SELECT * FROM dbo.' + QUOTENAME(@table);
-EXEC sys.sp_executesql @sql;`, sql.Named("view", name), sql.Named("table", table))
+	for i, name := range views {
+		var pairs []string
+		for _, table := range tables[name] {
+			pairs = append(pairs, table, suffix.ReplaceAllLiteralString(table, cycles[views[1-i]]))
+		}
+		definition := strings.NewReplacer(pairs...).Replace(definitions[name])
+		if !strings.HasPrefix(definition, "CREATE VIEW ") {
+			t.Fatalf("definition of dbo.%s: %q", name, definition)
+		}
+		exec(t, db, `EXEC sys.sp_executesql @definition`, sql.Named("definition", "ALTER VIEW "+strings.TrimPrefix(definition, "CREATE VIEW ")))
 	}
 }
 
@@ -227,6 +281,9 @@ func TestLogQueriesAgainstSQLServer(t *testing.T) {
 				if len(batch.Rows) != want {
 					t.Fatalf("query returned %d rows, want the %d rows of %s.rows.sql (the current and the previous week's tables)", len(batch.Rows), want, logType)
 				}
+				if logType == errorLogType {
+					checkLongStack(t, sa, batch)
+				}
 			}
 		})
 	}
@@ -236,6 +293,122 @@ func TestLogQueriesAgainstSQLServer(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "SELECT permission was denied") {
 		t.Fatalf("query of a table that was not granted: %v; want a permission error", err)
 	}
+}
+
+// checkLongStack checks that the error query returns the stack trace that
+// lives only in oslog_Error_Detail in full: past the cycle table's 2000
+// characters, and past varchar(8000).
+func checkLongStack(t *testing.T, sa *sql.DB, batch Batch) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var full string
+	if err := sa.QueryRowContext(ctx, `SELECT FullStackTrace FROM dbo.oslog_Error_Detail_3`).Scan(&full); err != nil {
+		t.Fatalf("detail row: %v", err)
+	}
+	stack := slices.IndexFunc(batch.Columns, func(c Column) bool { return c.Name == columnStack })
+	var long []string
+	for _, row := range batch.Rows {
+		if text := optionalText(row[stack]); len(text) > 2000 {
+			long = append(long, text)
+		}
+	}
+	if len(full) <= 8000 || len(long) != 1 || long[0] != full {
+		t.Fatalf("the query returned %d stacks longer than 2000 characters, want the detail table's %d-character trace", len(long), len(full))
+	}
+}
+
+// A backlog after an outage: the query must read about @limit rows of each
+// week's view, not every row in (@from, @to].  Both cycle tables of each log
+// type get 50,000 copies of a fixture row, then the query runs for 20 rows
+// over all of them, on one connection whose logical reads are counted.  A
+// query that reads the whole range does at least one read per data page,
+// thousands here; reading the 20 rows of each week, through the Instant
+// index and a lookup each (and, for errors, the detail table), takes from a
+// dozen to about 400.
+func TestLogQueriesReadOnlyTheBatchAgainstSQLServer(t *testing.T) {
+	server := newLiveServer(t)
+	setupFixtures(t, server)
+	sa := server.sa(t, fixtureDatabase)
+	catalog := catalogoutsystems.DefaultCatalog()
+	const copies, limit = 50000, 20
+	views := regexp.MustCompile(`(?i)FROM\s+dbo\.(oslog_\w+)`)
+	for _, logType := range catalog.Names() {
+		t.Run(logType, func(t *testing.T) {
+			loadFixtureRows(t, sa, logType)
+			query, _ := catalog.Get(logType)
+			current := views.FindStringSubmatch(query.SQL)[1]
+			for _, view := range []string{current, current + "_Previous"} {
+				copyRows(t, sa, cycleTable(t, sa, current, view), copies)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			conn, err := sa.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			sessionReads := func() int64 {
+				var reads int64
+				if err := conn.QueryRowContext(ctx, `SELECT logical_reads FROM sys.dm_exec_sessions WHERE session_id = @@SPID`).Scan(&reads); err != nil {
+					t.Fatalf("logical reads: %v", err)
+				}
+				return reads
+			}
+			run := func() int {
+				t.Helper()
+				rows, err := conn.QueryContext(ctx, query.SQL,
+					sql.Named("from", civil.DateTimeOf(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC))),
+					sql.Named("to", civil.DateTimeOf(time.Now().UTC())), sql.Named("limit", limit))
+				if err != nil {
+					t.Fatalf("query: %v", err)
+				}
+				n := 0
+				for rows.Next() {
+					n++
+				}
+				if err := rows.Close(); err != nil || rows.Err() != nil {
+					t.Fatalf("query: %v %v", err, rows.Err())
+				}
+				return n
+			}
+			// The first run compiles the plan and updates the statistics the
+			// copies made stale, which reads the tables; the fewest reads of
+			// the next three are the plan's own.
+			run()
+			reads := int64(-1)
+			for range 3 {
+				before := sessionReads()
+				if n := run(); n != limit {
+					t.Fatalf("query returned %d rows, want %d", n, limit)
+				}
+				if r := sessionReads() - before; reads < 0 || r < reads {
+					reads = r
+				}
+			}
+			t.Logf("%d rows of %d in range, %d logical reads", limit, 2*copies, reads)
+			if reads > 25*limit+200 {
+				t.Fatalf("%d logical reads for %d rows: the query reads the whole (@from, @to] range; limit each week's view to @limit rows before the UNION ALL (queries/README.md)", reads, limit)
+			}
+		})
+	}
+}
+
+// copyRows inserts n copies of one row of table, a millisecond apart from
+// 2025-01-01 (before every fixture row), each with a new Id where the table
+// has one.
+func copyRows(t *testing.T, db *sql.DB, table string, n int) {
+	t.Helper()
+	exec(t, db, `DECLARE @cols nvarchar(max), @vals nvarchar(max);
+SELECT @cols = STRING_AGG(CAST(QUOTENAME(name) AS nvarchar(max)), N', ') WITHIN GROUP (ORDER BY column_id),
+       @vals = STRING_AGG(CAST(CASE name
+           WHEN N'Id' THEN N'CONVERT(varchar(50), NEWID())'
+           WHEN N'Instant' THEN N'DATEADD(millisecond, n.i, CAST(''2025-01-01'' AS datetime2(3)))'
+           ELSE N'r.' + QUOTENAME(name) END AS nvarchar(max)), N', ') WITHIN GROUP (ORDER BY column_id)
+FROM sys.columns WHERE object_id = OBJECT_ID(N'dbo.' + QUOTENAME(@table)) AND is_computed = 0 AND is_identity = 0;
+DECLARE @sql nvarchar(max) = N'WITH n AS (SELECT TOP (@n) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_columns AS a CROSS JOIN sys.all_columns AS b)
+INSERT INTO dbo.' + QUOTENAME(@table) + N' (' + @cols + N') SELECT ' + @vals + N' FROM n CROSS JOIN (SELECT TOP (1) * FROM dbo.' + QUOTENAME(@table) + N') AS r;';
+EXEC sys.sp_executesql @sql, N'@n int', @n;`, sql.Named("table", table), sql.Named("n", n))
 }
 
 // Computes the derived metrics from every log type's fixture rows, read
@@ -360,6 +533,13 @@ func (r *otlpReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// sameRows reports whether got holds each of want exactly once.  Rows that
+// share an Instant come back in no particular order: the surveyed cycle
+// tables are clustered on Id, not Instant.
+func sameRows(got, want []string) bool {
+	return slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(want)))
+}
+
 func (r *otlpReceiver) received() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -368,32 +548,33 @@ func (r *otlpReceiver) received() []string {
 
 // Extracts dbo.oslog_Error through the production path (connector, the
 // embedded error.sql, OTLP/HTTP, watermark file) over several cycles and a
-// restart, with ties on Instant at batch boundaries, datetime's 1/300 s
-// ticks, and a row committed after its Instant.  Every row must arrive
-// exactly once.
+// restart, with ties on Instant at batch boundaries, millisecond instants
+// (the surveyed datetime2), and a row committed after its Instant.  Every
+// row must arrive exactly once.
 func TestExtractionAgainstSQLServer(t *testing.T) {
 	server := newLiveServer(t)
 	setupFixtures(t, server)
 	sa := server.sa(t, fixtureDatabase)
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	// insertInto writes a row through a view (dbo.oslog_Error is the current
-	// week's cycle table) or into a cycle table by name.
+	// insertInto writes a row into a cycle table by name; insert into the
+	// one dbo.oslog_Error reads.  The view computes Stack from the detail
+	// table, so rows cannot be inserted through it.
 	insertInto := func(object, key string, offset time.Duration) {
 		t.Helper()
-		exec(t, sa, `DECLARE @sql nvarchar(max) = N'INSERT INTO dbo.' + QUOTENAME(@object) + N' (Instant, Message, Espace_Name, Request_Key, User_Id, Stack)
-VALUES (@instant, @message, N''ShopCore'', @key, 7, N''at Shop.Checkout()'')';
-EXEC sys.sp_executesql @sql, N'@instant datetime, @message nvarchar(2000), @key char(36)', @instant, @message, @key;`,
-			sql.Named("object", object), sql.Named("instant", mssql.DateTime1(base.Add(offset))), sql.Named("message", "Order failed: "+key), sql.Named("key", key))
+		exec(t, sa, `DECLARE @sql nvarchar(max) = N'INSERT INTO dbo.' + QUOTENAME(@object) + N' (Id, Instant, Session_Id, User_Id, Espace_Id, Tenant_Id, Message, Stack, Module_Name, Server, Espace_Name, Request_Key)
+VALUES (CONVERT(varchar(50), NEWID()), @instant, '''', 7, 1, 0, @message, ''at Shop.Checkout()'', ''ShopCore'', ''FE-01'', ''ShopCore'', @key)';
+EXEC sys.sp_executesql @sql, N'@instant datetime2(3), @message varchar(2000), @key varchar(36)', @instant, @message, @key;`,
+			sql.Named("object", object), sql.Named("instant", base.Add(offset)), sql.Named("message", "Order failed: "+key), sql.Named("key", key))
 	}
 	insert := func(key string, offset time.Duration) {
 		t.Helper()
-		insertInto("oslog_Error", key, offset)
+		insertInto(cycleTable(t, sa, "oslog_Error", "oslog_Error"), key, offset)
 	}
 	ms := time.Millisecond
 	insert("a", time.Minute)
-	insert("b", 2*time.Minute+3*ms) // b and c share a datetime tick
+	insert("b", 2*time.Minute+3*ms) // b and c share an Instant
 	insert("c", 2*time.Minute+3*ms)
-	insert("d", 2*time.Minute+7*ms) // the next tick (.00667 s)
+	insert("d", 2*time.Minute+4*ms) // the next millisecond
 	insert("e", 3*time.Minute)
 	insert("f", 4*time.Minute) // f and g share an Instant
 	insert("g", 4*time.Minute)
@@ -432,11 +613,11 @@ EXEC sys.sp_executesql @sql, N'@instant datetime, @message nvarchar(2000), @key 
 	executor := newExecutor(&now)
 	// Reads (11:55, 12:09] in batches of 3: a | b c | d e | f g | h.
 	run(executor)
-	if got := receiver.received(); !slices.Equal(got, []string{"a", "b", "c", "d", "e", "f", "g", "h"}) {
+	if got := receiver.received(); !sameRows(got, []string{"a", "b", "c", "d", "e", "f", "g", "h"}) {
 		t.Fatalf("first cycle delivered %v", got)
 	}
 	watermark, _, _ := executor.Store.Load(WatermarkKey{Collector: "oslogs", Target: "logging-db", LogType: "error"})
-	if watermark.InstantType != "DATETIME" || !watermark.Instant.Equal(base.Add(9*time.Minute)) {
+	if watermark.InstantType != "DATETIME2" || !watermark.Instant.Equal(base.Add(9*time.Minute)) {
 		t.Fatalf("watermark %+v", watermark)
 	}
 
@@ -454,7 +635,7 @@ EXEC sys.sp_executesql @sql, N'@instant datetime, @message nvarchar(2000), @key 
 	run(restarted)
 
 	want := []string{"a", "b", "c", "d", "e", "f", "g", "h", "late", "after-restart"}
-	if got := receiver.received(); !slices.Equal(got, want) {
+	if got := receiver.received(); !sameRows(got, want) {
 		t.Fatalf("delivered %v, want each of %v once", got, want)
 	}
 
@@ -463,19 +644,17 @@ EXEC sys.sp_executesql @sql, N'@instant datetime, @message nvarchar(2000), @key 
 	// dbo.oslog_Error_Previous.  A row of the old week committed after the
 	// rotation, within the lag, is only in the previous table; the query
 	// reads both, so it arrives with the first row of the new week.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	var oldTable string
-	if err := sa.QueryRowContext(ctx, `SELECT referenced_entity_name FROM sys.sql_expression_dependencies WHERE referencing_id = OBJECT_ID('dbo.oslog_Error')`).Scan(&oldTable); err != nil {
-		t.Fatalf("table behind dbo.oslog_Error: %v", err)
-	}
-	cancel()
+	oldTable := cycleTable(t, sa, "oslog_Error", "oslog_Error")
 	rotateLogTables(t, sa, "oslog_Error")
+	if got := cycleTable(t, sa, "oslog_Error", "oslog_Error_Previous"); got != oldTable {
+		t.Fatalf("after the rotation dbo.oslog_Error_Previous reads %s, want %s", got, oldTable)
+	}
 	insertInto(oldTable, "before-rotation", 12*time.Minute+30*time.Second)
 	insert("after-rotation", 13*time.Minute)
 	now = now.Add(2 * time.Minute)
 	run(restarted)
 	want = append(want, "before-rotation", "after-rotation")
-	if got := receiver.received(); !slices.Equal(got, want) {
+	if got := receiver.received(); !sameRows(got, want) {
 		t.Fatalf("after the rotation delivered %v, want %v", got, want)
 	}
 }

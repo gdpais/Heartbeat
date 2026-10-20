@@ -1,6 +1,6 @@
 -- The extension log: Integration Studio extension actions, written from the OutSystems 11 Log data reference
--- (view oslog_Extension); confirm the column names, types and units against
--- the real logging database before the probe review.
+-- (view oslog_Extension); column names and types checked against the logging-database
+-- survey [3.3].
 --
 -- oslog_Extension is a view over the current week's cycle table and
 -- oslog_Extension_Previous over last week's; the platform switches them every
@@ -27,11 +27,20 @@ SELECT TOP (@limit)
     r.Tenant_Id,
     r.Executed_By AS Server,
     NULLIF(r.Error_Id, '') AS Error_Id
+-- Each week's view is cut to @limit rows in Instant order before the
+-- union, so a backlog costs @limit index rows per view instead of every row
+-- in (@from, @to]: the first @limit rows overall are among them.
 FROM (
-    SELECT * FROM dbo.oslog_Extension
-    WHERE Instant > @from AND Instant <= @to
+    SELECT * FROM (
+        SELECT TOP (@limit) * FROM dbo.oslog_Extension
+        WHERE Instant > @from AND Instant <= @to
+        ORDER BY Instant
+    ) AS current_week
     UNION ALL
-    SELECT * FROM dbo.oslog_Extension_Previous
-    WHERE Instant > @from AND Instant <= @to
+    SELECT * FROM (
+        SELECT TOP (@limit) * FROM dbo.oslog_Extension_Previous
+        WHERE Instant > @from AND Instant <= @to
+        ORDER BY Instant
+    ) AS previous_week
 ) AS r
 ORDER BY r.Instant;

@@ -167,10 +167,10 @@ func TestDefaultBatchBudgetApplies(t *testing.T) {
 }
 
 // errorBacklog is an error log of n rows, 10 ms apart from t0 − 10m, with
-// the columns of queries/error.sql, an 8 KB Stack and 2 KB of
-// Environment_Information.  It reads them through readRows, making each row's
+// the columns of queries/error.sql, a Stack of about stack bytes and 2 KB of
+// EnvironmentInformation.  It reads them through readRows, making each row's
 // values as it is scanned, like SQLServerSource.
-type errorBacklog struct{ n int }
+type errorBacklog struct{ n, stack int }
 
 func (b errorBacklog) instant(i int) time.Time {
 	return t0.Add(-10*time.Minute + time.Duration(i)*10*time.Millisecond)
@@ -181,7 +181,7 @@ func (b errorBacklog) Query(_ context.Context, _ collectormetadata.DatabaseTarge
 		{"Instant", "DATETIME2"}, {"Message", "NVARCHAR"}, {"Severity", "VARCHAR"}, {"Application_Name", "NVARCHAR"},
 		{"Espace_Name", "NVARCHAR"}, {"Module_Name", "NVARCHAR"}, {"Screen", "NVARCHAR"}, {"Action_Name", "NVARCHAR"},
 		{"Request_Key", "NVARCHAR"}, {"Session_Id", "NVARCHAR"}, {"User_Id", "INT"}, {"Username", "NVARCHAR"},
-		{"Tenant_Id", "INT"}, {"Server", "NVARCHAR"}, {"Stack", "NVARCHAR"}, {"Environment_Information", "NVARCHAR"},
+		{"Tenant_Id", "INT"}, {"Server", "NVARCHAR"}, {"Stack", "NVARCHAR"}, {"EnvironmentInformation", "NVARCHAR"},
 	}}
 	first := 0
 	for first < b.n && !b.instant(first).After(params.From) {
@@ -197,7 +197,7 @@ func (b errorBacklog) Query(_ context.Context, _ collectormetadata.DatabaseTarge
 			b.instant(i), fmt.Sprintf("Timeout calling GetOrders for order %d", i), "ERROR", "Shop",
 			"ShopCore", "ShopCore", "Checkout", "GetOrders", fmt.Sprintf("req-%06d", i), fmt.Sprintf("session-%06d", i),
 			int64(i), "jdoe", int64(1), "fe-01",
-			strings.Repeat("   at OutSystems.HubEdition.Frame(Context ctx)\n", 8<<10/48),
+			strings.Repeat("   at OutSystems.HubEdition.Frame(Context ctx)\n", b.stack/48),
 			strings.Repeat("eSpaceVer: 42 (Id=7, PubId=9, CompiledWith=11.0) ", 2<<10/50),
 		}
 	}}
@@ -236,14 +236,13 @@ func (e *heapExporter) Export(_ context.Context, _ string, resourceLogs []*logsp
 	return nil
 }
 
-// extractBacklog extracts a 5,000-row error backlog with budget as
-// MaxBatchBytes and returns the peak live heap during an export and the
-// records delivered.
-func extractBacklog(t *testing.T, budget int64) (peak uint64, records int) {
+// extractBacklog extracts backlog with budget as MaxBatchBytes and returns
+// the peak live heap during an export and the records delivered.
+func extractBacklog(t *testing.T, backlog errorBacklog, budget int64) (peak uint64, records int) {
 	t.Helper()
 	exporter := &heapExporter{}
 	executor := &Executor{
-		Source: errorBacklog{n: 5000}, Catalog: catalogoutsystems.DefaultCatalog(), Store: NewStore(t.TempDir()),
+		Source: backlog, Catalog: catalogoutsystems.DefaultCatalog(), Store: NewStore(t.TempDir()),
 		Exporter: exporter, MaxBatchBytes: budget, MaxBatches: 100, now: func() time.Time { return t0 },
 	}
 	item := collectormetadata.ScheduledProbe{
@@ -265,12 +264,13 @@ func extractBacklog(t *testing.T, budget int64) (peak uint64, records int) {
 }
 
 // A 5,000-row error batch (the default batch_limit) with 8 KB stacks and 2 KB
-// of Environment_Information is about 50 MiB of row data.  Eight targets
+// of EnvironmentInformation is about 50 MiB of row data.  Eight targets
 // extracting one at once would exceed the chart's 256Mi limit; the byte
 // budget keeps each export well under heapBudget.
 func TestErrorBacklogStaysWithinTheHeapBudget(t *testing.T) {
 	const heapBudget = 24 << 20
-	peak, records := extractBacklog(t, 0)
+	backlog := errorBacklog{n: 5000, stack: 8 << 10}
+	peak, records := extractBacklog(t, backlog, 0)
 	t.Logf("peak live heap with the default %d MiB budget: %.1f MiB", DefaultMaxBatchBytes>>20, float64(peak)/(1<<20))
 	if records != 5000 {
 		t.Fatalf("delivered %d records, want all 5000", records)
@@ -280,9 +280,25 @@ func TestErrorBacklogStaysWithinTheHeapBudget(t *testing.T) {
 	}
 	// Without the budget the same backlog is one batch: the test must be
 	// able to tell.
-	unbounded, records := extractBacklog(t, 1<<40)
+	unbounded, records := extractBacklog(t, backlog, 1<<40)
 	t.Logf("peak live heap without a budget: %.1f MiB", float64(unbounded)/(1<<20))
 	if records != 5000 || unbounded <= heapBudget {
 		t.Fatalf("without a budget: %d records, peak %.1f MiB; want 5000 and more than %d MiB", records, float64(unbounded)/(1<<20), heapBudget>>20)
+	}
+}
+
+// oslog_Error returns oslog_Error_Detail's FullStackTrace, a varchar(max),
+// as Stack.  Rows with 128 KB stacks are held whole until their records are
+// built, so the byte budget stops each batch after fewer of them, and the
+// records keep maxValueBytes of each.
+func TestVarcharMaxStacksStayWithinTheHeapBudget(t *testing.T) {
+	const heapBudget = 24 << 20
+	peak, records := extractBacklog(t, errorBacklog{n: 500, stack: 128 << 10}, 0)
+	t.Logf("peak live heap with 128 KB stacks: %.1f MiB", float64(peak)/(1<<20))
+	if records != 500 {
+		t.Fatalf("delivered %d records, want all 500", records)
+	}
+	if peak > heapBudget {
+		t.Fatalf("peak live heap %.1f MiB, want at most %d MiB", float64(peak)/(1<<20), heapBudget>>20)
 	}
 }

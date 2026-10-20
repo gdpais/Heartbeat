@@ -122,7 +122,7 @@ containerSecurityContext:
 integrations:
   platform: grafana
   dashboards:
-    base_url: http://localhost:3000
+    base_url: http://localhost:3001
     dashboard_templates:
       sqlserver-overview: /d/sqlserver-overview
       heartbeat-overview: /d/heartbeat-overview
@@ -344,6 +344,13 @@ grafana:
       reporting_enabled: false
     auth.anonymous:
       enabled: false
+    # Grafana 13 gzips every response, health probes included, with a
+    # parallel writer that allocates buffers per CPU.  A dashboard on a 5 s
+    # refresh churned hundreds of MB a minute, the garbage collector
+    # thrashed and the pod was OOM-killed.  Responses stay in the cluster
+    # or on loopback; an ingress can compress if one is needed.
+    server:
+      enable_gzip: false
   resources:
     requests:
       cpu: 50m
@@ -376,6 +383,11 @@ loki:
       max_label_value_length: 256
       reject_old_samples: true
       reject_old_samples_max_age: 168h
+      # Active users and sessions are distinct counts in LogQL
+      # (count(sum by (Session_Id) ...)): one series per session in the
+      # window.  Loki's default of 500 fails the panel once a 5-minute window
+      # holds more sessions; an instant count series is a few hundred bytes.
+      max_query_series: 20000
       # OTLP label policy: only these resource attributes become index labels.
       # Everything else, including user, session and request IDs, is kept as
       # structured metadata, which is queryable but not indexed.

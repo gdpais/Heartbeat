@@ -45,6 +45,33 @@ func TestQueriesFollowTheContract(t *testing.T) {
 	}
 }
 
+// Every query reads both weeks' views, each cut to @limit rows in Instant
+// order before the union. A TOP only around the union makes SQL Server read
+// and sort every row in (@from, @to] first, which after an outage is the
+// whole backlog (README.md, Files); the SQL Server tests measure it.
+func TestQueriesLimitEachWeekBeforeTheUnion(t *testing.T) {
+	view := regexp.MustCompile(`(?i)FROM\s+dbo\.(oslog_\w+)`)
+	limited := regexp.MustCompile(`(?is)SELECT\s+TOP\s+\(@limit\)\s+\*\s+FROM\s+dbo\.(oslog_\w+)\s+WHERE\s+Instant\s*>\s*@from\s+AND\s+Instant\s*<=\s*@to\s+ORDER\s+BY\s+Instant\s*\)`)
+	catalog := DefaultCatalog()
+	for _, name := range catalog.Names() {
+		query, _ := catalog.Get(name)
+		var views, limitedViews []string
+		for _, m := range view.FindAllStringSubmatch(query.SQL, -1) {
+			views = append(views, m[1])
+		}
+		for _, m := range limited.FindAllStringSubmatch(query.SQL, -1) {
+			limitedViews = append(limitedViews, m[1])
+		}
+		if len(views) != 2 || !strings.EqualFold(views[1], views[0]+"_Previous") {
+			t.Errorf("%s.sql reads %v, want the current week's view and its _Previous", name, views)
+			continue
+		}
+		if !slices.Equal(limitedViews, views) {
+			t.Errorf("%s.sql: %v are not each read as SELECT TOP (@limit) * FROM ... WHERE Instant > @from AND Instant <= @to ORDER BY Instant; limited: %v", name, views, limitedViews)
+		}
+	}
+}
+
 func TestCatalogRejectsInvalidFileNames(t *testing.T) {
 	for _, name := range []string{"Error.sql", "mobile-request.sql", "1error.sql"} {
 		fsys := fstest.MapFS{"queries/" + name: {Data: []byte("SELECT 1")}}

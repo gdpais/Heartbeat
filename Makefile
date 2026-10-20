@@ -51,7 +51,7 @@ help:
 		'  make sqlserver-dev-down  Remove the dev SQL Server container and its data; redeploy without it' \
 		'  make patientzero-up      Run PatientZero on kind against the sandbox SQL Server; Heartbeat reads its logs (needs sqlserver-dev-up)' \
 		'  make patientzero-down    Remove PatientZero, its databases and login; redeploy Heartbeat without its collector' \
-		'  make patientzero-load    Run k6 load against PatientZero on kind and follow it (LOAD=smoke|steady|peak|soak, LOAD_DURATION)' \
+		'  make patientzero-load    Run k6 load against PatientZero on kind and follow it (LOAD=smoke|steady|peak|soak|day, LOAD_DURATION)' \
 		'  make patientzero-load-stop  Stop the PatientZero load' \
 		'  make kind-e2e            Run the acceptance checks on a separate, temporary kind cluster' \
 		'  make chart-deps          Fetch the chart dependencies listed in Chart.lock' \
@@ -92,7 +92,7 @@ health:
 	$(CURL_CHECK) http://localhost:8082/readyz
 	$(CURL_CHECK) http://localhost:9090/-/ready
 	$(CURL_CHECK) http://localhost:9093/-/ready
-	$(CURL_CHECK) http://localhost:3000/api/health
+	$(CURL_CHECK) http://localhost:3001/api/health
 
 # Generates random per-machine passwords instead of copying shared ones: sa
 # for container setup, and the collector's least-privilege login

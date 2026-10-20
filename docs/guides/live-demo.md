@@ -19,7 +19,7 @@ revisit.
 Start the stack and the SQL Server sandbox as in
 [Run everything](local-development.md#run-everything); if a step fails, see
 [troubleshooting](local-development.md#troubleshooting). If Grafana runs on
-another port there, use that port wherever this page says 3000.
+another port there, use that port wherever this page says 3001.
 
 In every terminal you use for the demo, from the repository root:
 
@@ -162,12 +162,12 @@ Only `Watchdog` should be firing. Right after the collector pod is replaced,
 minute, until Prometheus's DNS discovery drops it. It never reaches `firing`.
 
 Grafana (`admin`/`admin`): open
-<http://localhost:3000/d/sqlserver-overview?var-target=sqlserver-dev>.
+<http://localhost:3001/d/sqlserver-overview?var-target=sqlserver-dev>.
 All 14 panels should have data except Blocked Requests, which reads 0. The
 same data through Grafana's API:
 
 ```bash
-G=http://admin:admin@localhost:3000
+G=http://admin:admin@localhost:3001
 curl -s "$G/api/search?type=dash-db" | jq -c '.[] | {uid, title}'
 curl -sG "$G/api/datasources/proxy/uid/prometheus/api/v1/query" --data-urlencode 'query=heartbeat:sqlserver_sessions:sum' | jq -c '.data.result'
 ```

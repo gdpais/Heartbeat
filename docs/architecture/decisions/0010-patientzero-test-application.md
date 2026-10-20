@@ -1,6 +1,8 @@
 # 0010. PatientZero, a synthetic OutSystems application to test against
 
-- Status: Accepted; first slice being built (service, databases, three entry points)
+- Status: Accepted; first slice being built (service, databases, three entry
+  points, k6 load). Updated 2026-10-19: the survey ran and the replica is gone
+  (see Context); its DDL and aggregates are what PatientZero uses.
 - Date: 2026-10-18
 
 ## Context
@@ -25,9 +27,18 @@ comes with a known answer: dashboards and derived metrics in phase 2,
 onboarding through the API and UI in phases 3 and 4, investigations,
 alerts and reports in phase 7.
 
-A replica of a real OutSystems 11 logging database is available to the
-team on `127.0.0.1:1433` (an SSH tunnel). It holds the real DDL, units and
-traffic shape, and real users' data.
+A replica of a real OutSystems 11 logging database was available to the
+team on `127.0.0.1:1433` (an SSH tunnel), with the real DDL, units and
+traffic shape, and real users' data. The survey
+([`scripts/outsystems-log-survey.sql`](../../../scripts/outsystems-log-survey.sql))
+ran against it on 2026-10-19. Its native schema was complete, ten cycle
+tables per log type and their views, but every cycle table was empty: the
+data was one flattened week extracted by a performance-analysis tool. So the
+survey gave the DDL and an aggregate traffic profile (rows per hour, peak
+minute, integration-to-screen ratio, millisecond durations), but no native
+rows, no time zone and no entry-point coverage. The replica was then
+deleted: real users' data does not stay on a laptop for numbers already
+taken.
 
 ## Decision
 
@@ -35,9 +46,9 @@ traffic shape, and real users' data.
 | --- | --- | --- |
 | What | **PatientZero**: a small Go web application that behaves like an OutSystems 11 application, for tests and demos only. The name leaves room for more complex test applications later | A target Heartbeat can monitor end to end, under the test's control. |
 | Behaviour | HTTP endpoints modelled on OutSystems entry points: Traditional web screens, Reactive server actions, an exposed REST API, timers, extension calls and a consumed REST partner (a fake partner inside PatientZero with injectable latency and errors). Each request runs real SQL against PatientZero's business database **and** writes the log rows the platform would write for it: one `Request_Key` across log types and modules, with the caller's session, user and client IP | Database load and application logs share a cause. Blocking in the business database really slows the screens and fills the error log, so correlation can be tested, not assumed. |
-| Where it writes | Two databases on the sandbox SQL Server (`make sqlserver-dev-up`): `patientzero` (business tables) and `patientzero_log` (the ten cycle tables per log type, `oslog_<TYPE>` and `oslog_<TYPE>_Previous` views), created from the replica's DDL. PatientZero logs in with its own login, with write rights on those two databases only | The collector reads PatientZero exactly as it reads a real installation, with its unchanged least-privilege login. |
-| The replica | A **read-only reference**, never written to. It is where the logging-database survey runs; its DDL becomes PatientZero's logging schema and the CI fixtures' schema; its aggregates (rows per minute per log type, duration distributions, error ratio, identifier coverage, `Duration` units, time zone) become PatientZero's traffic profile. It can also be a read-only soak target for the collector | It holds real users' data and may itself be read-only; synthetic rows mixed into real ones would break every exact expectation. Reading it is how PatientZero stays faithful. |
-| Load | [k6](https://grafana.com/docs/k6/) scripts drive virtual users with stable identities (user, session, client IP) through the endpoints. Profiles: steady, peak and soak | Realistic concurrency and a known population, so distinct-user counts and per-user timelines can be checked. |
+| Where it writes | Two databases on the sandbox SQL Server (`make sqlserver-dev-up`): `patientzero` (business tables) and `patientzero_log` (the ten cycle tables per log type, `oslog_<TYPE>` and `oslog_<TYPE>_Previous` views), created from the surveyed DDL. PatientZero logs in with its own login, with write rights on those two databases only | The collector reads PatientZero exactly as it reads a real installation, with its unchanged least-privilege login. |
+| The survey | A real logging database is only **read**, never written to: the logging-database survey runs against it read-only. Its DDL becomes PatientZero's logging schema and the CI fixtures' schema; its aggregates become PatientZero's traffic profile ([`load/traffic.js`](../../../tools/patientzero/load/traffic.js)). Synthetic data is PatientZero's alone, written to its own databases | A real database holds real users' data and may itself be read-only; synthetic rows mixed into real ones would break every exact expectation. Reading it is how PatientZero stays faithful. |
+| Load | [k6](https://grafana.com/docs/k6/) scripts drive virtual users with stable identities (user, session, client IP) through the endpoints. Profiles: smoke, steady, peak, soak, and day (the surveyed day's hourly curve, compressed) | Realistic concurrency and a known population, so distinct-user counts and per-user timelines can be checked. |
 | Scenarios | Named fault scenarios, each a file under PatientZero: what it injects, for how long, and the signals it must produce (a PromQL expression, a rule or alert, a LogQL query). Started through PatientZero's admin endpoint; `make kind-e2e` runs them and checks the signals. First set in the table below | One scenario is one test with an exact expectation; the same files drive demos. |
 | Known answers | Every run writes a JSONL journal: users, sessions and requests, and each fault with its start and end | The expected result for investigations (phase 7) and reports, written before Heartbeat looks. |
 | Time | PatientZero never changes the collector's clock. It compresses the calendar instead: weekly rotation on demand (the view switch the platform does on Fridays at 23:45), backfill of past days within Loki's 168h `reject_old_samples_max_age`, commits held back past the `lag`, long-running screens and timers for the start-stamped log types, and `Instant` written in a configured time zone, daylight saving switches included | Exercises rotation, lag, watermarks, late rows and time zones in minutes, without a time-warp switch in production code. |
@@ -62,7 +73,8 @@ Considered and not chosen:
 - **A real OutSystems 11 installation.** The most faithful, but it needs
   Windows Server, IIS and a licence, and faults cannot be injected on
   demand. Personal Environments run on OutSystems Cloud, with no access to
-  the logging database. The replica gives the realism this would give.
+  the logging database. A survey of a real logging database gives the
+  realism this would give.
 - **Replaying rows from the replica.** Realistic logs, but no database load
   behind them, no controlled faults, and real users' data in the test path.
 - **A row generator without an application.** Cheaper, but logs and
@@ -88,22 +100,19 @@ Considered and not chosen:
 
 ## Consequences
 
-- **Nothing from the replica reaches git unscrubbed.** The repository is
-  public. DDL can be copied; fixture rows are anonymized first (usernames,
-  user and session IDs, client IPs, tenant IDs, personal data in `Message`
-  and `Stack`, internal host names in endpoints); the traffic profile holds
-  aggregates only. This replaces the "copied as they are" of the survey
-  task.
-- Pods on kind cannot reach the host's loopback, so pointing the collector
-  at the replica means exposing the tunnel where kind can reach it (for
-  example `host.docker.internal`). The sandbox SQL Server stays the default
-  target.
+- **Nothing from a real database reaches git but DDL and aggregates.** The
+  repository is public. The fixtures' rows are synthetic; the traffic
+  profile holds aggregates only.
+- What the survey could not answer stays open: the installation's time zone
+  (`log_timezone` remains a setting), the mobile request `Duration` unit,
+  and how many requests lack an entry-point row. A survey of a live logging
+  database answers them.
 - Derived metrics are computed when rows are extracted, so backfilled rows
   land in Loki at their own times but in Prometheus all at once. Tests of
   baselines and weekly reports over days need elapsed time (soak runs) or a
   Prometheus TSDB backfill; phase 7 decides which.
-- PatientZero follows the OutSystems schema the replica shows. The survey's
-  DDL feeds both PatientZero and the collector's fixtures, so a schema
+- PatientZero follows the OutSystems schema the survey showed. Its DDL feeds
+  both PatientZero and the collector's fixtures, so a schema
   change is made once: PatientZero builds its ten cycle tables and two views
   per log type from the fixtures' DDL at startup, so the fixtures are the
   only copy.

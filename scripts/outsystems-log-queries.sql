@@ -206,7 +206,7 @@ DECLARE @stack_like   nvarchar(200) = NULL;   -- e.g. '%SNF_Login_Reactive%'
 
 SELECT CONVERT(varchar(23), x.Instant, 121) AS instant, x.Application_Name, x.Espace_Name, x.Module_Name,
        x.Entrypoint_Name AS Screen, x.Action_Name, x.Request_key AS Request_Key, x.Username, x.User_Id, x.Session_Id, x.Server,
-       x.Message, x.Stack, d.FullStackTrace, x.Environment_Information
+       x.Message, x.Stack, d.FullStackTrace, x.EnvironmentInformation
 FROM dbo.oslog_Error AS x WITH (NOLOCK)
 LEFT JOIN dbo.oslog_Error_Detail AS d WITH (NOLOCK) ON d.Id = x.Id
 WHERE x.Instant BETWEEN @from AND @to

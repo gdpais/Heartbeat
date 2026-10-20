@@ -23,7 +23,7 @@ Docker settings:
   about 2 GB, SQL Server about 1 GB, and image builds need headroom.
 - On Apple silicon, enable **Use Rosetta for x86_64/amd64 emulation**. SQL
   Server only ships an AMD64 image.
-- These ports must be free on 127.0.0.1: 3000, 4317, 4318, 8082, 9090, 9093
+- These ports must be free on 127.0.0.1: 3001, 4317, 4318, 8082, 9090, 9093
   and 11433.
 
 Then, from the repository root:
@@ -63,7 +63,7 @@ answer.
 
 | Open | What you should see |
 | --- | --- |
-| http://localhost:3000 (Grafana, `admin`/`admin`) | Dashboards → **Heartbeat** folder with *Heartbeat Overview*, *SQL Server Overview* and the four OutSystems dashboards (empty until an `outsystems_logs` collector runs, for example with PatientZero); Connections → Data sources lists Prometheus and Loki |
+| http://localhost:3001 (Grafana, `admin`/`admin`) | Dashboards → **Heartbeat** folder with *Heartbeat Overview*, *SQL Server Overview* and the four OutSystems dashboards (empty until an `outsystems_logs` collector runs, for example with PatientZero); Connections → Data sources lists Prometheus and Loki |
 | http://localhost:9090/targets (Prometheus) | Five jobs, all **UP**: alertmanager, db-collector, loki, otel-collector, prometheus |
 | http://localhost:9090/alerts | **Watchdog** firing. It always fires; that is how a dead-man's switch knows alerting works |
 | http://localhost:9093 (Alertmanager) | The Watchdog alert, received from Prometheus |

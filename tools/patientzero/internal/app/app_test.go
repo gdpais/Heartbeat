@@ -119,14 +119,6 @@ var maria = map[string]string{
 	"X-Forwarded-For": "10.20.30.41, 10.0.0.1",
 }
 
-// requestKey is the row's Request_Key under either of the views' spellings.
-func requestKey(cols map[string]any) any {
-	if v, ok := cols["Request_Key"]; ok {
-		return v
-	}
-	return cols["Request_key"]
-}
-
 // sameRequest checks that every row has one Request_Key and that the rows
 // whose view has the columns carry the caller's session, user and IP.
 func sameRequest(t *testing.T, rec *recorder, wantTypes string) {
@@ -135,7 +127,7 @@ func sameRequest(t *testing.T, rec *recorder, wantTypes string) {
 	var key any
 	for _, row := range rec.rows {
 		types = append(types, row.Type)
-		k := requestKey(row.Columns)
+		k := row.Columns["Request_Key"]
 		if k == nil || k == "" {
 			t.Fatalf("%s row has no Request_Key: %v", row.Type, row.Columns)
 		}
@@ -198,7 +190,7 @@ func TestReactiveServerActionWritesAMobileRequestRow(t *testing.T) {
 	if row["Instant"] != t0.Add(250*time.Millisecond) {
 		t.Errorf("Instant %v: the mobile request log's Instant is the end", row["Instant"])
 	}
-	if row["Error_Id"] != 0 || row["Endpoint"] != "PlaceOrder" || row["Screen"] != "Checkout" {
+	if row["Error_Id"] != "" || row["Endpoint"] != "PlaceOrder" || row["Screen"] != "Checkout" || row["Id"] == "" {
 		t.Errorf("row %v", row)
 	}
 }
@@ -211,7 +203,7 @@ func TestExposedRESTAPIWritesIntegrationAndGeneralRows(t *testing.T) {
 	}
 	sameRequest(t, rec, "general integration")
 	row := rec.byType()["integration"][0]
-	if row["Is_Expose"] != true || row["Type"] != "REST" || row["Action"] != "GetOrders" || row["Endpoint"] != "" || row["Error_Id"] != "" {
+	if row["Is_Expose"] != true || row["Type"] != "REST" || row["Action"] != "GetOrders" || row["Endpoint"] != "" || row["Error_Id"] != "" || row["Id"] == "" {
 		t.Errorf("row %v", row)
 	}
 }
@@ -242,17 +234,17 @@ func TestFailedRequestsWriteALinkedErrorRow(t *testing.T) {
 			if errRow["Message"] == "" || errRow["Entrypoint_Name"] == "" {
 				t.Errorf("error row %v", errRow)
 			}
+			// A database failure's trace is longer than the error cycle
+			// table keeps, so it goes to the detail table; a refused order's
+			// is not.
+			detail := s.Schema["error"].Detail
+			if long := len(errRow["Stack"].(string)) > detail.Limit; long != (store.fail != nil) {
+				t.Errorf("Stack of %d characters with the store failing %v:\n%s", len(errRow["Stack"].(string)), store.fail != nil, errRow["Stack"])
+			}
 			for _, typ := range []string{"mobile_request", "integration", "general"} {
 				for _, row := range rec.byType()[typ] {
-					switch ref := row["Error_Id"]; ref.(type) {
-					case string:
-						if ref != errRow["Id"] {
-							t.Errorf("%s.Error_Id %v, want the error row's Id %v", typ, ref, errRow["Id"])
-						}
-					default:
-						if ref == 0 || ref == int64(0) {
-							t.Errorf("%s.Error_Id is 0 on a failed request", typ)
-						}
+					if ref := row["Error_Id"]; ref != errRow["Id"] {
+						t.Errorf("%s.Error_Id %v, want the error row's Id %v", typ, ref, errRow["Id"])
 					}
 				}
 			}
@@ -279,7 +271,7 @@ func TestRequestKeysAreDistinctGUIDs(t *testing.T) {
 	s, rec := newServer(t, &fakeStore{})
 	do(t, s, http.MethodGet, PathOrderList, "", maria)
 	do(t, s, http.MethodGet, PathOrderList, "", maria)
-	a, b := requestKey(rec.rows[0].Columns).(string), requestKey(rec.rows[1].Columns).(string)
+	a, b := rec.rows[0].Columns["Request_Key"].(string), rec.rows[1].Columns["Request_Key"].(string)
 	if a == b || len(a) != 36 || a[14] != '4' {
 		t.Fatalf("request keys %q and %q", a, b)
 	}
