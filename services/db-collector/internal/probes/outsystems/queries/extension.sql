@@ -27,11 +27,20 @@ SELECT TOP (@limit)
     r.Tenant_Id,
     r.Executed_By AS Server,
     NULLIF(r.Error_Id, '') AS Error_Id
+-- Each week's view is cut to @limit rows in Instant order before the
+-- union, so a backlog costs @limit index rows per view instead of every row
+-- in (@from, @to]: the first @limit rows overall are among them.
 FROM (
-    SELECT * FROM dbo.oslog_Extension
-    WHERE Instant > @from AND Instant <= @to
+    SELECT * FROM (
+        SELECT TOP (@limit) * FROM dbo.oslog_Extension
+        WHERE Instant > @from AND Instant <= @to
+        ORDER BY Instant
+    ) AS current_week
     UNION ALL
-    SELECT * FROM dbo.oslog_Extension_Previous
-    WHERE Instant > @from AND Instant <= @to
+    SELECT * FROM (
+        SELECT TOP (@limit) * FROM dbo.oslog_Extension_Previous
+        WHERE Instant > @from AND Instant <= @to
+        ORDER BY Instant
+    ) AS previous_week
 ) AS r
 ORDER BY r.Instant;

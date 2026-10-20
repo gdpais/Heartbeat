@@ -21,11 +21,20 @@ SELECT TOP (@limit)
     r.APPLICATIONKEY AS Application_Key,
     r.MODULENAME AS Espace_Name,
     r.MODULEKEY AS Module_Key
+-- Each week's view is cut to @limit rows in Instant order before the
+-- union, so a backlog costs @limit index rows per view instead of every row
+-- in (@from, @to]: the first @limit rows overall are among them.
 FROM (
-    SELECT * FROM dbo.oslog_RequestEvent
-    WHERE INSTANT > @from AND INSTANT <= @to
+    SELECT * FROM (
+        SELECT TOP (@limit) * FROM dbo.oslog_RequestEvent
+        WHERE INSTANT > @from AND INSTANT <= @to
+        ORDER BY INSTANT
+    ) AS current_week
     UNION ALL
-    SELECT * FROM dbo.oslog_RequestEvent_Previous
-    WHERE INSTANT > @from AND INSTANT <= @to
+    SELECT * FROM (
+        SELECT TOP (@limit) * FROM dbo.oslog_RequestEvent_Previous
+        WHERE INSTANT > @from AND INSTANT <= @to
+        ORDER BY INSTANT
+    ) AS previous_week
 ) AS r
 ORDER BY r.INSTANT;

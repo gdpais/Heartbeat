@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-sql/civil"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	"google.golang.org/protobuf/proto"
 
@@ -315,6 +316,99 @@ func checkLongStack(t *testing.T, sa *sql.DB, batch Batch) {
 	if len(full) <= 8000 || len(long) != 1 || long[0] != full {
 		t.Fatalf("the query returned %d stacks longer than 2000 characters, want the detail table's %d-character trace", len(long), len(full))
 	}
+}
+
+// A backlog after an outage: the query must read about @limit rows of each
+// week's view, not every row in (@from, @to].  Both cycle tables of each log
+// type get 50,000 copies of a fixture row, then the query runs for 20 rows
+// over all of them, on one connection whose logical reads are counted.  A
+// query that reads the whole range does at least one read per data page,
+// thousands here; reading the 20 rows of each week, through the Instant
+// index and a lookup each (and, for errors, the detail table), takes from a
+// dozen to about 400.
+func TestLogQueriesReadOnlyTheBatchAgainstSQLServer(t *testing.T) {
+	server := newLiveServer(t)
+	setupFixtures(t, server)
+	sa := server.sa(t, fixtureDatabase)
+	catalog := catalogoutsystems.DefaultCatalog()
+	const copies, limit = 50000, 20
+	views := regexp.MustCompile(`(?i)FROM\s+dbo\.(oslog_\w+)`)
+	for _, logType := range catalog.Names() {
+		t.Run(logType, func(t *testing.T) {
+			loadFixtureRows(t, sa, logType)
+			query, _ := catalog.Get(logType)
+			current := views.FindStringSubmatch(query.SQL)[1]
+			for _, view := range []string{current, current + "_Previous"} {
+				copyRows(t, sa, cycleTable(t, sa, current, view), copies)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			conn, err := sa.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			sessionReads := func() int64 {
+				var reads int64
+				if err := conn.QueryRowContext(ctx, `SELECT logical_reads FROM sys.dm_exec_sessions WHERE session_id = @@SPID`).Scan(&reads); err != nil {
+					t.Fatalf("logical reads: %v", err)
+				}
+				return reads
+			}
+			run := func() int {
+				t.Helper()
+				rows, err := conn.QueryContext(ctx, query.SQL,
+					sql.Named("from", civil.DateTimeOf(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC))),
+					sql.Named("to", civil.DateTimeOf(time.Now().UTC())), sql.Named("limit", limit))
+				if err != nil {
+					t.Fatalf("query: %v", err)
+				}
+				n := 0
+				for rows.Next() {
+					n++
+				}
+				if err := rows.Close(); err != nil || rows.Err() != nil {
+					t.Fatalf("query: %v %v", err, rows.Err())
+				}
+				return n
+			}
+			// The first run compiles the plan and updates the statistics the
+			// copies made stale, which reads the tables; the fewest reads of
+			// the next three are the plan's own.
+			run()
+			reads := int64(-1)
+			for range 3 {
+				before := sessionReads()
+				if n := run(); n != limit {
+					t.Fatalf("query returned %d rows, want %d", n, limit)
+				}
+				if r := sessionReads() - before; reads < 0 || r < reads {
+					reads = r
+				}
+			}
+			t.Logf("%d rows of %d in range, %d logical reads", limit, 2*copies, reads)
+			if reads > 25*limit+200 {
+				t.Fatalf("%d logical reads for %d rows: the query reads the whole (@from, @to] range; limit each week's view to @limit rows before the UNION ALL (queries/README.md)", reads, limit)
+			}
+		})
+	}
+}
+
+// copyRows inserts n copies of one row of table, a millisecond apart from
+// 2025-01-01 (before every fixture row), each with a new Id where the table
+// has one.
+func copyRows(t *testing.T, db *sql.DB, table string, n int) {
+	t.Helper()
+	exec(t, db, `DECLARE @cols nvarchar(max), @vals nvarchar(max);
+SELECT @cols = STRING_AGG(CAST(QUOTENAME(name) AS nvarchar(max)), N', ') WITHIN GROUP (ORDER BY column_id),
+       @vals = STRING_AGG(CAST(CASE name
+           WHEN N'Id' THEN N'CONVERT(varchar(50), NEWID())'
+           WHEN N'Instant' THEN N'DATEADD(millisecond, n.i, CAST(''2025-01-01'' AS datetime2(3)))'
+           ELSE N'r.' + QUOTENAME(name) END AS nvarchar(max)), N', ') WITHIN GROUP (ORDER BY column_id)
+FROM sys.columns WHERE object_id = OBJECT_ID(N'dbo.' + QUOTENAME(@table)) AND is_computed = 0 AND is_identity = 0;
+DECLARE @sql nvarchar(max) = N'WITH n AS (SELECT TOP (@n) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_columns AS a CROSS JOIN sys.all_columns AS b)
+INSERT INTO dbo.' + QUOTENAME(@table) + N' (' + @cols + N') SELECT ' + @vals + N' FROM n CROSS JOIN (SELECT TOP (1) * FROM dbo.' + QUOTENAME(@table) + N') AS r;';
+EXEC sys.sp_executesql @sql, N'@n int', @n;`, sql.Named("table", table), sql.Named("n", n))
 }
 
 // Computes the derived metrics from every log type's fixture rows, read

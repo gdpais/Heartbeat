@@ -31,8 +31,14 @@ OutSystems 11 logging database, one file per log type. Why they live here:
   last week's, switched every Friday at 23:45, database time. A query on the
   current view alone loses the rows logged just before the switch (they are
   committed after it, into the old table) and can never look back past
-  Friday. Filter each view on the `Instant` range, `UNION ALL` them, then
-  `TOP` and `ORDER BY`, as `error.sql` does.
+  Friday. Read each view as `SELECT TOP (@limit) * ... WHERE Instant >
+  @from AND Instant <= @to ORDER BY Instant` in a derived table, `UNION ALL`
+  the two, then `TOP (@limit)` and `ORDER BY Instant` again, as `error.sql`
+  does. With `TOP` only around the union, SQL Server reads and sorts every
+  row in the range before returning the first `@limit`, and after an outage
+  the range is the whole backlog; cut first, each view costs `@limit` index
+  rows and lookups however long the backlog is. The first `@limit` rows
+  overall are always among the first `@limit` of each view.
 
 ## Contract
 
@@ -131,16 +137,19 @@ fixture, as a login with only `SELECT` on the fixture tables and views:
   creates the cycle tables and the two views the query reads (the tests run
   the file as one batch, so wrap each `CREATE VIEW` in `EXEC (N'...')`).
 - `testdata/oslog/<log type>.rows.sql` inserts representative rows into
-  both weeks' tables: rows copied from the logging database as they are,
-  user ids, sessions and IPs included, since the tests must carry them
-  through; keep their `Instant` values and `Request_Key` relationships. Over
-  a window that covers
-  them all, the query must return every row of every table that has an
-  `Instant` column, so the test catches a query that forgets the previous
-  week. Detail tables (no `Instant`) may hold rows for joins.
+  both weeks' tables. They are synthetic: rows from a real logging database
+  never reach this public repository. They still carry user ids, sessions
+  and IPs, since the tests must carry them through, and share `Request_Key`
+  values across log types. Over a window that covers them all, the query
+  must return every row of every table that has an `Instant` column, so the
+  test catches a query that forgets the previous week. Detail tables (no
+  `Instant`) may hold rows for joins.
+- A backlog: both cycle tables get 50,000 more rows, and the query, run for
+  20 of them, must stay within a few hundred logical reads, so the test
+  catches a query that reads the whole range (`TOP` only around the union).
 
-A log type without both files fails `make test`. The fixtures are stand-ins
-until they are built from the real DDL and rows.
+A log type without both files fails `make test`, and so does a query that
+does not read each week's view with its own `TOP (@limit)` and `ORDER BY`.
 [PatientZero](../../../../../../tools/patientzero/README.md#one-logging-schema)
 builds its logging database from the same `<log type>.sql` files, so a
 schema change made here reaches it too; its tests fail if a fixture loses
