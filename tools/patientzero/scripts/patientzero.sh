@@ -22,6 +22,14 @@
 # PatientZero, follows its output and exits with k6's result. Interrupting it
 # stops following, not the load.
 # load-stop: deletes the load Job.
+# scale: a production-sized test logging database, patientzero_scale on the
+# sandbox SQL Server: two weeks of the surveyed installation's log, written
+# straight into the cycle tables (tools/patientzero/cmd/oslog-scale), then
+# every collector query measured against it. The Heartbeat collector's login
+# can read it like patientzero_log. Writes .tmp/patientzero-scale/
+# expected.json and report.md. It does not touch PatientZero on kind.
+# scale-measure: measures again, on the database as it is.
+# scale-down: drops patientzero_scale.
 #
 # Every kubectl and helm call names the kind context explicitly.
 #
@@ -35,6 +43,9 @@
 #   LOAD                   load profile: smoke, steady, peak, soak or day [steady]
 #   LOAD_DURATION          how long the profile holds its load [the profile's]
 #   LOAD_SEED              seed of the virtual users' choices [1]
+#   SCALE                  volume relative to the surveyed installation [1]
+#   SCALE_SEED             seed of the generated log [1]
+#   SCALE_END              last instant generated, RFC 3339 [now]
 set -eu
 cd "$(dirname "$0")/../../.."
 
@@ -51,6 +62,7 @@ COLLECTOR_KEY=HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV
 READER_ROLE=heartbeat_oslog_reader
 DATABASE=patientzero
 LOG_DATABASE=patientzero_log
+SCALE_DATABASE=patientzero_scale
 HEARTBEAT_VALUES=$STATE_DIR/patientzero-heartbeat.yaml
 LOAD_DIR=tools/patientzero/load
 LOAD_JOB=patientzero-load
@@ -435,10 +447,43 @@ cmd_load_stop() {
 	log "stopped the load"
 }
 
+# Runs tools/patientzero/cmd/oslog-scale as sa against the sandbox SQL
+# Server. The URL carries sa's password, so it goes in through the
+# environment; the sandbox password needs no URL escaping.
+oslog_scale() {
+	sqlserver_healthy || die "$SQLSERVER_CONTAINER is not running; run make sqlserver-dev-up"
+	[ -f "$SQLSERVER_ENV_FILE" ] || die "$SQLSERVER_ENV_FILE is missing; run make sqlserver-dev-init and make sqlserver-dev-up"
+	port=$(docker port "$SQLSERVER_CONTAINER" 1433/tcp | head -n 1 | sed 's/.*://')
+	[ -n "$port" ] || die "could not read the published port of $SQLSERVER_CONTAINER"
+	PATIENTZERO_SCALE_SQLSERVER="sqlserver://sa:$(env_value MSSQL_SA_PASSWORD)@127.0.0.1:$port?encrypt=true&TrustServerCertificate=true" \
+		GOCACHE=${GOCACHE:-$(pwd)/.tmp/gocache} \
+		go -C tools/patientzero run ./cmd/oslog-scale -database "$SCALE_DATABASE" "$@"
+}
+
+cmd_scale() {
+	collector=$(env_value "$COLLECTOR_KEY")
+	log "generating $SCALE_DATABASE at ${SCALE:-1} times the surveyed installation"
+	oslog_scale -scale "${SCALE:-1}" -seed "${SCALE_SEED:-1}" ${SCALE_END:+-end "$SCALE_END"} \
+		-reader-role "$READER_ROLE" -reader-login "${collector%%:*}" generate
+	cmd_scale_measure
+}
+
+cmd_scale_measure() {
+	log "measuring the collector's queries on $SCALE_DATABASE"
+	oslog_scale measure
+}
+
+cmd_scale_down() {
+	oslog_scale drop
+}
+
 case "${1:-}" in
 up) cmd_up ;;
 down) cmd_down ;;
 load) cmd_load ;;
 load-stop) cmd_load_stop ;;
+scale) cmd_scale ;;
+scale-measure) cmd_scale_measure ;;
+scale-down) cmd_scale_down ;;
 *) sed -n '2,/^set -eu/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

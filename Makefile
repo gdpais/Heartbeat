@@ -1,4 +1,4 @@
-.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down patientzero-up patientzero-down patientzero-load patientzero-load-stop chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet vulncheck docs-site
+.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down patientzero-up patientzero-down patientzero-load patientzero-load-stop patientzero-scale patientzero-scale-measure patientzero-scale-down chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet vulncheck docs-site
 
 SQLSERVER_DEV_ENV_FILE := .env.sqlserver-dev
 # Health checks fail fast on HTTP errors (keeping the body) and never hang.
@@ -53,6 +53,9 @@ help:
 		'  make patientzero-down    Remove PatientZero, its databases and login; redeploy Heartbeat without its collector' \
 		'  make patientzero-load    Run k6 load against PatientZero on kind and follow it (LOAD=smoke|steady|peak|soak|day, LOAD_DURATION)' \
 		'  make patientzero-load-stop  Stop the PatientZero load' \
+		'  make patientzero-scale   Fill patientzero_scale with a production-sized log and measure the log queries (SCALE, SCALE_SEED, SCALE_END)' \
+		'  make patientzero-scale-measure  Measure the log queries on patientzero_scale again' \
+		'  make patientzero-scale-down  Drop patientzero_scale' \
 		'  make kind-e2e            Run the acceptance checks on a separate, temporary kind cluster' \
 		'  make chart-deps          Fetch the chart dependencies listed in Chart.lock' \
 		'  make chart-check         Lint and render the chart for every values profile (needs chart-deps)' \
@@ -143,6 +146,16 @@ patientzero-load:
 
 patientzero-load-stop:
 	@$(PATIENTZERO_MODULE)/scripts/patientzero.sh load-stop
+
+# SCALE, not PROFILE or LOAD: the volume relative to the surveyed installation.
+patientzero-scale:
+	@SCALE='$(SCALE)' SCALE_SEED='$(SCALE_SEED)' SCALE_END='$(SCALE_END)' SQLSERVER_ENV_FILE=$(SQLSERVER_DEV_ENV_FILE) $(PATIENTZERO_MODULE)/scripts/patientzero.sh scale
+
+patientzero-scale-measure:
+	@SQLSERVER_ENV_FILE=$(SQLSERVER_DEV_ENV_FILE) $(PATIENTZERO_MODULE)/scripts/patientzero.sh scale-measure
+
+patientzero-scale-down:
+	@SQLSERVER_ENV_FILE=$(SQLSERVER_DEV_ENV_FILE) $(PATIENTZERO_MODULE)/scripts/patientzero.sh scale-down
 
 kind-e2e:
 	@KIND_NODE_IMAGE='$(KIND_NODE_IMAGE)' scripts/kind-e2e.sh
