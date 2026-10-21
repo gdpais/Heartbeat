@@ -90,9 +90,9 @@ The mapping from each view's own columns to these names is the
 table of the queries README.
 
 Identifiers are never Loki labels or metric labels. They stay structured
-metadata, queryable with `| User_Id="…"`. Whether to hash user IDs and client
-IPs is a compliance decision still open in the
-[product overview](../product/overview.md#open-questions); the extractor can
+metadata, queryable with `| User_Id="…"`. They are kept raw, with access to
+Loki and Grafana restricted, and production needs compliance sign-off first
+([ADR 0012](decisions/0012-personal-data-in-telemetry.md)); the extractor can
 hash them before export without changing anything else.
 
 ## Derived metrics
@@ -269,9 +269,10 @@ The extractor turns rows into spans as well as log records:
 The OTel Collector's `spanmetrics` connector can then produce the same RED
 metrics from spans, and a trace store (Grafana Tempo is the natural fit next
 to Loki and Grafana) shows waterfalls with links to the logs and the SQL
-Server dashboards for the same time. The trace store comes first, for any
-OTLP source and with its own ADR ([TODO 3.6](../../TODO.md)); step B only
-adds the spans.
+Server dashboards for the same time. The trace store needs its own ADR
+([TODO 3.6](../../TODO.md)) and is built together with step B, once something
+consumes the traces: the first OTLP trace source or phase 7's investigation
+timeline. Neither is part of phase 2's exit.
 
 Limits, stated in the product: spans exist only where OutSystems logs
 something. Fast SQL, internal actions and client-side time do not appear, and
