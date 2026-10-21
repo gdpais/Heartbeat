@@ -7,7 +7,9 @@
 #
 # Before use: create the Secret below, set the endpoint, and install the
 # platform's own dashboards and alert rules. Heartbeat ships content only for
-# Grafana (files/grafana, files/prometheus).
+# Grafana (files/grafana, files/prometheus). The Collector's export queue
+# needs a volume: the default StorageClass, or set
+# otelCollectorQueue.persistence.storageClassName.
 #
 #   kubectl create secret generic heartbeat-platform-otlp \
 #     --from-literal=endpoint=https://otlp.example.internal \
