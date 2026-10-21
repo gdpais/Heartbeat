@@ -51,7 +51,16 @@ Data path for self-managed OutSystems 11:
    waits, the Collector's queue fills and it answers 503: the batch is not
    delivered and the collector reads it again. The logs pipeline has no
    batch processor, which would accept rows before they are queued. The
-   queue is in memory, so rows queued when the Collector restarts are lost.
+   queue is on disk (the `otel-collector-queue` volume), so rows queued when
+   the Collector restarts are sent after the restart. One limit remains: the
+   queue sends the batches it was sending when it stopped (at most two)
+   after the rest, and Loki rejects their rows if it already has rows of the
+   same stream more than an hour newer, that is when the queue held more
+   than an hour of that stream. `LokiDiscardingLogs` then fires. In the kind
+   test a restart with Loki down lost none of 6,000 rows spanning 45
+   minutes, and 1,297 of 6,000 spanning three hours. A queue of one request
+   would keep the order, but the collector's export would then wait for
+   Loki, past its probe deadline.
 
 ## OutSystems fields
 

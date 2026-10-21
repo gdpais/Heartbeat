@@ -38,7 +38,7 @@ dbCollector:
       - podSelector:
           matchLabels:
             app.kubernetes.io/name: otelCollector
-            component: standalone-collector
+            component: statefulset-collector
 
 otelCollector:
   ports:
@@ -99,7 +99,9 @@ otelCollector:
         headers:
           Authorization: ${env:PLATFORM_OTLP_AUTHORIZATION}
     service:
-      extensions: [health_check]
+      # A list replaces the chart's, so it names the export queue's storage
+      # too: otlp_http/logs keeps the chart's on-disk sending queue.
+      extensions: [health_check, file_storage/export-queue]
       pipelines:
         metrics:
           receivers: [otlp, prometheus]

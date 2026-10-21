@@ -48,6 +48,10 @@ type chartProfile struct {
 	// stateEmptyDir means the collector's state is an emptyDir instead of the
 	// db-collector-state claim (dbCollector.persistence.enabled=false).
 	stateEmptyDir bool
+	// queueEmptyDir means the OTel Collector's export queue is an emptyDir
+	// instead of the otel-collector-queue claim
+	// (otelCollectorQueue.persistence.enabled=false).
+	queueEmptyDir bool
 	// goMemLimit is the collector's GOMEMLIMIT; empty means 204MiB, 80% of
 	// the default 256Mi limit, and "-" means none.
 	goMemLimit string
@@ -63,13 +67,13 @@ const bundledPrometheusPeer = "pods{app.kubernetes.io/component=server,app.kuber
 var chartProfiles = []chartProfile{
 	{
 		name:           "defaults",
-		present:        []string{"StatefulSet/db-collector", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "StatefulSet/loki", "Deployment/otel-collector", "NetworkPolicy/db-collector"},
+		present:        []string{"StatefulSet/db-collector", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "StatefulSet/loki", "StatefulSet/otel-collector", "PersistentVolumeClaim/otel-collector-queue", "NetworkPolicy/db-collector"},
 		collectorPeers: []string{bundledPrometheusPeer},
 	},
 	{
 		name:    "kind",
 		values:  []string{"kind.yaml"},
-		present: []string{"StatefulSet/db-collector", "StatefulSet/loki", "Deployment/otel-collector", "NetworkPolicy/db-collector"},
+		present: []string{"StatefulSet/db-collector", "StatefulSet/loki", "StatefulSet/otel-collector", "PersistentVolumeClaim/otel-collector-queue", "NetworkPolicy/db-collector"},
 		// The host through the loopback NodePort; pods stay limited to Prometheus.
 		collectorPeers: []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
 	},
@@ -77,7 +81,7 @@ var chartProfiles = []chartProfile{
 		name:           "kind-minimal",
 		values:         []string{"kind.yaml", "minimal.yaml"},
 		present:        []string{"StatefulSet/db-collector", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "NetworkPolicy/db-collector"},
-		absent:         []string{"StatefulSet/loki", "Deployment/otel-collector"},
+		absent:         []string{"StatefulSet/loki", "StatefulSet/otel-collector", "PersistentVolumeClaim/otel-collector-queue"},
 		collectorPeers: []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
 	},
 	{
@@ -110,9 +114,9 @@ var chartProfiles = []chartProfile{
 		// metrics over OTLP.
 		name:               "external-platform-example",
 		values:             []string{"external-platform.example.yaml"},
-		present:            []string{"StatefulSet/db-collector", "Deployment/otel-collector", "NetworkPolicy/db-collector"},
+		present:            []string{"StatefulSet/db-collector", "StatefulSet/otel-collector", "PersistentVolumeClaim/otel-collector-queue", "NetworkPolicy/db-collector"},
 		absent:             []string{"Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "StatefulSet/loki", "ConfigMap/heartbeat-prometheus-rules", "ConfigMap/heartbeat-dashboards"},
-		collectorPeers:     []string{"pods{app.kubernetes.io/name=otelCollector,component=standalone-collector}"},
+		collectorPeers:     []string{"pods{app.kubernetes.io/name=otelCollector,component=statefulset-collector}"},
 		collectorReceivers: []string{"otlp", "prometheus"},
 	},
 	{
@@ -188,6 +192,32 @@ var chartProfiles = []chartProfile{
 	{
 		name:      "collector-state-without-size",
 		set:       []string{"dbCollector.persistence.size="},
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		name: "otel-queue-without-volume",
+		inline: "otelCollectorQueue: {persistence: {enabled: false}}\n" +
+			"otelCollector: {extraVolumes: [{name: export-queue, emptyDir: {sizeLimit: 1Gi}}]}\n",
+		present:        []string{"StatefulSet/otel-collector"},
+		absent:         []string{"PersistentVolumeClaim/otel-collector-queue"},
+		collectorPeers: []string{bundledPrometheusPeer},
+		queueEmptyDir:  true,
+	},
+	{
+		// Turning persistence off must not leave the pod waiting for a claim
+		// the chart no longer creates.
+		name:      "otel-queue-claim-without-persistence",
+		set:       []string{"otelCollectorQueue.persistence.enabled=false"},
+		wantError: "make otelCollector.extraVolumes' export-queue volume an emptyDir",
+	},
+	{
+		name:      "otel-queue-persistence-without-claim",
+		inline:    "otelCollector: {extraVolumes: [{name: export-queue, emptyDir: {}}]}\n",
+		wantError: "needs the export-queue volume on the otel-collector-queue claim",
+	},
+	{
+		name:      "otel-queue-without-size",
+		set:       []string{"otelCollectorQueue.persistence.size="},
 		wantError: "values don't meet the specifications of the schema",
 	},
 }
@@ -326,6 +356,7 @@ func TestChartProfiles(t *testing.T) {
 			checkCollectorState(t, objects, profile.stateEmptyDir)
 			checkCollectorPipelines(t, objects, profile.collectorReceivers)
 			checkLogDelivery(t, objects)
+			checkExportQueue(t, objects, profile.queueEmptyDir)
 			checkLogIdentifiers(t, objects)
 			checkLokiLabelPolicy(t, objects)
 			checkGrafanaGzip(t, objects)
@@ -494,7 +525,7 @@ func checkInClusterEndpoints(t *testing.T, objects map[string]object) {
 			hosts = append(hosts, d.URL)
 		}
 	}
-	if cm, ok := objects["ConfigMap/otel-collector"]; ok {
+	if config, ok := collectorRelay(t, objects); ok {
 		var relay struct {
 			Receivers struct {
 				Prometheus struct {
@@ -511,7 +542,7 @@ func checkInClusterEndpoints(t *testing.T, objects map[string]object) {
 				Endpoint string `yaml:"endpoint"`
 			} `yaml:"exporters"`
 		}
-		mustUnmarshal(t, cm.Data["relay"], &relay)
+		mustUnmarshal(t, config, &relay)
 		for _, job := range relay.Receivers.Prometheus.Config.ScrapeConfigs {
 			for _, sd := range job.DNSSDConfigs {
 				hosts = append(hosts, sd.Names...)
@@ -546,7 +577,7 @@ func checkCollectorPipelines(t *testing.T, objects map[string]object, receivers 
 	if receivers == nil {
 		receivers = []string{"otlp"}
 	}
-	cm, ok := objects["ConfigMap/otel-collector"]
+	config, ok := collectorRelay(t, objects)
 	if !ok {
 		return
 	}
@@ -556,7 +587,7 @@ func checkCollectorPipelines(t *testing.T, objects map[string]object, receivers 
 			Pipelines map[string]any `yaml:"pipelines"`
 		} `yaml:"service"`
 	}
-	mustUnmarshal(t, cm.Data["relay"], &relay)
+	mustUnmarshal(t, config, &relay)
 	if got := slices.Sorted(maps.Keys(relay.Receivers)); !slices.Equal(got, receivers) {
 		t.Errorf("OTel Collector receivers = %v, want %v", got, receivers)
 	}
@@ -575,7 +606,7 @@ const lokiIngestionBurst = 6 << 20
 // batches below Loki's ingestion burst.
 func checkLogDelivery(t *testing.T, objects map[string]object) {
 	t.Helper()
-	cm, ok := objects["ConfigMap/otel-collector"]
+	config, ok := collectorRelay(t, objects)
 	if !ok {
 		return
 	}
@@ -600,7 +631,7 @@ func checkLogDelivery(t *testing.T, objects map[string]object) {
 			} `yaml:"pipelines"`
 		} `yaml:"service"`
 	}
-	mustUnmarshal(t, cm.Data["relay"], &relay)
+	mustUnmarshal(t, config, &relay)
 	logs := relay.Service.Pipelines["logs"]
 	if slices.ContainsFunc(logs.Processors, func(p string) bool { return p == "batch" || strings.HasPrefix(p, "batch/") }) {
 		t.Errorf("logs pipeline processors = %v, want no batch processor", logs.Processors)
@@ -623,6 +654,167 @@ func checkLogDelivery(t *testing.T, objects map[string]object) {
 	}
 }
 
+// collectorWorkload and collectorConfigMap are the OTel Collector's objects:
+// a StatefulSet, whose ConfigMap the subchart names otel-collector-statefulset.
+const (
+	collectorWorkload  = "StatefulSet/otel-collector"
+	collectorConfigMap = "ConfigMap/otel-collector-statefulset"
+)
+
+// collectorRelay returns the OTel Collector's config, and false when the
+// profile renders no Collector. A Collector without that ConfigMap fails the
+// test, so the Collector checks never pass by finding nothing to check.
+func collectorRelay(t *testing.T, objects map[string]object) (string, bool) {
+	t.Helper()
+	cm, ok := objects[collectorConfigMap]
+	if _, running := objects[collectorWorkload]; running && !ok {
+		t.Errorf("%s renders without %s", collectorWorkload, collectorConfigMap)
+	}
+	return cm.Data["relay"], ok
+}
+
+// exportQueueClaim is the chart's claim for the Collector's export queue.
+const exportQueueClaim = "otel-collector-queue"
+
+// The logs exporters keep their sending queue on disk, so rows the
+// db-collector counted delivered survive a Collector restart: the storage
+// extension is a file_storage that syncs every write, the Collector runs it,
+// and its directory is the export-queue volume, the otel-collector-queue
+// claim (an emptyDir only when the profile turns persistence off). One
+// Collector pod at a time, as a one-replica StatefulSet, opens the queue.
+func checkExportQueue(t *testing.T, objects map[string]object, emptyDir bool) {
+	t.Helper()
+	if _, ok := objects["Deployment/otel-collector"]; ok {
+		t.Error("the OTel Collector is a Deployment; its export queue needs the at-most-one pod of a StatefulSet")
+	}
+	config, ok := collectorRelay(t, objects)
+	if !ok {
+		return
+	}
+	var relay struct {
+		Extensions map[string]struct {
+			Directory string `yaml:"directory"`
+			FSync     bool   `yaml:"fsync"`
+		} `yaml:"extensions"`
+		Exporters map[string]struct {
+			SendingQueue struct {
+				Storage string `yaml:"storage"`
+			} `yaml:"sending_queue"`
+		} `yaml:"exporters"`
+		Service struct {
+			Extensions []string `yaml:"extensions"`
+			Pipelines  map[string]struct {
+				Exporters []string `yaml:"exporters"`
+			} `yaml:"pipelines"`
+		} `yaml:"service"`
+	}
+	mustUnmarshal(t, config, &relay)
+	directories := map[string]bool{}
+	for _, name := range relay.Service.Pipelines["logs"].Exporters {
+		if name == "debug" {
+			continue
+		}
+		storage := relay.Exporters[name].SendingQueue.Storage
+		ext, defined := relay.Extensions[storage]
+		switch {
+		case storage == "":
+			t.Errorf("%s sending_queue has no storage; its queue is in memory and a restart loses it", name)
+		case storage != "file_storage" && !strings.HasPrefix(storage, "file_storage/"):
+			t.Errorf("%s sending_queue.storage = %q, want a file_storage extension", name, storage)
+		case !defined:
+			t.Errorf("%s sending_queue.storage %q is not among the extensions", name, storage)
+		case !slices.Contains(relay.Service.Extensions, storage):
+			t.Errorf("%s sending_queue.storage %q is not in service.extensions %v; the Collector would not start", name, storage, relay.Service.Extensions)
+		case ext.Directory == "":
+			t.Errorf("%s has no directory", storage)
+		case !ext.FSync:
+			t.Errorf("%s fsync is off; a node crash could lose or corrupt queued rows", storage)
+		default:
+			directories[ext.Directory] = true
+		}
+	}
+
+	type volume struct {
+		Name                  string    `yaml:"name"`
+		EmptyDir              *struct{} `yaml:"emptyDir"`
+		PersistentVolumeClaim *struct {
+			ClaimName string `yaml:"claimName"`
+		} `yaml:"persistentVolumeClaim"`
+	}
+	type volumeMount struct {
+		Name      string `yaml:"name"`
+		MountPath string `yaml:"mountPath"`
+		ReadOnly  bool   `yaml:"readOnly"`
+	}
+	var spec struct {
+		Replicas int `yaml:"replicas"`
+		Template struct {
+			Spec struct {
+				SecurityContext struct {
+					FSGroup int `yaml:"fsGroup"`
+				} `yaml:"securityContext"`
+				Containers []struct {
+					VolumeMounts []volumeMount `yaml:"volumeMounts"`
+				} `yaml:"containers"`
+				Volumes []volume `yaml:"volumes"`
+			} `yaml:"spec"`
+		} `yaml:"template"`
+		VolumeClaimTemplates []any `yaml:"volumeClaimTemplates"`
+	}
+	sts, ok := objects[collectorWorkload]
+	if !ok {
+		t.Fatalf("%s renders without %s", collectorConfigMap, collectorWorkload)
+	}
+	if err := sts.Spec.Decode(&spec); err != nil {
+		t.Fatal(err)
+	}
+	if spec.Replicas != 1 {
+		t.Errorf("%s replicas = %d, want 1: replicas would share neither the queue nor its order", collectorWorkload, spec.Replicas)
+	}
+	if len(spec.VolumeClaimTemplates) > 0 {
+		t.Errorf("%s has volumeClaimTemplates; they can never change on an existing StatefulSet", collectorWorkload)
+	}
+	pod := spec.Template.Spec
+	if pod.SecurityContext.FSGroup == 0 {
+		t.Errorf("%s pod has no fsGroup; the Collector's non-root user may not write the queue volume", collectorWorkload)
+	}
+	for directory := range directories {
+		mounted := slices.ContainsFunc(pod.Containers[0].VolumeMounts, func(m volumeMount) bool {
+			return m.Name == "export-queue" && m.MountPath == directory && !m.ReadOnly
+		})
+		if !mounted {
+			t.Errorf("the queue directory %s is not the writable export-queue volume", directory)
+		}
+	}
+	hasEmptyDir := slices.ContainsFunc(pod.Volumes, func(v volume) bool { return v.Name == "export-queue" && v.EmptyDir != nil })
+	usesClaim := slices.ContainsFunc(pod.Volumes, func(v volume) bool {
+		return v.Name == "export-queue" && v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == exportQueueClaim
+	})
+	pvc, hasClaim := objects["PersistentVolumeClaim/"+exportQueueClaim]
+	switch {
+	case emptyDir && (!hasEmptyDir || usesClaim || hasClaim):
+		t.Errorf("export queue: emptyDir %v, claim %v, mounted %v; want an emptyDir only", hasEmptyDir, hasClaim, usesClaim)
+	case !emptyDir && (hasEmptyDir || !usesClaim || !hasClaim):
+		t.Errorf("export queue: emptyDir %v, claim %v, mounted %v; want the %s claim only", hasEmptyDir, hasClaim, usesClaim, exportQueueClaim)
+	case !emptyDir:
+		var claim struct {
+			AccessModes []string `yaml:"accessModes"`
+			Resources   struct {
+				Requests map[string]string `yaml:"requests"`
+			} `yaml:"resources"`
+		}
+		if err := pvc.Spec.Decode(&claim); err != nil {
+			t.Fatal(err)
+		}
+		if size := claim.Resources.Requests["storage"]; size != "1Gi" {
+			t.Errorf("export queue claim requests %s, want 1Gi", size)
+		}
+		if !slices.Equal(claim.AccessModes, []string{"ReadWriteOnce"}) {
+			t.Errorf("export queue claim access modes = %v, want [ReadWriteOnce]", claim.AccessModes)
+		}
+	}
+}
+
 // logIdentifiers are the log attributes session investigations correlate on.
 var logIdentifiers = []string{"user_id", "session_id", "request_id", "client_ip"}
 
@@ -630,7 +822,7 @@ var logIdentifiers = []string{"user_id", "session_id", "request_id", "client_ip"
 // processor action may delete or hash them.
 func checkLogIdentifiers(t *testing.T, objects map[string]object) {
 	t.Helper()
-	cm, ok := objects["ConfigMap/otel-collector"]
+	config, ok := collectorRelay(t, objects)
 	if !ok {
 		return
 	}
@@ -644,7 +836,7 @@ func checkLogIdentifiers(t *testing.T, objects map[string]object) {
 			Attributes []action `yaml:"attributes"`
 		} `yaml:"processors"`
 	}
-	mustUnmarshal(t, cm.Data["relay"], &relay)
+	mustUnmarshal(t, config, &relay)
 	for name, processor := range relay.Processors {
 		for _, a := range append(processor.Actions, processor.Attributes...) {
 			if slices.Contains(logIdentifiers, a.Key) && (a.Action == "delete" || a.Action == "hash") {

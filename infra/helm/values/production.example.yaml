@@ -211,3 +211,7 @@ loki:
   singleBinary:
     persistence:
       storageClass: gp3
+
+otelCollectorQueue:
+  persistence:
+    storageClassName: gp3

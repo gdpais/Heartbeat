@@ -31,6 +31,7 @@ Heartbeat's own objects (fixed names; one release per namespace):
 | `ConfigMap/heartbeat-integrations` | `integrations.yaml`, rendered from the `integrations` values |
 | `ConfigMap/heartbeat-prometheus-rules` | Rule files; Prometheus mounts them at `/etc/prometheus-rules` and its config reloader reloads on change |
 | `ConfigMap/heartbeat-dashboards` | Dashboards; label `grafana_dashboard: "1"` for shared Grafanas with a dashboard sidecar |
+| `PersistentVolumeClaim/otel-collector-queue` | The OTel Collector's logs export queue (`otelCollectorQueue.persistence`, 1 GiB): rows the Collector accepted survive its restart. Only with the Collector, so not in the `minimal` profile. kind uses its default `standard` (local-path) class, a directory on the node that lives as long as the cluster. Without persistence the queue is an emptyDir, which survives a container restart but not a new pod |
 
 Third-party engines are pinned chart dependencies, each turned off with
 `<name>.enabled=false` so an environment can use shared services instead:
@@ -40,7 +41,7 @@ Third-party engines are pinned chart dependencies, each turned off with
 | `prometheus` (prometheus-community) | 29.35.0 | Prometheus v3.15.0, Alertmanager v0.34.1 | Static and DNS discovery only, no cluster RBAC. Sends alerts to Alertmanager |
 | `grafana` (grafana-community) | 13.2.7 | Grafana 13.2.3 | Stateless; datasources and dashboards from source |
 | `loki` (grafana-community) | 18.13.7 | Loki 3.7.8 | Monolithic, filesystem storage locally |
-| `opentelemetry-collector` (alias `otelCollector`) | 0.175.0 | otelcol-contrib 0.161.0 | Same pipelines as before: metrics to Prometheus, logs to Loki |
+| `opentelemetry-collector` (alias `otelCollector`) | 0.175.0 | otelcol-contrib 0.161.0 | One-replica StatefulSet (`otel-collector-0`), so only one pod at a time opens the export queue. Metrics to Prometheus, logs to Loki through a queue on disk |
 
 Rules the chart keeps (checked by `make chart-check`): only namespaced
 objects, no CRDs; deterministic rendering (no random values, lookups or
