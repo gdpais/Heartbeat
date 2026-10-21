@@ -80,6 +80,7 @@ the rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Release workflows: release-please keeps a release pull request (`CHANGELOG.md`, `version.txt`, chart `version`/`appVersion`); a `vX.Y.Z` tag on `master` that passed CI publishes multi-arch images and the chart to GHCR and lists their digests in the GitHub release
 - [x] Change-based CI: slow jobs run only when a change can affect them, every job on `master`; one required check, `ci-ok` ([ADR 0007](docs/architecture/decisions/0007-change-based-ci-with-one-required-check.md))
 - [x] Switch the `master` ruleset's required checks from `test`, `Helm chart` and `kind end-to-end` to `ci-ok`
+- [ ] Pin GitHub Actions by commit SHA, kept current by Renovate; they are pinned by major tag
 - [ ] At the end of phase 2: create the release GitHub App; set `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY` ([setup](CONTRIBUTING.md#releases)). Until then the release-please job is skipped and no releases are cut, not even by hand; the first release pull request then covers every Conventional Commit since `v0.1.0`
 - [ ] At `1.0.0`, the first production release: remove `"prerelease": true` from `release-please-config.json`
 - [x] Tag ruleset on all tags (not only `v*`, so later component tags are covered): no updates or deletions
@@ -228,6 +229,9 @@ Replica ownership and outage testing are section 19. Design details:
 - [x] Make readiness reflect expected collector state and add deployment health probes and restart/recovery policies
 - [x] Validate safe reloads, including partial reconciliation failure (rollback) and replacement-poller startup failure (unit-tested)
 - [x] Bound every probe with a hard deadline so a probe the driver cannot cancel never stalls the collector cycle; keep at most one abandoned call per target and bound dead connections with a driver socket timeout
+- [ ] Per-probe failure isolation: a failing probe fails only itself; today it fails its whole target for that cycle
+- [ ] Cap the rows a probe reads (for example 10,000) and fail the probe past the cap, so a `query_template` that returns millions of rows cannot run the pod out of memory
+- [ ] A global series budget per collector with an overflow counter: the per-label caps on applications, modules and operations multiply, so the worst case has no bound
 
 ### 2.7 Collector endpoint security
 - [x] Diagnostics: require the admin token for `GET /admin/config`; keep `/readyz` to status only and move raw driver errors (host, port, login) behind auth
@@ -235,6 +239,8 @@ Replica ownership and outage testing are section 19. Design details:
 - [x] Admin token: compare in constant time
 - [x] Network exposure: add a NetworkPolicy limiting port 8082 to Prometheus and operator access
 - [x] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; per-target TLS settings wait until a real target needs them
+- [ ] Check at validation that a `query_template` is a single read-only `SELECT`; the docs require it, nothing enforces it
+- [ ] Egress NetworkPolicy for the collector: DNS, the monitored targets and the OTel Collector only (the policy restricts ingress only)
 
 ---
 
@@ -250,7 +256,7 @@ inventory exists; API-managed onboarding [4.4, 10.1] follows in stage 3.
 Generic source expansion [3.4] remains later work. Grafana dashboards [10.4]
 follow the ingest path.
 
-- [ ] Validate this stage: every log-type query against a SQL Server fixture with the `oslog_*` tables, extraction → OTel Collector → Loki and derived metrics → Prometheus on kind, restarts and outages without gaps; generated OTLP traces → Tempo, linked to their logs [16.1–16.2]
+- [ ] Validate this stage: every log-type query against a SQL Server fixture with the `oslog_*` tables, extraction → OTel Collector → Loki and derived metrics → Prometheus on kind, restarts and outages without gaps [16.1–16.2]; Tempo and request traces are not part of this exit [3.6]
 
 ### 3.1 OTel gateway bootstrap (service removed, [ADR 0009](docs/architecture/decisions/0009-remove-the-otel-gateway.md))
 - [x] Create Go service entrypoint `services/otel-gateway/cmd/otel-gateway/`
@@ -281,6 +287,7 @@ follow the ingest path.
 - [x] Derived metrics from the [catalog](docs/architecture/application-observability.md#derived-metrics), with bounded labels; recording rules, SLO burn-rate alerts and promtool tests; a Go test fails when a rule, dashboard or doc names an OutSystems metric the collector does not export
 - [x] Active users and sessions, and new error fingerprints: left out of the collector on purpose ([why](docs/architecture/application-observability.md#not-built-on-purpose)); active users come from Loki in the dashboards [10.4], new fingerprints need a persisted fingerprint set first. `make patientzero-scale` simulates them at production cardinality (4,829 users and 13,871 sessions a week, 40 recurring error kinds and 3 new ones a day) with their known answers in `expected.json`
 - [x] Lose no logs on a backlog: the production-sized check found rows lost between the OTel Collector and Loki after the db-collector had counted them delivered (out-of-order batches Loki rejects, a batch above its ingestion burst, a batch processor that hid a full queue). The logs exporter now sends in order, retries without a deadline, cuts batches at 4 MiB and has no batch processor in front; a chart test pins it and `LokiDiscardingLogs` warns ([why](docs/architecture/application-observability.md)). Left: the exporter's queue is in memory, so a Collector restart loses what it holds
+- [ ] Persistent sending queue for the logs exporter (`file_storage` on a volume), so a Collector restart loses nothing the db-collector counted delivered; a kind test restarts the Collector during a backlog and compares Loki with the rows read. The stage validation's "restarts without gaps" needs it
 - [x] Decide the OTel gateway's future: removed with its JSON event endpoint and alert sink; Alertmanager's default receiver has no integrations; push sources go to the OTel Collector over OTLP, mapped with OTTL ([ADR 0009](docs/architecture/decisions/0009-remove-the-otel-gateway.md))
 
 ### 3.4 Generic telemetry expansion
@@ -300,8 +307,11 @@ Design: [request traces](docs/architecture/application-observability.md#request-
 Heartbeat accepts all three OpenTelemetry signals, so any source that sends
 OTLP traces has somewhere to store them, and step B [3.5] reuses the store. No
 real source sends traces yet, so the tests use generated ones (`telemetrygen`).
-Nothing here waits on the logging-database survey; do it after the phase 2
-items the survey does not block.
+Not part of the phase 2 exit (decided 2026-10-21): OutSystems 11 self-managed
+sends no traces, and the request timeline [3.5] already answers "what happened
+in this request" from logs. Build this together with step B [3.5], as one
+request-traces feature, once something consumes it: the first OTLP trace
+source (OutSystems Cloud or ODC) or the phase 7 investigation timeline.
 
 - [ ] Decide trace storage and retention (ADR; Grafana Tempo in single-binary mode is the natural fit next to Loki)
 - [ ] Tempo as a pinned chart dependency with persistence and retention, off in the `minimal` profile; storage settings in the production example values
@@ -543,6 +553,8 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Enforce low-cardinality label strategy
 - [x] Keep high-cardinality investigation fields in log body/payload
 - [x] Keep user, session and request IDs and client IP as structured metadata: the Collector no longer deletes them; Loki indexes only service.name, service.namespace, deployment.environment.name and outsystems.log_type
+- [x] Decide how user IDs, session IDs and client IPs are kept in Loki: raw, with access to Loki and Grafana restricted [9.6] ([ADR 0012](docs/architecture/decisions/0012-personal-data-in-telemetry.md))
+- [ ] Compliance sign-off on raw identifiers, Loki retention and Grafana access before the first production deploy [18] ([ADR 0012](docs/architecture/decisions/0012-personal-data-in-telemetry.md))
 
 ### 9.3 Grafana
 - [x] Provision datasources as code
@@ -558,6 +570,9 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Provision collector config
 - [x] Route metrics/logs correctly to Prometheus/Loki paths
 - [x] Prefer collector processors/config before custom service code
+
+### 9.6 Network access to the bundled backends
+- [ ] NetworkPolicies for the OTel Collector, Prometheus, Alertmanager and Loki: only the components that use each one reach it (any pod can today, and Loki holds user IDs and client IPs)
 
 ---
 
@@ -603,6 +618,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [ ] throughput/latency
 - [ ] error events where available
 - [ ] page life expectancy per NUMA node (`Buffer Node` counters); the `buffer_cache` probe reports only the server-wide `Buffer Manager` value
+- [ ] `blocking_session_id` as a label creates and drops a series for every blocking session: export the blocked count, and the top blockers as evidence [12.4]
 
 ### 11.3 Dashboards
 - [ ] SQL Server overview dashboard
@@ -755,15 +771,15 @@ First slice, with phase 2:
 - [x] Traffic profile from the survey's aggregates only (`load/traffic.js`): integration calls per screen request, peak factor, the day's hourly curve (a `day` load profile); duration distributions, error ratio and identifier coverage were not in the extract
 - [x] Service bootstrap: `tools/patientzero/` module, own SQL login with write rights on `patientzero` and `patientzero_log` only, health endpoint, Dockerfile, Helm chart into a `patientzero` namespace, `make patientzero-up` and `make patientzero-down`
 - [x] First entry points: a Traditional screen, a Reactive server action and an exposed REST API; each request runs business SQL and writes its log rows under one `Request_Key`, with the caller's session, user and client IP
-- [ ] More entry points: timers, extension calls and a fake consumed REST partner
 - [x] k6 load: virtual users with stable identities; smoke, steady, peak, soak and day profiles, run as a Job on kind (`make patientzero-load`); the mix in `load/traffic.js` takes the survey's aggregates
-- [ ] Compressed calendar: weekly rotation on demand, backfill within Loki's 168h limit, commits held back past the `lag`, long-running screens and timers, `Instant` in a configured time zone including daylight saving switches; the collector's clock is never changed
-- [ ] Scenario files (fault, duration, expected PromQL/LogQL/alert signals) and an admin endpoint to start them: `blocking` (and deadlock), `bad-deploy`, `slow-partner`, `slow-sql`, `timer-backlog`, `bad-front-end`, `log-growth`, `log-backlog`, `rotation`
-- [ ] Run journal (JSONL): users, sessions, requests, and each fault with its start and end
+- [ ] Scenario runner: scenario files (fault, duration, expected PromQL/LogQL/alert signals), an admin endpoint to start them, and a run journal (JSONL: users, sessions, requests, and each fault with its start and end)
+- [ ] Ingest scenarios: `rotation` (weekly rotation on demand), `log-backlog`, `log-growth`, backfill within Loki's 168h limit, commits held back past the `lag`, and restarts and outages of the db-collector, the OTel Collector, Loki and SQL Server; the collector's clock is never changed
+- [ ] SLO scenarios: `bad-deploy` and `slow-sql` fire the existing burn-rate alerts in Alertmanager, end to end
 - [ ] `make kind-e2e` runs the scenarios against PatientZero and checks their signals; replace the hand-run load in the [live demo](docs/guides/live-demo.md) with them [16.2, 16.3]
 
 Later, each with the phase that needs it:
 - [ ] Phases 3–4: onboard PatientZero through the API and the UI as the reference application [16.3]
+- [ ] Phase 7, with the analyzer and alert work that uses them: timers, extension calls and a fake consumed REST partner; long-running screens and timers; `Instant` in a configured time zone across daylight saving switches; the `blocking` (and deadlock), `slow-partner`, `timer-backlog` and `bad-front-end` scenarios [6, 13]
 - [ ] Phase 7: investigations and reports on PatientZero runs compared with their journals; decide soak runs or a Prometheus TSDB backfill for multi-day baselines and weekly reports [6, 13, 14]
 - [ ] OTLP mode for the OutSystems Cloud/ODC streams and traces [3.4, 3.6]; a MuleSoft-like source [3.4]; an Oracle-backed variant [21]
 
@@ -799,6 +815,8 @@ pull it forward if a production SQL Server must be monitored sooner.
 - [ ] Document where the monitored SQL Servers sit relative to the EKS VPC; validate pod-to-database DNS/TCP/authentication/TLS from EKS
 - [ ] Validate production-specific networking, identity, TLS, storage, retention and restore in the target environment; kind tests alone do not establish production acceptance
 - [ ] Optional: rehearse Argo CD on kind before the first production deploy
+- [ ] TLS and auth headers on the collector's OTLP exporter, before it sends to an external Collector or platform
+- [ ] TLS for the collector's admin endpoints: the bearer token travels over plain HTTP
 
 ## 19. Advanced collector reliability and HA
 

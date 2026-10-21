@@ -107,4 +107,6 @@ phase-by-phase status and [TODO.md](../../TODO.md) for the task list.
 - Expected scale: environments, applications, database instances, log volume,
   scrape interval and retention?
 - Preferred notification channels and on-call tooling?
-- Compliance constraints: PII handling, retention and audit?
+- Compliance constraints: PII handling, retention and audit? (Identifiers in
+  Loki are kept raw pending sign-off before production:
+  [ADR 0012](../architecture/decisions/0012-personal-data-in-telemetry.md).)
