@@ -1,7 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": "Version policy: ADR 0005 (latest stable, pinned exactly, reviewed updates).",
-  "extends": ["config:recommended", ":dependencyDashboard"],
+  "extends": ["config:recommended", ":dependencyDashboard", "helpers:pinGitHubActionDigestsToSemver"],
   "schedule": ["before 6am on monday"],
   "prConcurrentLimit": 5,
   "postUpdateOptions": ["gomodTidy"],
@@ -10,6 +10,12 @@
       "description": "Batch low-risk updates into one weekly PR.",
       "matchUpdateTypes": ["minor", "patch", "digest"],
       "groupName": "non-major dependencies"
+    },
+    {
+      "description": "GitHub Actions are pinned by commit SHA with the exact version as a comment; their non-major updates arrive in one weekly PR of their own, so CI changes are reviewed apart from code dependencies.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "GitHub Actions"
     },
     {
       "description": "Majors arrive one per PR so release notes are read one at a time.",

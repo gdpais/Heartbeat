@@ -143,6 +143,20 @@ Adding a job: give it `needs: changes` and an `if:` on a flag, add the flag to
 triggers: a required check whose workflow never starts is never reported, and
 the pull request waits forever.
 
+Actions and reusable workflows from other repositories are pinned to a full
+commit SHA, with the exact version as a comment:
+`uses: actions/checkout@<40-character SHA> # v7.0.1`. A tag can be moved to
+other code; a commit cannot. `make test` fails on a `uses:` that is not pinned
+this way (`tests/workflow_pins_test.go`), so the `test` job and `ci-ok` fail
+too. To add or bump an action, resolve the tag to its commit with
+`gh api repos/<owner>/<repo>/git/ref/tags/<tag>` (for an annotated tag, follow
+`.object.sha` through `gh api repos/<owner>/<repo>/git/tags/<sha>`). Renovate
+(`renovate.json`) proposes the updates, the SHA and the comment together, in
+one weekly `GitHub Actions` pull request; majors wait for approval on the
+dependency dashboard. The Renovate app is not installed on the repository yet
+([TODO 0.4](TODO.md)), so until it is, nothing bumps the pins: update them by
+hand.
+
 ## Releases
 
 A release is a `vX.Y.Z` tag on `master` with [Semantic Versioning](https://semver.org/);
