@@ -106,9 +106,11 @@ otelCollector:
           processors: [memory_limiter, resource, batch]
           # The same OTLP/HTTP exporter: logs and metrics go to one endpoint.
           exporters: [otlp_http/logs]
+        # No batch processor, as in the chart's values: the exporter's queue
+        # batches, and a full queue reaches the db-collector as a 503.
         logs:
           receivers: [otlp]
-          processors: [memory_limiter, resource, batch]
+          processors: [memory_limiter, resource]
           exporters: [otlp_http/logs]
       telemetry:
         metrics:

@@ -498,6 +498,28 @@ otelCollector:
       # alternateConfig is merged and a null override does not remove it.
       otlp_http/logs:
         endpoint: http://loki:3100/otlp
+        # Loki rejects for good a row more than half its max_chunk_age (1h)
+        # behind the newest row of its stream. Batches exported in parallel,
+        # or a throttled one retried after later ones, arrive out of order
+        # during a backlog (after an outage, on a first start) and lost rows
+        # the db-collector had already counted delivered. So one consumer
+        # exports the batches in order, and a throttled batch is retried
+        # until Loki takes it. A push larger than Loki's
+        # ingestion_burst_size_mb (6) is never taken, so the queue cuts
+        # batches at 4 MiB. While a batch waits the queue fills (64 MiB), the
+        # receiver answers 503 (see the logs pipeline), and the db-collector
+        # keeps its watermark and retries. The queue is in memory: rows in it
+        # when the Collector restarts are lost.
+        sending_queue:
+          num_consumers: 1
+          sizer: bytes
+          queue_size: 67108864
+          batch:
+            flush_timeout: 1s
+            sizer: bytes
+            max_size: 4194304
+        retry_on_failure:
+          max_elapsed_time: 0s
     service:
       extensions: [health_check]
       pipelines:
@@ -505,9 +527,14 @@ otelCollector:
           receivers: [otlp]
           processors: [memory_limiter, resource, batch]
           exporters: [prometheus, debug]
+        # No batch processor: it answers the receiver before the export, so a
+        # full exporter queue dropped rows the db-collector had been told were
+        # delivered. Without it a full queue fails the request, the receiver
+        # answers 503 and the db-collector retries; the exporter's queue
+        # batches instead.
         logs:
           receivers: [otlp]
-          processors: [memory_limiter, resource, batch]
+          processors: [memory_limiter, resource]
           exporters: [otlp_http/logs, debug]
       telemetry:
         metrics:

@@ -42,7 +42,16 @@ Data path for self-managed OutSystems 11:
 4. From the same rows the collector updates the
    [derived metrics](#derived-metrics), which Prometheus scrapes from its
    `/metrics`.
-5. The watermark moves only after the batch is delivered.
+5. The watermark moves only after the batch is delivered: accepted by the
+   OTel Collector, whose logs exporter sends batches of at most 4 MiB to
+   Loki one at a time, in order, and retries a throttled one until Loki
+   takes it (a push above Loki's 6 MB burst is never taken). Loki rejects
+   for good a row more than an hour behind the newest row of its stream, so
+   batches exported in parallel lost rows during a backlog. While a batch
+   waits, the Collector's queue fills and it answers 503: the batch is not
+   delivered and the collector reads it again. The logs pipeline has no
+   batch processor, which would accept rows before they are queued. The
+   queue is in memory, so rows queued when the Collector restarts are lost.
 
 ## OutSystems fields
 
