@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -324,6 +325,7 @@ func TestChartProfiles(t *testing.T) {
 			checkCollectorNetworkPolicy(t, objects, profile.collectorPeers)
 			checkCollectorState(t, objects, profile.stateEmptyDir)
 			checkCollectorPipelines(t, objects, profile.collectorReceivers)
+			checkLogDelivery(t, objects)
 			checkLogIdentifiers(t, objects)
 			checkLokiLabelPolicy(t, objects)
 			checkGrafanaGzip(t, objects)
@@ -560,6 +562,64 @@ func checkCollectorPipelines(t *testing.T, objects map[string]object, receivers 
 	}
 	if got := slices.Sorted(maps.Keys(relay.Service.Pipelines)); !slices.Equal(got, []string{"logs", "metrics"}) {
 		t.Errorf("OTel Collector pipelines = %v, want [logs metrics]", got)
+	}
+}
+
+// lokiIngestionBurst is Loki's default ingestion_burst_size_mb, in bytes:
+// a larger push is never accepted.
+const lokiIngestionBurst = 6 << 20
+
+// The logs pipeline must deliver a backlog to Loki in order and lose nothing
+// the db-collector counted delivered: no batch processor, which accepts rows
+// before they are queued, one export consumer, no retry deadline, and
+// batches below Loki's ingestion burst.
+func checkLogDelivery(t *testing.T, objects map[string]object) {
+	t.Helper()
+	cm, ok := objects["ConfigMap/otel-collector"]
+	if !ok {
+		return
+	}
+	var relay struct {
+		Exporters map[string]struct {
+			SendingQueue struct {
+				NumConsumers int    `yaml:"num_consumers"`
+				Sizer        string `yaml:"sizer"`
+				Batch        struct {
+					Sizer   string `yaml:"sizer"`
+					MaxSize int    `yaml:"max_size"`
+				} `yaml:"batch"`
+			} `yaml:"sending_queue"`
+			RetryOnFailure struct {
+				MaxElapsedTime string `yaml:"max_elapsed_time"`
+			} `yaml:"retry_on_failure"`
+		} `yaml:"exporters"`
+		Service struct {
+			Pipelines map[string]struct {
+				Processors []string `yaml:"processors"`
+				Exporters  []string `yaml:"exporters"`
+			} `yaml:"pipelines"`
+		} `yaml:"service"`
+	}
+	mustUnmarshal(t, cm.Data["relay"], &relay)
+	logs := relay.Service.Pipelines["logs"]
+	if slices.ContainsFunc(logs.Processors, func(p string) bool { return p == "batch" || strings.HasPrefix(p, "batch/") }) {
+		t.Errorf("logs pipeline processors = %v, want no batch processor", logs.Processors)
+	}
+	for _, name := range logs.Exporters {
+		if name == "debug" {
+			continue
+		}
+		e := relay.Exporters[name]
+		q := e.SendingQueue
+		if q.NumConsumers != 1 {
+			t.Errorf("%s sending_queue.num_consumers = %d, want 1", name, q.NumConsumers)
+		}
+		if q.Batch.Sizer != "bytes" || q.Batch.MaxSize <= 0 || q.Batch.MaxSize >= lokiIngestionBurst {
+			t.Errorf("%s sending_queue.batch = %+v, want sizer bytes and max_size below %d", name, q.Batch, lokiIngestionBurst)
+		}
+		if d, err := time.ParseDuration(e.RetryOnFailure.MaxElapsedTime); err != nil || d != 0 {
+			t.Errorf("%s retry_on_failure.max_elapsed_time = %q, want 0s (no deadline)", name, e.RetryOnFailure.MaxElapsedTime)
+		}
 	}
 }
 
