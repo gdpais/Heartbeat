@@ -72,7 +72,7 @@ func ValidateReadOnlySelect(query string) error {
 			}
 			// Checked after a '.' too: a reserved word must be [quoted] even
 			// as the column part of a name, so t.DROP is never a column.
-			if reason, ok := forbiddenSQLKeywords[token.text]; ok {
+			if reason, ok := forbiddenSQLKeywords[token.text]; ok && !queryHint(statement[i+1:], token.text) {
 				return fmt.Errorf("contains %s, %s", token.text, reason)
 			}
 			if token.afterDot {
@@ -110,11 +110,12 @@ func ValidateReadOnlySelect(query string) error {
 // They are T-SQL statement keywords, all reserved words except RECEIVE and
 // SEND, so none can appear unquoted as a column or table name; a quoted name
 // such as [Backup] is fine.  FETCH (OFFSET ... FETCH) and END (CASE ... END)
-// are valid in a SELECT and are not listed.
+// are valid in a SELECT and are not listed; MERGE and USE are allowed in the
+// query hints that use them ([queryHint]).
 var forbiddenSQLKeywords = func() map[string]string {
 	reasons := map[string][]string{
 		"which changes data":                                    {"INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "BULK", "WRITETEXT", "UPDATETEXT"},
-		"which changes the schema or permissions":               {"CREATE", "ALTER", "DROP", "GRANT", "DENY", "REVOKE"},
+		"which changes the schema or permissions":               {"CREATE", "ALTER", "DROP", "ADD", "GRANT", "DENY", "REVOKE"},
 		"which runs a procedure or dynamic SQL":                 {"EXEC", "EXECUTE"},
 		"which writes the result to a table (SELECT ... INTO)":  {"INTO"},
 		"which reads another server or a file":                  {"OPENROWSET", "OPENQUERY", "OPENDATASOURCE"},
@@ -132,6 +133,24 @@ var forbiddenSQLKeywords = func() map[string]string {
 	}
 	return out
 }()
+
+// queryHint reports whether keyword, followed by next, is part of a read-only
+// query hint rather than a statement: MERGE JOIN and MERGE UNION (join and
+// OPTION hints), USE PLAN and USE HINT (...) (OPTION hints).  JOIN, UNION
+// and PLAN are reserved words, so no MERGE or USE statement can continue
+// with them unquoted; HINT is not, so it must be followed by '('.
+func queryHint(next []sqlToken, keyword string) bool {
+	word := func(i int, text string) bool {
+		return i < len(next) && next[i].kind == sqlWord && next[i].text == text
+	}
+	switch keyword {
+	case "MERGE":
+		return word(0, "JOIN") || word(0, "UNION")
+	case "USE":
+		return word(0, "PLAN") || word(0, "HINT") && len(next) > 1 && next[1].kind == sqlPunct && next[1].text == "("
+	}
+	return false
+}
 
 // routinePrefix reports whether word, upper-cased, names a system (sp_) or
 // extended (xp_) stored procedure.
@@ -287,8 +306,8 @@ func wordEnd(query string, i int) int {
 // numberEnd returns the index just past the number that starts at query[i]
 // with a digit, read as SQL Server reads it: 0x and hex digits, or digits, an
 // optional fraction and an optional exponent.  Anything else ends it, so
-// "1DROP" and "1.DROP" are a number followed by the keyword DROP, as the
-// server sees them.
+// "1DROP", "1.DROP" and "1eDROP" are a number followed by the keyword DROP,
+// as the server sees them.
 func numberEnd(query string, i int) int {
 	digits := func(i int, hex bool) int {
 		for i < len(query) && ('0' <= query[i] && query[i] <= '9' ||
@@ -304,14 +323,15 @@ func numberEnd(query string, i int) int {
 	if i < len(query) && query[i] == '.' {
 		i = digits(i+1, false)
 	}
+	// SQL Server reads "1e", "1e+" and "1.e" as complete floats, so the e
+	// and sign belong to the number even without exponent digits: in
+	// "1eDROP" the server sees 1e and then DROP.
 	if i < len(query) && (query[i] == 'e' || query[i] == 'E') {
-		j := i + 1
-		if j < len(query) && (query[j] == '+' || query[j] == '-') {
-			j++
+		i++
+		if i < len(query) && (query[i] == '+' || query[i] == '-') {
+			i++
 		}
-		if end := digits(j, false); end > j {
-			i = end
-		}
+		i = digits(i, false)
 	}
 	return i
 }

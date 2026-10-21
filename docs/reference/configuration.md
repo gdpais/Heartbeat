@@ -150,13 +150,14 @@ reason, without quoting the query. Rejected:
   or `INTERSECT` (T-SQL needs no `;` between statements);
 - a first word other than `SELECT` or `WITH`, so a bare procedure name too;
 - DML and DDL (`INSERT`, `UPDATE`, `DELETE`, `MERGE`, `TRUNCATE`, `CREATE`,
-  `ALTER`, `DROP`), permissions (`GRANT`, `DENY`, `REVOKE`), `EXEC` and
+  `ALTER`, `DROP`, `ADD`), permissions (`GRANT`, `DENY`, `REVOKE`), `EXEC` and
   `EXECUTE`, `SELECT … INTO`, `OPENROWSET`, `OPENQUERY`, `OPENDATASOURCE`,
   `WAITFOR`, `SHUTDOWN`, `DBCC`, `BACKUP`, `RESTORE`, `USE`, and the other
   T-SQL statement keywords: `SET`, `DECLARE`, transactions (`BEGIN`,
   `COMMIT`, `ROLLBACK`, `SAVE`), `KILL`, `RECONFIGURE` and the like (the full
   list is in
-  [`query.go`](../../internal/config/query.go));
+  [`query.go`](../../internal/config/query.go)). The query hints
+  `MERGE JOIN`, `MERGE UNION`, `USE HINT (…)` and `USE PLAN` are allowed;
 - a name starting with `sp_` or `xp_` (system and extended procedures), and an
   `END` without a matching `CASE`;
 - unbalanced parentheses, an unterminated string, comment or quoted
@@ -167,8 +168,9 @@ Keywords inside string literals (`'…'`, `N'…'`), comments (`--`, nested
 `/* */`) and quoted identifiers (`[…]`, `"…"`) are ignored, so a column named
 `[Backup]` is fine, while `t.Backup` is rejected (a reserved word must be
 quoted there too). A statement after a comment, or glued to a number as in
-`SELECT 1DROP …` or `SELECT 1.DROP …`, is still caught. The built-in
-probe and log-type queries pass the same check. It is a safety net, not the
+`SELECT 1DROP …`, `SELECT 1.DROP …` or `SELECT 1eDROP …`, is still caught.
+The built-in probe and log-type queries pass the same check. It is a safety
+net, not the
 control: a text check cannot prove a query has no side effects. What keeps
 probes read-only is the collector's login, which holds only read grants
 ([login permissions](../guides/database-targets.md#collector-login-permissions)).

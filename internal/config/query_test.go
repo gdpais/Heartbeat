@@ -32,6 +32,8 @@ func TestValidateReadOnlySelectAccepts(t *testing.T) {
 		{"XML methods", "SELECT x.value('(./Record/@id)[1]', 'int') FROM t CROSS APPLY t.r.nodes('/x') AS n(x)"},
 		{"live demo divide by zero", "SELECT 1 AS blocking_session_id, 1/0 AS blocked_count"},
 		{"numbers", "SELECT 1.5, 2e3, 2E-3, 1., 0x1F, .5, $1.00, 1FROM sys.objects"},
+		{"MERGE JOIN hint", "SELECT a.x FROM a INNER MERGE JOIN b ON a.x = b.x OPTION (MERGE JOIN, MERGE UNION)"},
+		{"USE HINT and USE PLAN hints", "SELECT 1 FROM t OPTION (USE HINT ('DISABLE_OPTIMIZER_ROWGOAL'), USE PLAN N'<ShowPlanXML/>')"},
 		{"tabs and CRLF", "SELECT\t1\r\nFROM t"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -94,6 +96,13 @@ func TestValidateReadOnlySelectRejects(t *testing.T) {
 		{"keyword glued to a number and a dot", "SELECT 1.DROP TABLE dbo.t", "contains DROP"},
 		{"keyword glued to a number", "SELECT 1DROP TABLE dbo.t", "contains DROP"},
 		{"keyword glued to a comparison", "SELECT 1 AS x FROM sys.objects WHERE 1 = 1DELETE dbo.t", "contains DELETE"},
+		{"keyword glued to a bare exponent", "SELECT 1eDROP TABLE dbo.t", "contains DROP"},
+		{"keyword glued to a bare exponent after a dot", "SELECT 1.eEXEC('x')", "contains EXEC"},
+		{"keyword glued to a signed bare exponent", "SELECT 1e+WAITFOR DELAY '00:00:20'", "contains WAITFOR"},
+		{"SELECT glued to a bare exponent", "SELECT 1eSELECT 2", "a second top-level SELECT"},
+		{"ADD SIGNATURE", "SELECT 1 AS a ADD SIGNATURE TO dbo.p BY CERTIFICATE c", "contains ADD"},
+		{"MERGE statement", "SELECT 1 MERGE INTO t USING s ON 1 = 1 WHEN MATCHED THEN DELETE;", "contains MERGE"},
+		{"USE a database named hint", "SELECT 1 USE hint", "contains USE"},
 		{"keyword glued to an exponent", "SELECT 1e5WAITFOR DELAY '00:00:20'", "contains WAITFOR"},
 		{"keyword glued to a hex literal", "SELECT 0x1FGRANT CONTROL SERVER TO x", "contains GRANT"},
 		{"keyword as a column part", "SELECT t.SHUTDOWN FROM t", "contains SHUTDOWN"},
