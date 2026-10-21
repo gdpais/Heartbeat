@@ -63,6 +63,9 @@ type ProbeDefinition struct {
 	// TimeoutMS is the per-execution deadline in milliseconds; 0 means use the
 	// default derived from the scrape interval.
 	TimeoutMS int
+	// MaxRows is the most rows a SQL Server probe may return; 0 means the
+	// default ([config.DefaultProbeMaxRows]).
+	MaxRows int
 	// Lag, for an outsystems_logs log type, replaces the collector's lag
 	// ([ScheduledProbe.OutSystemsLogs]); 0 means the collector's.
 	Lag time.Duration

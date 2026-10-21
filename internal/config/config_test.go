@@ -996,3 +996,93 @@ func TestManagerRunsExtraValidators(t *testing.T) {
 		t.Fatalf("NewManager error = %v, want the validator's error", err)
 	}
 }
+
+// writeProbeConfig writes outSystemsLogsConfig with its probe lists replaced:
+// sqlProbes for the sqlserver collector, logProbes for the outsystems_logs
+// one (flow-style YAML lists).
+func writeProbeConfig(t *testing.T, sqlProbes, logProbes string) string {
+	t.Helper()
+	path := outSystemsLogsConfig(t, otelSection, "")
+	content, _ := os.ReadFile(path)
+	text := strings.Replace(string(content), "probes: [{name: waits}]", "probes: "+sqlProbes, 1)
+	text = strings.Replace(text, "probes: [{name: error}, {name: general, timeout_ms: 20000}]", "probes: "+logProbes, 1)
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Every query_template, SQL Server or OutSystems, default probe list or a
+// target's own, must be one read-only SELECT; the error names the probe and
+// the reason but never quotes the query, which could hold a secret.
+func TestLoadRuntimeConfigRejectsUnsafeQueryTemplates(t *testing.T) {
+	const secret = "hunter2-literal"
+	unsafe := `"SELECT 1 AS x; EXEC sp_addlogin 'eve', '` + secret + `'"`
+	for _, tc := range []struct {
+		name, sqlProbes, logProbes, want string
+	}{
+		{"sqlserver default probe", "[{name: waits, query_template: " + unsafe + "}]", "[{name: error}]",
+			"collector sql probe waits query_template must be one read-only SELECT: it has more than one statement"},
+		{"outsystems_logs log type", "[{name: waits}]", `[{name: error, query_template: "SELECT TOP (@limit) Instant INTO #x FROM dbo.v"}]`,
+			"collector oslogs probe error query_template must be one read-only SELECT: it contains INTO"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadRuntimeConfig(writeProbeConfig(t, tc.sqlProbes, tc.logProbes))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "sp_addlogin") {
+				t.Fatalf("error %q quotes the query", err)
+			}
+		})
+	}
+	t.Run("target probe", func(t *testing.T) {
+		path := writeProbeConfig(t, "[{name: waits}]", "[{name: error}]")
+		content, _ := os.ReadFile(path)
+		text := strings.Replace(string(content), "credential_ref: env/sql}", `credential_ref: env/sql, probes: [{name: blocking, query_template: "WITH a AS (SELECT 1 AS x) DELETE FROM a"}]}`, 1)
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := LoadRuntimeConfig(path)
+		if want := "collector sql target logging-db probe blocking query_template must be one read-only SELECT: it contains DELETE"; err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want it to contain %q", err, want)
+		}
+	})
+	t.Run("safe overrides load", func(t *testing.T) {
+		path := writeProbeConfig(t, `[{name: waits, query_template: "SELECT wait_type, wait_time_ms FROM sys.dm_os_wait_stats;"}]`,
+			`[{name: error, query_template: "SELECT TOP (@limit) Instant FROM dbo.oslog_Error WHERE Instant > @from AND Instant <= @to ORDER BY Instant"}]`)
+		if _, err := LoadRuntimeConfig(path); err != nil {
+			t.Fatalf("LoadRuntimeConfig: %v", err)
+		}
+	})
+}
+
+func TestLoadRuntimeConfigProbeMaxRows(t *testing.T) {
+	for _, tc := range []struct {
+		name, sqlProbes, logProbes, want string
+		wantMaxRows                      int
+	}{
+		{"unset", "[{name: waits}]", "[{name: error}]", "", 0},
+		{"set", "[{name: waits, max_rows: 500}]", "[{name: error}]", "", 500},
+		{"at the maximum", fmt.Sprintf("[{name: waits, max_rows: %d}]", MaxProbeMaxRows), "[{name: error}]", "", MaxProbeMaxRows},
+		{"negative", "[{name: waits, max_rows: -1}]", "[{name: error}]", fmt.Sprintf("collector sql probe waits max_rows must be between 1 and %d", MaxProbeMaxRows), 0},
+		{"above the maximum", fmt.Sprintf("[{name: waits, max_rows: %d}]", MaxProbeMaxRows+1), "[{name: error}]", fmt.Sprintf("collector sql probe waits max_rows must be between 1 and %d", MaxProbeMaxRows), 0},
+		{"on an outsystems_logs log type", "[{name: waits}]", "[{name: error, max_rows: 10}]", "collector oslogs probe error: max_rows applies only to sqlserver collectors", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadRuntimeConfig(writeProbeConfig(t, tc.sqlProbes, tc.logProbes))
+			if tc.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("error = %v, want it to contain %q", err, tc.want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadRuntimeConfig: %v", err)
+			}
+			if got := cfg.EnabledCollectors(KindSQLServer)[0].Targets[0].Probes[0].MaxRows; got != tc.wantMaxRows {
+				t.Fatalf("MaxRows = %d, want %d", got, tc.wantMaxRows)
+			}
+		})
+	}
+}

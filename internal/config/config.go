@@ -132,6 +132,7 @@ type probeDocument struct {
 	Name          string `yaml:"name"`
 	QueryTemplate string `yaml:"query_template"`
 	TimeoutMS     int    `yaml:"timeout_ms"`
+	MaxRows       int    `yaml:"max_rows"`
 	// Lag is the outsystems_logs per-log-type lag.
 	Lag string `yaml:"lag"`
 }
@@ -190,11 +191,25 @@ type TargetRuntimeConfig struct {
 // probe still within its timeout is never cut off by the driver.
 const MaxProbeTimeout = 25 * time.Second
 
+// Row limits of sqlserver probes.  A probe that returns more rows than its
+// max_rows fails instead of being held in memory and exported in full.
+const (
+	// DefaultProbeMaxRows is the most rows a probe reads when it sets no
+	// max_rows.  The built-in probes return at most a few hundred.
+	DefaultProbeMaxRows = 10000
+	// MaxProbeMaxRows is the largest max_rows accepted.
+	MaxProbeMaxRows = 100000
+)
+
 // ProbeRuntimeConfig describes a single probe to execute against a target.
 type ProbeRuntimeConfig struct {
 	Name          string
 	QueryTemplate string
 	TimeoutMS     int
+	// MaxRows, on a sqlserver collector, is the most rows the probe may
+	// return; 0 means [DefaultProbeMaxRows].  outsystems_logs collectors
+	// bound their reads with batch_limit instead.
+	MaxRows int
 	// Lag, on an outsystems_logs collector, replaces the collector's lag for
 	// this log type; 0 means the collector's.  A log type whose Instant is
 	// the start of the operation (screen, cyclic_job) is written when the
@@ -499,6 +514,7 @@ func normalizeProbes(collectorID string, docs []probeDocument) ([]ProbeRuntimeCo
 			Name:          strings.TrimSpace(doc.Name),
 			QueryTemplate: doc.QueryTemplate,
 			TimeoutMS:     doc.TimeoutMS,
+			MaxRows:       doc.MaxRows,
 		}
 		if doc.Lag != "" {
 			lag, err := time.ParseDuration(doc.Lag)
@@ -578,6 +594,9 @@ func validate(cfg RuntimeConfig) error {
 		if err := validateTargets(collector); err != nil {
 			return err
 		}
+		if err := validateProbeQueries(collector); err != nil {
+			return err
+		}
 		if collector.Kind == KindOutSystemsLogs {
 			if err := validateOutSystemsLogs(collector, cfg.OpenTelemetry.Endpoint); err != nil {
 				return err
@@ -649,6 +668,41 @@ func validateTargets(collector CollectorRuntimeConfig) error {
 	for _, selected := range collector.TargetNames {
 		if _, exists := targets[selected]; !exists && len(targets) > 0 {
 			return fmt.Errorf("collector %s target_names references unknown target %q", collector.ID, selected)
+		}
+	}
+	return nil
+}
+
+// validateProbeQueries checks the query_template and max_rows of every probe
+// of collector, its default probes and each target's own.
+func validateProbeQueries(collector CollectorRuntimeConfig) error {
+	check := func(scope string, probes []ProbeRuntimeConfig) error {
+		for _, probe := range probes {
+			if probe.QueryTemplate != "" {
+				// Defense in depth: the collector's read-only login is what keeps
+				// probes from writing (see ValidateReadOnlySelect).
+				if err := ValidateReadOnlySelect(probe.QueryTemplate); err != nil {
+					return fmt.Errorf("%s probe %s query_template must be one read-only SELECT: it %w", scope, probe.Name, err)
+				}
+			}
+			if probe.MaxRows == 0 {
+				continue
+			}
+			if collector.Kind != KindSQLServer {
+				return fmt.Errorf("%s probe %s: max_rows applies only to %s collectors", scope, probe.Name, KindSQLServer)
+			}
+			if probe.MaxRows < 0 || probe.MaxRows > MaxProbeMaxRows {
+				return fmt.Errorf("%s probe %s max_rows must be between 1 and %d", scope, probe.Name, MaxProbeMaxRows)
+			}
+		}
+		return nil
+	}
+	if err := check("collector "+collector.ID, collector.Probes); err != nil {
+		return err
+	}
+	for _, target := range collector.Targets {
+		if err := check(fmt.Sprintf("collector %s target %s", collector.ID, target.Name), target.Probes); err != nil {
+			return err
 		}
 	}
 	return nil

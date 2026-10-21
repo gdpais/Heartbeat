@@ -42,3 +42,19 @@ func TestIntegrationsSchemaBatchLimitMatchesConfigLimit(t *testing.T) {
 		t.Fatalf("schema batch_limit maximum = %v, want %d (config.MaxLogBatchLimit)", batch["maximum"], config.MaxLogBatchLimit)
 	}
 }
+
+// The schema's max_rows maximum must match the limit the collector enforces,
+// for the same reason.
+func TestIntegrationsSchemaProbeMaxRowsMatchesConfigLimit(t *testing.T) {
+	schema := mustReadJSONSchema(t, filepath.Join(repoRoot(t), "packages/config-schema/src/integrations.schema.json"))
+	defs, _ := schema["$defs"].(map[string]any)
+	probe, _ := defs["probe"].(map[string]any)
+	properties, _ := probe["properties"].(map[string]any)
+	maxRows, ok := properties["max_rows"].(map[string]any)
+	if !ok {
+		t.Fatal("integrations schema has no $defs.probe.properties.max_rows")
+	}
+	if maximum, _ := maxRows["maximum"].(float64); int(maximum) != config.MaxProbeMaxRows {
+		t.Fatalf("schema max_rows maximum = %v, want %d (config.MaxProbeMaxRows)", maxRows["maximum"], config.MaxProbeMaxRows)
+	}
+}

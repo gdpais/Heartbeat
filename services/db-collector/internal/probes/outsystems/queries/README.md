@@ -22,7 +22,10 @@ OutSystems 11 logging database, one file per log type. Why they live here:
   `request_event`, `cyclic_job`.
 - Every `.sql` file in this folder is built into the collector. Removing a
   file removes the log type; a config that still lists it is rejected.
-- One `SELECT` per file. The collector runs the query in its own session with
+- One read-only `SELECT` per file, optionally led by `WITH`; a test checks
+  every file with the rule `query_template` overrides must pass
+  ([configuration reference](../../../../../../docs/reference/configuration.md#collectors)).
+  The collector runs the query in its own session with
   `SET LOCK_TIMEOUT 1000; SET DEADLOCK_PRIORITY LOW;` and a hard deadline; do
   not set session options, open transactions or create objects here.
 - Read the current **and** the previous week. The platform keeps ten cycle

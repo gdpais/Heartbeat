@@ -33,7 +33,11 @@ No write, `db_owner` or `sysadmin` rights are required. `make test-sqlserver`
 and `make kind-e2e` run every built-in probe as a login holding only these
 grants. A `query_template` override runs with the same login; review it against
 the [probe review checklist](../architecture/database-observability.md#probe-review-checklist),
-and with the DBAs first if it needs more than these permissions.
+and with the DBAs first if it needs more than these permissions. The collector
+rejects an override that is not one read-only `SELECT`
+([rules](../reference/configuration.md#collectors)), but that text check is
+only a safety net: these read-only grants are what stop a probe from changing
+anything, so never give the collector's login write rights.
 
 If the login is sysadmin-equivalent anyway (a member of `sysadmin`, or
 holding `CONTROL SERVER`), the collector logs a warning (with the target and

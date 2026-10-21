@@ -40,7 +40,8 @@
 // SQLExecutor is the default [ProbeExecutor] implementation: it opens a live
 // database connection via a [connector.Manager], looks up the probe in the
 // [catalogsqlserver.Catalog], executes the SQL query, and decodes the result
-// set into typed [collectorexport.Sample] values.
+// set into typed [collectorexport.Sample] values.  It reads at most the
+// probe's max_rows rows ([ErrTooManyRows]).
 package collectors
 
 import (
@@ -126,6 +127,11 @@ var errProbeAbandoned = errors.New("abandoned while still running")
 // errProbeTimedOut is the cause of a probe context ended by the probe's own
 // timeout, which tells it apart from the cycle deadline.
 var errProbeTimedOut = errors.New("probe timeout")
+
+// ErrTooManyRows reports a probe that returned more rows than its max_rows.
+// It fails the probe like any query error (reason "error" in
+// [MetricProbeErrors]).
+var ErrTooManyRows = errors.New("returned more rows than max_rows")
 
 // errExecutorExited reports an executor call that ended without returning,
 // through runtime.Goexit.
@@ -995,8 +1001,10 @@ func (e SQLExecutor) RunProbe(ctx context.Context, item collectormetadata.Schedu
 	if err != nil {
 		return nil, nil, fmt.Errorf("query probe: %w", err)
 	}
+	// Closing rows early cancels the query: the driver tells the server to
+	// stop sending the rows readRows left unread.
 	defer rows.Close()
-	maps, err := readRows(rows)
+	maps, err := readRows(rows, maxRowsFor(item))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1049,17 +1057,45 @@ func probeTimeout(timeoutMS int, interval time.Duration) time.Duration {
 	return min(interval/2, maxDefaultProbeTimeout)
 }
 
+// maxRowsFor returns the most rows item may return: its max_rows, or
+// [collectorconfig.DefaultProbeMaxRows], capped at
+// [collectorconfig.MaxProbeMaxRows] because probe definitions loaded from the
+// metadata store are not validated against it.
+func maxRowsFor(item collectormetadata.ScheduledProbe) int {
+	if item.Definition.MaxRows <= 0 {
+		return collectorconfig.DefaultProbeMaxRows
+	}
+	return min(item.Definition.MaxRows, collectorconfig.MaxProbeMaxRows)
+}
+
+// resultRows is the part of [sql.Rows] that readRows uses.
+type resultRows interface {
+	Columns() ([]string, error)
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}
+
+var _ resultRows = (*sql.Rows)(nil)
+
 // readRows materialises the query result set into a slice of column maps.
+// It reads at most maxRows rows: when a row follows them, it stops without
+// scanning that row and returns [ErrTooManyRows], so a probe whose query
+// returns far more rows than expected cannot exhaust the collector's memory
+// or the exported series.
 //
 // Values are kept as driver-returned types except for []byte, which is
 // normalised to string so downstream decoding can treat text consistently.
-func readRows(rows *sql.Rows) ([]map[string]any, error) {
+func readRows(rows resultRows, maxRows int) ([]map[string]any, error) {
 	columns, err := rows.Columns()
 	if err != nil {
 		return nil, fmt.Errorf("read columns: %w", err)
 	}
 	var out []map[string]any
 	for rows.Next() {
+		if len(out) == maxRows {
+			return nil, fmt.Errorf("%w (%d): narrow the query, or raise the probe's max_rows (at most %d)", ErrTooManyRows, maxRows, collectorconfig.MaxProbeMaxRows)
+		}
 		values := make([]any, len(columns))
 		scans := make([]any, len(columns))
 		for i := range values {
@@ -1207,6 +1243,7 @@ func scheduledProbes(collector collectorconfig.CollectorRuntimeConfig) []collect
 					Name:          probe.Name,
 					QueryTemplate: probe.QueryTemplate,
 					TimeoutMS:     probe.TimeoutMS,
+					MaxRows:       probe.MaxRows,
 					Lag:           probe.Lag,
 				},
 				Assignment: collectormetadata.ProbeAssignment{

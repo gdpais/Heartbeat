@@ -65,7 +65,13 @@ also needs the target's DBAs.
 - [ ] One read-only query: `SELECT`, optionally with CTEs. No DML, DDL,
   `EXEC`, `DBCC`, temporary tables, `BEGIN TRAN` or `USE`. A bare stored
   procedure name does not work either: every batch starts with the session
-  settings, so it is no longer sent as a procedure call.
+  settings, so it is no longer sent as a procedure call. Loading the
+  configuration rejects a `query_template` that is not one read-only
+  `SELECT` ([rules](../reference/configuration.md#collectors)), and the
+  built-in queries pass the same check in their tests; the check is a safety
+  net, the read-only login is the control.
+- [ ] Returns a bounded number of rows: well under the probe's `max_rows`
+  (default 10000) on the largest target, or the probe fails every cycle.
 - [ ] Needs no grant beyond `VIEW SERVER STATE` and `VIEW ANY DEFINITION`.
   `make test-sqlserver` runs every catalog probe as such a login; a view the
   login cannot see often returns no rows instead of an error, so check the

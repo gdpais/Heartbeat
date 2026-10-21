@@ -6,8 +6,20 @@ import (
 	"strings"
 	"testing"
 
+	heartbeatconfig "heartbeat/internal/config"
 	collectorexport "heartbeat/services/db-collector/internal/export"
 )
+
+// Every built-in query passes the check every query_template override must
+// pass, so the two cannot drift apart.
+func TestCatalogQueriesAreOneReadOnlySelect(t *testing.T) {
+	for _, name := range DefaultCatalog().Names() {
+		probe, _ := DefaultCatalog().Get(name)
+		if err := heartbeatconfig.ValidateReadOnlySelect(probe.QueryTemplate); err != nil {
+			t.Errorf("probe %s must be one read-only SELECT: it %v", name, err)
+		}
+	}
+}
 
 func TestCatalogContainsRequiredProbes(t *testing.T) {
 	catalog := DefaultCatalog()
