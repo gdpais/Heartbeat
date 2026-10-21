@@ -47,7 +47,8 @@ is still pending.
 
 PostgreSQL and Redis are not deployed until a service uses them
 ([ADR 0003](decisions/0003-helm-on-kind-and-production.md)); integration tests
-use a disposable PostgreSQL fixture.
+use a disposable PostgreSQL fixture. How they will be deployed is
+[ADR 0015](decisions/0015-postgresql-and-redis-delivery.md).
 
 ## Target platform
 
@@ -81,7 +82,7 @@ current evidence sink does not retain them.
 | YAML / Kubernetes | Integration endpoints, dashboard URL templates, collector desired runtime state, credential references | Active collector targets/probes come from config, not PostgreSQL |
 | Prometheus | Metric time series and executable recording/alert rules | Metrics are scraped from collectors; no SQL metric buffering in Redis/PostgreSQL |
 | Loki | Logs and queryable operational evidence | High-cardinality investigation identifiers are kept as structured metadata, never index labels |
-| Redis | Transient job queues, retries, locks, short-lived caches | Not the durable source of investigation or report state |
+| Redis (Valkey) | Transient job delivery, retries, locks, short-lived caches, login sessions | Not the durable source of investigation or report state ([ADR 0013](decisions/0013-api-design-and-subsystem-boundaries.md)) |
 | Artifact storage (planned) | Generated report files | PostgreSQL retains the artifact URI only; backend is undecided |
 
 Application-owned workflows derive environment from `applications.environment_id`.

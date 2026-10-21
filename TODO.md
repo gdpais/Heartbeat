@@ -25,13 +25,13 @@ Alloy coverage check [21] → final Alloy comparison [22].
 - [x] Reorganize docs by audience; record key decisions as ADRs; archive superseded plans
 - [x] Reorder delivery: collector → gateway → API → Web; production delivery after the Web UI; Oracle after fallback ingestion and gated by an Alloy coverage check; Alloy comparison last
 - [x] Keep the observability platform replaceable: services emit only OTLP and Prometheus exposition, neutral integrations config, an external-platform values example ([ADR 0011](docs/architecture/decisions/0011-platform-agnostic-telemetry-boundary.md))
-- [ ] Freeze subsystem boundaries, responsibilities, and interfaces
-- [ ] Freeze ownership rules:
-  - [ ] app-owned workflows derive environment through `applications.environment_id`
-  - [ ] PostgreSQL stores control-plane metadata only
-  - [ ] YAML/Kubernetes stores integration + collector desired runtime config
-  - [ ] The observability platform (Prometheus and Loki when bundled) stores telemetry data
-  - [ ] Redis stores transient async coordination only
+- [x] Freeze subsystem boundaries, responsibilities, and interfaces ([ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
+- [x] Freeze ownership rules ([ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md)):
+  - [x] app-owned workflows derive environment through `applications.environment_id`
+  - [x] PostgreSQL stores control-plane metadata only
+  - [x] YAML/Kubernetes stores integration + collector desired runtime config
+  - [x] The observability platform (Prometheus and Loki when bundled) stores telemetry data
+  - [x] Redis stores transient state only: job delivery, locks, caches, login sessions
 
 ### 0.2 Repo and local platform bootstrap
 - [x] Create monorepo scaffolding
@@ -212,7 +212,9 @@ count.
 ### 2.5 Runtime config model
 - [x] Read desired runtime collector config from `config/integrations.yaml`
 - [x] Read active target/probe runtime config from YAML/Kubernetes convention
-- [ ] Reintroduce API/PostgreSQL-driven probe assignments only after the control-plane workflow exists
+- [ ] Reintroduce API/PostgreSQL-driven probe assignments only after the control-plane workflow exists: approved assignments render to a generated values file proposed as a pull request to `heartbeat-deploy` ([ADR 0014](docs/architecture/decisions/0014-probe-assignments-to-runtime-config.md))
+- [ ] Chart key `managedCollectors`, appended to `integrations.collectors`; hand-written collector IDs may not start with `api-` ([ADR 0014](docs/architecture/decisions/0014-probe-assignments-to-runtime-config.md))
+- [ ] Resolve credentials from mounted Secret files, so a new or rotated credential needs no collector restart ([ADR 0002](docs/architecture/decisions/0002-runtime-config-in-yaml.md) follow-up, [ADR 0014](docs/architecture/decisions/0014-probe-assignments-to-runtime-config.md))
 - [x] Keep desired state out of PostgreSQL
 
 ### 2.6 Collector reliability baseline
@@ -332,19 +334,21 @@ reporting workers/delivery [7, 14]. Do not mark these workflows complete from
 endpoint or queue tests alone. Rule/route provisioning [4.7] needs [9.1, 9.4,
 13.1]; deep links [4.9] need YAML templates/datasources [8.1, 9.3, 15.1].
 
-- [ ] Define/version API-to-worker job/result contracts before queue producers and consumers; integration-test each complete workflow when its worker lands
-- [ ] Define how approved metadata probe assignments become YAML/Kubernetes runtime config [2.5, 8]; keep runtime desired state out of PostgreSQL
+- [ ] Define/version API-to-worker job/result contracts before queue producers and consumers; integration-test each complete workflow when its worker lands (envelope and delivery rules: [ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
+- [x] Define how approved metadata probe assignments become YAML/Kubernetes runtime config [2.5, 8]; keep runtime desired state out of PostgreSQL ([ADR 0014](docs/architecture/decisions/0014-probe-assignments-to-runtime-config.md))
 - [ ] Validate this stage: auth/ownership/secret refs, CRUD persistence, audit redaction, queue contracts and collector onboarding [16.1–16.2]
 
 ### 4.1 Service bootstrap
 - [ ] Create Go service entrypoint `apps/api/cmd/api/`
 - [ ] Create idiomatic Go package layout under `apps/api/internal/`
 - [ ] Add config loading, logging, health endpoints, metrics, graceful shutdown
+- [ ] OpenAPI 3.1 spec with oapi-codegen server types and sqlc queries; CI fails when generated code is stale ([ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
 - [ ] Add PostgreSQL and Redis connectivity
-- [ ] Add PostgreSQL and Redis to the Helm chart once the API consumes them; keep monitored databases and test fixtures external
+- [ ] Apply `db/migrations` with golang-migrate from an init container before the API starts ([ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
+- [ ] Add PostgreSQL and Redis to the Helm chart once the API consumes them; keep monitored databases and test fixtures external (templates on `postgres` and `valkey/valkey`, off in production: [ADR 0015](docs/architecture/decisions/0015-postgresql-and-redis-delivery.md))
 
 ### 4.2 Identity and access
-- [ ] Implement local auth for MVP
+- [ ] Implement local auth for MVP: argon2id password hashes, cookie sessions in Redis ([ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
 - [ ] Implement users/roles/user_roles management
 - [ ] Add minimal admin/wallboard access model
 - [ ] Defer OIDC/SSO unless required early
@@ -366,7 +370,7 @@ endpoint or queue tests alone. Rule/route provisioning [4.7] needs [9.1, 9.4,
 ### 4.5 Database target management
 - [ ] Implement database targets CRUD
 - [ ] Implement probe definition management/versioning
-- [ ] Implement probe assignment management
+- [ ] Implement probe assignment management, with approval states ([ADR 0014](docs/architecture/decisions/0014-probe-assignments-to-runtime-config.md))
 - [ ] Validate target config and safe probe policies
 - [ ] Store credential refs only
 
@@ -807,7 +811,9 @@ It follows the Web UI so the first production deploy carries a usable product;
 pull it forward if a production SQL Server must be monitored sooner.
 
 - [ ] First: review the observability platform, the organization's ELK stack (Elastic Cloud) against the bundled Grafana stack, on the same data (the Collector sends to both); compare search, investigation queries, alerting, cost and operations; record the choice in an ADR ([ADR 0011](docs/architecture/decisions/0011-platform-agnostic-telemetry-boundary.md)). If ELK wins: its content pack (Kibana dashboards, rules, index templates and ILM) and log/metric query adapters
-- [ ] `heartbeat-deploy` config repository with Argo CD Applications and per-environment values
+- [ ] `heartbeat-deploy` config repository with Argo CD Applications and per-environment values; CI that renders each environment and loads it with the Go loader; branch protection
+- [ ] GitHub App for the API on `heartbeat-deploy` only (contents and pull requests: read and write), private key in Secrets Manager through External Secrets, so approved assignments open pull requests ([ADR 0014](docs/architecture/decisions/0014-probe-assignments-to-runtime-config.md))
+- [ ] RDS for PostgreSQL and ElastiCache for Valkey in the infrastructure code; production values point the API at them ([ADR 0015](docs/architecture/decisions/0015-postgresql-and-redis-delivery.md))
 - [ ] The release workflow [0.5] also publishes the images and the chart to ECR through GitHub OIDC
 - [ ] EKS infrastructure as code; AWS Secrets Manager with External Secrets
 - [ ] Route the Watchdog to healthchecks.io and test loss of the monitoring path
