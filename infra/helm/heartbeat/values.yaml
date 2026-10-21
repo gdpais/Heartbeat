@@ -504,12 +504,19 @@ otelCollector:
         # during a backlog (after an outage, on a first start) and lost rows
         # the db-collector had already counted delivered. So one consumer
         # exports the batches in order, and a throttled batch is retried
-        # until Loki takes it. Meanwhile the queue fills, the receiver
-        # answers 503, and the db-collector keeps its watermark and retries.
-        # 20 batches of up to 8192 rows stay well inside the memory limit.
+        # until Loki takes it. A push larger than Loki's
+        # ingestion_burst_size_mb (6) is never taken, so the queue cuts
+        # batches at 4 MiB. While a batch waits the queue fills (64 MiB), the
+        # receiver answers 503, and the db-collector keeps its watermark and
+        # retries.
         sending_queue:
           num_consumers: 1
-          queue_size: 20
+          sizer: bytes
+          queue_size: 67108864
+          batch:
+            flush_timeout: 1s
+            sizer: bytes
+            max_size: 4194304
         retry_on_failure:
           max_elapsed_time: 0s
     service:
