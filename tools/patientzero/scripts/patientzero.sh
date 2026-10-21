@@ -29,7 +29,15 @@
 # can read it like patientzero_log. Writes .tmp/patientzero-scale/
 # expected.json and report.md. It does not touch PatientZero on kind.
 # scale-measure: measures again, on the database as it is.
-# scale-down: drops patientzero_scale.
+# scale-collect: redeploys Heartbeat with a second outsystems_logs collector,
+#   patientzero-scale, that reads patientzero_scale from SCALE_LOOKBACK back.
+#   Its target and deployment.environment.name are named after the generated
+#   log's end (scale-<end>), so a regenerated log gets fresh watermarks and
+#   its own rows in Loki.
+# scale-check: compares what Loki holds for that log with expected.json,
+#   through a port-forward to Loki; writes .tmp/patientzero-scale/check.md.
+# scale-down: drops patientzero_scale and removes the patientzero-scale
+#   collector.
 #
 # Every kubectl and helm call names the kind context explicitly.
 #
@@ -46,12 +54,14 @@
 #   SCALE                  volume relative to the surveyed installation [1]
 #   SCALE_SEED             seed of the generated log [1]
 #   SCALE_END              last instant generated, RFC 3339 [now]
+#   SCALE_LOOKBACK         how far back the patientzero-scale collector starts [48h]
 set -eu
 cd "$(dirname "$0")/../../.."
 
 CLUSTER=${KIND_CLUSTER:-heartbeat}
 CONTEXT=kind-$CLUSTER
 NAMESPACE=${PATIENTZERO_NAMESPACE:-patientzero}
+HEARTBEAT_NAMESPACE=${HEARTBEAT_NAMESPACE:-heartbeat}
 SQLSERVER_CONTAINER=${SQLSERVER_CONTAINER:-heartbeat-sqlserver-dev}
 SQLSERVER_ENV_FILE=${SQLSERVER_ENV_FILE:-.env.sqlserver-dev}
 STATE_DIR=.tmp/kind/$CLUSTER
@@ -64,6 +74,9 @@ DATABASE=patientzero
 LOG_DATABASE=patientzero_log
 SCALE_DATABASE=patientzero_scale
 HEARTBEAT_VALUES=$STATE_DIR/patientzero-heartbeat.yaml
+# The patientzero-scale collector's name, lookback and start, while it runs.
+SCALE_STATE=$STATE_DIR/patientzero-scale
+SCALE_DIR=.tmp/patientzero-scale
 LOAD_DIR=tools/patientzero/load
 LOAD_JOB=patientzero-load
 # Renovate keeps this pin current (renovate.json).
@@ -254,10 +267,23 @@ install_chart() {
 		--wait --timeout 5m
 }
 
-# The Heartbeat values that add the PatientZero collector. A values file
-# replaces a list instead of merging it, so this copies the sandbox's values
-# file, whose last entry is integrations.collectors, and appends to that list.
+# The Heartbeat values that add PatientZero's collectors: the one reading
+# patientzero_log while PatientZero is installed, and the one reading
+# patientzero_scale after make patientzero-scale-collect. With neither, there
+# is no values file. A values file replaces a list instead of merging it, so
+# this copies the sandbox's values file, whose last entry is
+# integrations.collectors, and appends to that list.
 heartbeat_values() {
+	with_patientzero=
+	if helm status "$RELEASE" --kube-context "$CONTEXT" --namespace "$NAMESPACE" >/dev/null 2>&1; then
+		with_patientzero=1
+	fi
+	scale_label=
+	[ -f "$SCALE_STATE" ] && read -r scale_label scale_lookback _ <"$SCALE_STATE"
+	if [ -z "$with_patientzero$scale_label" ]; then
+		rm -f "$HEARTBEAT_VALUES"
+		return
+	fi
 	src=infra/helm/values/sqlserver-dev.yaml
 	awk '/^  collectors:$/ { found = 1; next }
 		found && NF && $0 !~ /^    / && $0 !~ /^[[:space:]]*#/ { bad = 1 }
@@ -266,15 +292,24 @@ heartbeat_values() {
 	mkdir -p "$STATE_DIR"
 	{
 		cat "$src"
-		cat <<EOF
-    # PatientZero's logging database (tools/patientzero/scripts/patientzero.sh).
-    - id: patientzero
+		[ -z "$with_patientzero" ] || log_collector patientzero local-dev "" patientzero-log "$LOG_DATABASE"
+		[ -z "$scale_label" ] ||
+			log_collector patientzero-scale "$scale_label" "$scale_lookback" "$scale_label" "$SCALE_DATABASE"
+	} >"$HEARTBEAT_VALUES"
+}
+
+# log_collector <id> <environment> <initial lookback or empty> <target> <database>
+log_collector() {
+	cat <<EOF
+    # $5 (tools/patientzero/scripts/patientzero.sh).
+    - id: $1
       kind: outsystems_logs
       enabled: true
       config:
-        environment: local-dev
+        environment: $2
         scrape_interval: 15s
-        lag: 15s
+        lag: 15s${3:+
+        initial_lookback: $3}
         probes:
           # Instant is the start of the screen request or timer.
           - name: screen
@@ -288,13 +323,21 @@ heartbeat_values() {
           - name: extension
           - name: request_event
         targets:
-          - name: patientzero-log
+          - name: $4
             host: $SQLSERVER_CONTAINER
             port: 1433
-            database_name: $LOG_DATABASE
+            database_name: $5
             credential_ref: env/sqlserver-dev
 EOF
-	} >"$HEARTBEAT_VALUES"
+}
+
+# Redeploys Heartbeat with the values heartbeat_values wrote, if any.
+redeploy() {
+	if [ -f "$HEARTBEAT_VALUES" ]; then
+		EXTRA_VALUES="$HEARTBEAT_VALUES ${EXTRA_VALUES:-}" scripts/kind.sh deploy >/dev/null
+	else
+		scripts/kind.sh deploy >/dev/null
+	fi
 }
 
 cmd_up() {
@@ -307,7 +350,7 @@ cmd_up() {
 	install_chart
 	heartbeat_values
 	log "redeploying Heartbeat with the patientzero outsystems_logs collector"
-	EXTRA_VALUES="$HEARTBEAT_VALUES ${EXTRA_VALUES:-}" scripts/kind.sh deploy >/dev/null
+	redeploy
 	kubectl_ -n "$NAMESPACE" get pods,svc
 	log "PatientZero is up; try: kubectl --context $CONTEXT -n $NAMESPACE port-forward svc/patientzero 8080"
 }
@@ -320,12 +363,13 @@ cmd_down() {
 		kubectl_ delete namespace "$NAMESPACE" --ignore-not-found >/dev/null
 		log "removed $RELEASE and the $NAMESPACE namespace"
 		if [ -f "$HEARTBEAT_VALUES" ]; then
-			rm -f "$HEARTBEAT_VALUES"
+			heartbeat_values
 			log "redeploying Heartbeat without the patientzero collector"
-			scripts/kind.sh deploy >/dev/null
+			redeploy
 		fi
+	else
+		rm -f "$HEARTBEAT_VALUES"
 	fi
-	rm -f "$HEARTBEAT_VALUES"
 	if sqlserver_healthy && [ -f "$SQLSERVER_ENV_FILE" ]; then
 		credential=$(env_value "$CREDENTIAL_KEY")
 		pz_login=${credential%%:*}
@@ -466,6 +510,10 @@ cmd_scale() {
 	oslog_scale -scale "${SCALE:-1}" -seed "${SCALE_SEED:-1}" ${SCALE_END:+-end "$SCALE_END"} \
 		-reader-role "$READER_ROLE" -reader-login "${collector%%:*}" generate
 	cmd_scale_measure
+	# A running patientzero-scale collector moves to the new log's name.
+	if [ -f "$SCALE_STATE" ] && cluster_exists; then
+		cmd_scale_collect
+	fi
 }
 
 cmd_scale_measure() {
@@ -473,7 +521,58 @@ cmd_scale_measure() {
 	oslog_scale measure
 }
 
+cmd_scale_collect() {
+	cluster_exists || die "kind cluster $CLUSTER does not exist; run make sqlserver-dev-up"
+	sqlserver_healthy || die "$SQLSERVER_CONTAINER is not running and healthy; run make sqlserver-dev-up"
+	[ -f "$STATE_DIR/sqlserver-dev" ] || die "Heartbeat on $CLUSTER does not target $SQLSERVER_CONTAINER; run make sqlserver-dev-up"
+	end=$(sed -n 's/^  "end": "\([^"]*\)",*$/\1/p' "$SCALE_DIR/expected.json" 2>/dev/null)
+	[ -n "$end" ] || die "$SCALE_DIR/expected.json is missing; run make patientzero-scale"
+	label=scale-$(printf '%s' "$end" | tr -d ':.-' | tr 'A-Z' 'a-z')
+	stored=
+	[ -f "$SCALE_STATE" ] && read -r _ stored _ <"$SCALE_STATE"
+	lookback=${SCALE_LOOKBACK:-${stored:-48h}}
+	mkdir -p "$STATE_DIR"
+	printf '%s %s %s\n' "$label" "$lookback" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$SCALE_STATE"
+	heartbeat_values
+	log "redeploying Heartbeat with the patientzero-scale collector: $SCALE_DATABASE from $lookback back, as $label"
+	redeploy
+	log "extracting; make patientzero-scale-check compares Loki with $SCALE_DIR/expected.json once it caught up"
+}
+
+# Runs oslog-scale check against Loki through a port-forward. It needs no SQL
+# Server: the known answers are in expected.json.
+cmd_scale_check() {
+	cluster_exists || die "kind cluster $CLUSTER does not exist"
+	[ -f "$SCALE_STATE" ] || die "the patientzero-scale collector is not running; run make patientzero-scale-collect"
+	read -r label lookback started <"$SCALE_STATE"
+	work=$(mktemp -d "${TMPDIR:-/tmp}/patientzero-scale-check.XXXXXX")
+	kubectl_ -n "$HEARTBEAT_NAMESPACE" port-forward svc/loki :3100 >"$work/port-forward.log" 2>&1 &
+	forward=$!
+	trap 'kill "$forward" 2>/dev/null; rm -rf "$work"' EXIT
+	trap 'exit 130' INT TERM
+	i=0
+	until grep -q '^Forwarding from 127.0.0.1:' "$work/port-forward.log"; do
+		i=$((i + 1))
+		[ "$i" -le 30 ] || die "the port-forward to Loki did not start: $(cat "$work/port-forward.log")"
+		sleep 1
+	done
+	port=$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9]*\) .*/\1/p' "$work/port-forward.log" | head -n 1)
+	log "checking Loki's $label rows against $SCALE_DIR/expected.json"
+	GOCACHE=${GOCACHE:-$(pwd)/.tmp/gocache} go -C tools/patientzero run ./cmd/oslog-scale \
+		-loki "http://127.0.0.1:$port" -environment "$label" -collected-from "$started" -lookback "$lookback" check
+}
+
+# Removes the patientzero-scale collector first, so it does not read a
+# dropped database.
 cmd_scale_down() {
+	if [ -f "$SCALE_STATE" ]; then
+		rm -f "$SCALE_STATE"
+		if cluster_exists; then
+			heartbeat_values
+			log "redeploying Heartbeat without the patientzero-scale collector"
+			redeploy
+		fi
+	fi
 	oslog_scale drop
 }
 
@@ -484,6 +583,8 @@ load) cmd_load ;;
 load-stop) cmd_load_stop ;;
 scale) cmd_scale ;;
 scale-measure) cmd_scale_measure ;;
+scale-collect) cmd_scale_collect ;;
+scale-check) cmd_scale_check ;;
 scale-down) cmd_scale_down ;;
 *) sed -n '2,/^set -eu/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

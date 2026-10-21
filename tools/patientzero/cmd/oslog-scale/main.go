@@ -8,10 +8,13 @@
 //	oslog-scale [flags] generate   create the database and fill it; writes expected.json
 //	oslog-scale [flags] measure    run every log query over the busiest minute and 1 h, 1 day and 7 day backlogs; writes report.md
 //	oslog-scale [flags] drop       drop the database
+//	oslog-scale [flags] check      compare what Loki holds for the log with expected.json; writes check.md
 //
 // PATIENTZERO_SCALE_SQLSERVER is a sqlserver:// URL for a login that may
 // create databases (the sandbox's sa), without a database; it is read from
-// the environment so the password stays off the command line.
+// the environment so the password stays off the command line. check needs
+// no SQL Server, only Loki (-loki) and the collector that read the log
+// (-environment, -collected-from, -lookback).
 package main
 
 import (
@@ -52,19 +55,27 @@ func run(log *slog.Logger, args []string) error {
 	reader := fs.String("reader-role", "heartbeat_oslog_reader", "role granted SELECT on the log views")
 	readerLogin := fs.String("reader-login", "", "login added to the reader role, such as the Heartbeat collector's")
 	limit := fs.Int("limit", 5000, "rows per query run (the collector's batch_limit)")
-	out := fs.String("out", "../../.tmp/patientzero-scale", "directory for expected.json and report.md")
+	out := fs.String("out", "../../.tmp/patientzero-scale", "directory for expected.json, report.md and check.md")
+	lokiURL := fs.String("loki", "http://127.0.0.1:3100", "check: Loki's HTTP API")
+	environment := fs.String("environment", "", "check: deployment.environment.name of the collector that read the log")
+	collectedFrom := fs.String("collected-from", "", "check: when that collector started, RFC 3339")
+	lookback := fs.Duration("lookback", 48*time.Hour, "check: that collector's initial_lookback")
+	dashboards := fs.String("dashboards", "../../infra/helm/heartbeat/files/grafana/dashboards", "check: the chart's Grafana dashboards")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("want one action: generate, measure or drop")
+		return errors.New("want one action: generate, measure, drop or check")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if fs.Arg(0) == "check" {
+		return check(ctx, log, *out, *dashboards, scale.Loki{URL: *lokiURL}, *environment, *collectedFrom, *lookback)
 	}
 	server := os.Getenv("PATIENTZERO_SCALE_SQLSERVER")
 	if server == "" {
 		return errors.New("PATIENTZERO_SCALE_SQLSERVER is not set")
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	master, err := scale.Open(server, "master")
 	if err != nil {
 		return err
@@ -161,8 +172,55 @@ func run(log *slog.Logger, args []string) error {
 		log.Info("report written", "path", path)
 		return f.Close()
 	default:
-		return fmt.Errorf("unknown action %q: want generate, measure or drop", fs.Arg(0))
+		return fmt.Errorf("unknown action %q: want generate, measure, drop or check", fs.Arg(0))
 	}
+}
+
+func check(ctx context.Context, log *slog.Logger, out, dashboards string, loki scale.Loki, environment, collectedFrom string, lookback time.Duration) error {
+	if environment == "" || collectedFrom == "" {
+		return errors.New("check needs -environment and -collected-from")
+	}
+	started, err := time.Parse(time.RFC3339, collectedFrom)
+	if err != nil {
+		return fmt.Errorf("-collected-from: %w", err)
+	}
+	b, err := os.ReadFile(filepath.Join(out, "expected.json"))
+	if err != nil {
+		return err
+	}
+	var exp scale.Expected
+	if err := json.Unmarshal(b, &exp); err != nil {
+		return err
+	}
+	panels, err := scale.LoadPanels(dashboards)
+	if err != nil {
+		return err
+	}
+	log.Info("checking", "environment", environment, "from", started.Add(-lookback).Format(time.RFC3339), "to", exp.End.Format(time.RFC3339))
+	res, err := scale.Check(ctx, loki, &exp, panels, scale.CheckOptions{Environment: environment, From: started.Add(-lookback)})
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(out, "check.md")
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := scale.CheckReport(f, res); err != nil {
+		return err
+	}
+	if err := scale.CheckReport(os.Stdout, res); err != nil {
+		return err
+	}
+	log.Info("check written", "path", path)
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if !res.Passed() {
+		return errors.New("Loki does not match expected.json; see " + path)
+	}
+	return nil
 }
 
 func writeJSON(path string, v any) error {
