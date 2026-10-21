@@ -169,10 +169,8 @@ make patientzero-scale-down               # drop patientzero_scale
 - **Known answers.** `.tmp/patientzero-scale/expected.json`: per week, day
   and hour, the requests, rows per log type, distinct users and sessions,
   error rows, error kinds and new error kinds; the busiest minute; every
-  error kind and when it was first seen. Dashboards that count distinct
-  users or sessions in Loki, or fingerprints, can be checked against it once
-  a collector reads `patientzero_scale` (its login is in the reader role, as
-  in `patientzero_log`).
+  error kind and when it was first seen. `make patientzero-scale-check`
+  checks the dashboards against it ([below](#in-loki)).
 - **The measurement.** `.tmp/patientzero-scale/report.md`: the rows and
   space per log type, then each query, run as the collector runs it
   (`batch_limit` 5000, `datetime2` bounds), over the busiest minute and
@@ -205,6 +203,59 @@ backlog costs about the same as an hour: each query reads at most
 `batch_limit` rows per weekly view. The error log reads the most per row: a
 lookup into its cycle table, clustered on `Id`, and one into the detail
 table.
+
+
+### In Loki
+
+```bash
+make patientzero-scale-collect            # a collector reads patientzero_scale (SCALE_LOOKBACK, default 48h)
+make patientzero-scale-check              # compare Loki with expected.json; writes check.md
+```
+
+`patientzero-scale-collect` redeploys Heartbeat with a second
+`outsystems_logs` collector, `patientzero-scale`, next to PatientZero's. Its
+target and `deployment.environment.name` are `scale-<end of the log>`, so a
+regenerated log starts with fresh watermarks and its own rows in Loki;
+`make patientzero-scale` moves a running collector to the new log, and
+`make patientzero-scale-down` removes it before dropping the database.
+Loki takes rows up to 168 hours old, so a lookback of more than about six
+days loses the oldest.
+
+`patientzero-scale-check` reads Loki through a port-forward and needs no SQL
+Server. For every hour from the collector's start minus its lookback, Loki
+must hold every row, and the distinct users and sessions on screen rows
+(where a request starts, as `expected.json` counts them) and the distinct
+error fingerprints must match; so must each whole day's fingerprints. It
+then runs the dashboards' distinct-count panels, read from the chart's
+dashboard files, over 1 hour, 24 hours and everything collected (the
+5-minute ones at their busiest), and reports each value as a share of
+Loki's `max_query_series` (20,000): a distinct count holds one series per
+value. Catching up 48 hours (1.78 M rows) takes about 16 minutes, held to
+Loki's 4 MB/s ingestion rate.
+
+On 2026-10-21, at `SCALE=1` with a 48 h lookback, all 48 hours matched,
+and the panels' own counts over every log type matched too. The largest
+panel held a tenth of the limit:
+
+| Panel | 1 h | 24 h | 47 h |
+| --- | ---: | ---: | ---: |
+| Distinct errors | 56 | 74 | 74 |
+| Users affected | 150 | 1,179 | 1,977 |
+| Top errors (rows before `topk`) | 128 | 507 | 563 |
+| Active users (5m), busiest | | | 598 |
+| Active sessions (5m), busiest | | | 627 |
+
+*Users affected* grows with the range, up to the users who hit an error,
+at most the week's 4,829 at `SCALE=1`; it is the panel to watch on a larger
+installation (`SCALE`) or a longer range.
+
+The first runs lost rows on the way to Loki: 510,637 rows discarded as
+`too_far_behind`, then 991,189 dropped at a full exporter queue, all after
+the db-collector had moved its watermark past them. The OTel Collector's
+logs exporter now sends in order, retries without a deadline, cuts batches
+below Loki's ingestion burst, and has no batch processor in front of it,
+so a full queue reaches the db-collector as a 503
+([application observability](../../docs/architecture/application-observability.md)).
 
 ## Databases and privileges
 

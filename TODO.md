@@ -280,6 +280,7 @@ follow the ingest path.
 - [x] Extraction self-metrics: rows, lag, export failures, OutSystems log delay
 - [x] Derived metrics from the [catalog](docs/architecture/application-observability.md#derived-metrics), with bounded labels; recording rules, SLO burn-rate alerts and promtool tests; a Go test fails when a rule, dashboard or doc names an OutSystems metric the collector does not export
 - [x] Active users and sessions, and new error fingerprints: left out of the collector on purpose ([why](docs/architecture/application-observability.md#not-built-on-purpose)); active users come from Loki in the dashboards [10.4], new fingerprints need a persisted fingerprint set first. `make patientzero-scale` simulates them at production cardinality (4,829 users and 13,871 sessions a week, 40 recurring error kinds and 3 new ones a day) with their known answers in `expected.json`
+- [x] Lose no logs on a backlog: the production-sized check found rows lost between the OTel Collector and Loki after the db-collector had counted them delivered (out-of-order batches Loki rejects, a batch above its ingestion burst, a batch processor that hid a full queue). The logs exporter now sends in order, retries without a deadline, cuts batches at 4 MiB and has no batch processor in front; a chart test pins it and `LokiDiscardingLogs` warns ([why](docs/architecture/application-observability.md)). Left: the exporter's queue is in memory, so a Collector restart loses what it holds
 - [x] Decide the OTel gateway's future: removed with its JSON event endpoint and alert sink; Alertmanager's default receiver has no integrations; push sources go to the OTel Collector over OTLP, mapped with OTTL ([ADR 0009](docs/architecture/decisions/0009-remove-the-otel-gateway.md))
 
 ### 3.4 Generic telemetry expansion
@@ -582,7 +583,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Build OutSystems errors dashboard
 - [x] Build OutSystems latency dashboard
 - [x] Enable drill-down overview -> latency/errors -> Loki ([dashboards](docs/architecture/application-observability.md#dashboards))
-- [ ] Check the active users and sessions panels and the top fingerprints at production cardinality: a collector target on `patientzero_scale`, compared with its `expected.json` ([production-sized logging database](tools/patientzero/README.md#production-sized-logging-database)); within Loki's `max_query_series` of 20000?
+- [x] Check the active users and sessions panels and the top fingerprints at production cardinality: `make patientzero-scale-collect` and `make patientzero-scale-check` compare Loki with `expected.json`. All 48 hours of a 48 h backlog match; the largest panel, *Users affected* over 47 h, holds 1,977 series, a tenth of `max_query_series` ([results](tools/patientzero/README.md#in-loki))
 
 ---
 
