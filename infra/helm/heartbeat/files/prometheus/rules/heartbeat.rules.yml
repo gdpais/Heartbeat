@@ -83,34 +83,36 @@ groups:
   - name: heartbeat-outsystems-alerts
     rules:
       # Multiwindow burn rates (Google SRE workbook) against static default
-      # objectives: 99.5% of requests without an error and 99% within 2 s,
+      # objectives: 99.9% of requests without an error and 99% within 2 s,
       # over 30 days. Fast burn (14.4x: 2% of the budget in an hour) pages;
-      # slow burn (6x: 5% in six hours) is a ticket. Applications with less
-      # than one request a minute over the long window are left out: a few
-      # errors among a handful of requests are not an SLO breach. Adaptive
-      # baselines replace these guardrails in phase 7.
+      # slow burn (6x: 5% in six hours) is a ticket. Low-traffic applications
+      # are left out, so a handful of failures cannot page: the error alerts
+      # need five requests a minute over the long window (a fast burn then
+      # takes at least 5 failed requests in the hour), the latency alerts one
+      # (at least 9 slow requests). Adaptive baselines replace these
+      # guardrails in phase 7.
       - alert: OutSystemsErrorBudgetBurnFast
         expr: >-
-          heartbeat:outsystems_request_errors:ratio_rate1h > (14.4 * 0.005)
-          and heartbeat:outsystems_request_errors:ratio_rate5m > (14.4 * 0.005)
-          and heartbeat:outsystems_requests:rate1h > 1/60
+          heartbeat:outsystems_request_errors:ratio_rate1h > (14.4 * 0.001)
+          and heartbeat:outsystems_request_errors:ratio_rate5m > (14.4 * 0.001)
+          and heartbeat:outsystems_requests:rate1h > 5/60
         for: 2m
         labels:
           severity: critical
         annotations:
           summary: "{{ $labels.environment }}/{{ $labels.application }} is burning its error budget fast"
-          description: "{{ $value | humanizePercentage }} of requests failed over the last hour, more than 14.4 times the 0.5% budget."
+          description: "{{ $value | humanizePercentage }} of requests failed over the last hour, more than 14.4 times the 0.1% budget."
       - alert: OutSystemsErrorBudgetBurnSlow
         expr: >-
-          heartbeat:outsystems_request_errors:ratio_rate6h > (6 * 0.005)
-          and heartbeat:outsystems_request_errors:ratio_rate30m > (6 * 0.005)
-          and heartbeat:outsystems_requests:rate6h > 1/60
+          heartbeat:outsystems_request_errors:ratio_rate6h > (6 * 0.001)
+          and heartbeat:outsystems_request_errors:ratio_rate30m > (6 * 0.001)
+          and heartbeat:outsystems_requests:rate6h > 5/60
         for: 15m
         labels:
           severity: warning
         annotations:
           summary: "{{ $labels.environment }}/{{ $labels.application }} is burning its error budget"
-          description: "{{ $value | humanizePercentage }} of requests failed over the last 6 hours, more than 6 times the 0.5% budget."
+          description: "{{ $value | humanizePercentage }} of requests failed over the last 6 hours, more than 6 times the 0.1% budget."
       - alert: OutSystemsLatencyBudgetBurnFast
         expr: >-
           heartbeat:outsystems_request_slow:ratio_rate1h > (14.4 * 0.01)

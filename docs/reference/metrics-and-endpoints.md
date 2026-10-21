@@ -268,7 +268,7 @@ Rules ([`heartbeat.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules
 | `heartbeat:outsystems_operations:rate5m`, `heartbeat:outsystems_errors:rate5m` | Recording: OutSystems entry points per second by log type and outcome; error log rows per second by module |
 | `heartbeat:outsystems_request_duration_seconds:p95_5m`, `heartbeat:outsystems_integration_duration_seconds:p95_5m` | Recording: p95 request and integration latency |
 | `heartbeat:outsystems_request_errors:ratio_rate{5m,30m,1h,6h}`, `heartbeat:outsystems_request_slow:ratio_rate{5m,30m,1h,6h}`, `heartbeat:outsystems_requests:rate{1h,6h}` | Recording: availability and latency (2 s) SLIs per application over screens, Reactive server calls and exposed APIs, and their traffic |
-| `OutSystemsErrorBudgetBurnFast`, `OutSystemsLatencyBudgetBurnFast` | Alert (critical): 14.4× burn of a 99.5% availability or 99%-within-2-s objective over 1h and 5m, for applications with at least one request a minute |
+| `OutSystemsErrorBudgetBurnFast`, `OutSystemsLatencyBudgetBurnFast` | Alert (critical): 14.4× burn of a 99.9% availability or 99%-within-2-s objective over 1h and 5m, for applications with at least five (availability) or one (latency) requests a minute |
 | `OutSystemsErrorBudgetBurnSlow`, `OutSystemsLatencyBudgetBurnSlow` | Alert (warning): 6× burn over 6h and 30m |
 | `OutSystemsLogExtractionBehind` | Alert (warning): a log type's extraction lag above 30 minutes for 10m; the OutSystems metrics and SLO alerts of that target are stale |
 | `HeartbeatServiceDown` | Alert: `up == 0` for the DB collector or OTel Collector |

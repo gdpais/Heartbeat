@@ -157,6 +157,12 @@ tests:
         values: '0+90x80'
       - series: 'heartbeat_outsystems_operations_total{collector="c",environment="prod",application="Shop",module="Shop_CS",log_type="screen",operation="Checkout",outcome="error"}'
         values: '0+10x80'
+      # Quiet: 2% of 3 requests a minute fail, 20 times the 0.1% budget, but
+      # that is under the 5 requests a minute an error page needs.
+      - series: 'heartbeat_outsystems_operations_total{collector="c",environment="prod",application="Quiet",module="Quiet",log_type="screen",operation="Home",outcome="success"}'
+        values: '0+2.94x80'
+      - series: 'heartbeat_outsystems_operations_total{collector="c",environment="prod",application="Quiet",module="Quiet",log_type="screen",operation="Home",outcome="error"}'
+        values: '0+0.06x80'
       # Rare: every request fails, but there is one every two minutes.
       - series: 'heartbeat_outsystems_operations_total{collector="c",environment="prod",application="Rare",module="Rare",log_type="screen",operation="Home",outcome="success"}'
         values: '0x80'
@@ -175,7 +181,7 @@ tests:
               application: Shop
             exp_annotations:
               summary: "prod/Shop is burning its error budget fast"
-              description: "10% of requests failed over the last hour, more than 14.4 times the 0.5% budget."
+              description: "10% of requests failed over the last hour, more than 14.4 times the 0.1% budget."
 
   - name: OutSystems fast latency budget burn pages
     interval: 1m

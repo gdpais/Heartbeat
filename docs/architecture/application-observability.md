@@ -165,10 +165,13 @@ timers are left out):
 - Latency: the share of requests answered within 2 s, from the histogram's
   `le="2"` bucket (`heartbeat:outsystems_request_slow:ratio_rate<window>`).
 
-Alerts use multiwindow burn rates against static default objectives, 99.5%
-available and 99% within 2 s over 30 days: fast burn (14.4× over 1h and 5m)
-is `critical`, slow burn (6× over 6h and 30m) is `warning`. Applications with
-less than one request a minute over the long window are left out. Because the
+Alerts use multiwindow burn rates against static default objectives, 99.9%
+available (a 0.1% error budget) and 99% within 2 s over 30 days: fast burn
+(14.4× over 1h and 5m, an error ratio above 1.44%) is `critical`, slow burn
+(6× over 6h and 30m, above 0.6%) is `warning`. Low-traffic applications are
+left out so a handful of failures cannot page: the availability alerts need
+five requests a minute over the long window, so a fast burn takes at least 5
+failed requests in the hour; the latency alerts need one. Because the
 SLIs go quiet, not red, when extraction stops, `OutSystemsLogExtractionBehind`
 fires when a log type's extraction lag passes 30 minutes. These are
 guardrails; per-application objectives and adaptive baselines come in
