@@ -230,7 +230,7 @@ Replica ownership and outage testing are section 19. Design details:
 - [x] Validate safe reloads, including partial reconciliation failure (rollback) and replacement-poller startup failure (unit-tested)
 - [x] Bound every probe with a hard deadline so a probe the driver cannot cancel never stalls the collector cycle; keep at most one abandoned call per target and bound dead connections with a driver socket timeout
 - [ ] Per-probe failure isolation: a failing probe fails only itself; today it fails its whole target for that cycle
-- [ ] Cap the rows a probe reads (for example 10,000) and fail the probe past the cap, so a `query_template` that returns millions of rows cannot run the pod out of memory
+- [x] Cap the rows a probe reads (`max_rows`, default 10,000) and fail the probe past the cap, so a `query_template` that returns millions of rows cannot run the pod out of memory; `outsystems_logs` reads are already bounded by `batch_limit`
 - [ ] A global series budget per collector with an overflow counter: the per-label caps on applications, modules and operations multiply, so the worst case has no bound
 
 ### 2.7 Collector endpoint security
@@ -239,7 +239,7 @@ Replica ownership and outage testing are section 19. Design details:
 - [x] Admin token: compare in constant time
 - [x] Network exposure: add a NetworkPolicy limiting port 8082 to Prometheus and operator access
 - [x] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; per-target TLS settings wait until a real target needs them
-- [ ] Check at validation that a `query_template` is a single read-only `SELECT`; the docs require it, nothing enforces it
+- [x] Check at validation that a `query_template` is a single read-only `SELECT` (defense in depth; the read-only login stays the control)
 - [ ] Egress NetworkPolicy for the collector: DNS, the monitored targets and the OTel Collector only (the policy restricts ingress only)
 
 ---

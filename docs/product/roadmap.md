@@ -75,13 +75,14 @@ Runtime collection is configured in YAML and needs no API or UI.
 - Least privilege and query safety: every probe runs with `LOCK_TIMEOUT` and
   low deadlock priority; a sysadmin-equivalent login is logged, exported and
   alerted on; tests and the sandbox run as a login with only the documented
-  grants; probe review checklist [2.2]
+  grants; probe review checklist [2.2]; a `query_template` must be one
+  read-only `SELECT`, checked when the configuration loads [2.7]
 - Metrics: cumulative values as counters in base units, per-probe durations
   and error counters, Go runtime and process metrics [2.4, 2.6]
 - Reliability: failure isolation, bounded backoff, freshness metrics,
   stale-series cleanup, readiness that reflects collector state, reload
-  rollback, and a hard deadline so a probe the driver cannot cancel never
-  stalls the collector [2.6]
+  rollback, a hard deadline so a probe the driver cannot cancel never
+  stalls the collector, and a row cap per probe (`max_rows`) [2.6]
 - SQL Server overview dashboard and local SQL Server sandbox; every probe runs
   against a real SQL Server in CI, and `make kind-e2e` covers live SQL Server →
   collector → Prometheus → Grafana on kind, reloads and target outages with a
