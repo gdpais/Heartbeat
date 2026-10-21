@@ -31,7 +31,8 @@ func TestValidateReadOnlySelectAccepts(t *testing.T) {
 		{"variables and parameters", "SELECT TOP (@limit) @@VERSION, Instant FROM dbo.v WHERE Instant > @from AND Instant <= @to ORDER BY Instant"},
 		{"XML methods", "SELECT x.value('(./Record/@id)[1]', 'int') FROM t CROSS APPLY t.r.nodes('/x') AS n(x)"},
 		{"live demo divide by zero", "SELECT 1 AS blocking_session_id, 1/0 AS blocked_count"},
-		{"numbers", "SELECT 1.5, 2e3, 0x1F, .5"},
+		{"numbers", "SELECT 1.5, 2e3, 2E-3, 1., 0x1F, .5, $1.00, 1FROM sys.objects"},
+		{"tabs and CRLF", "SELECT\t1\r\nFROM t"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := ValidateReadOnlySelect(tc.query); err != nil {
@@ -89,6 +90,18 @@ func TestValidateReadOnlySelectRejects(t *testing.T) {
 		{"transaction", "SELECT 1 BEGIN TRAN", "contains BEGIN"},
 		{"KILL", "SELECT 1 KILL 52", "contains KILL"},
 		{"END without CASE", "SELECT 1 END CONVERSATION @h", "END without CASE"},
+		{"keyword after a number and a dot", "SELECT 1. EXEC('DROP TABLE dbo.t')", "contains EXEC"},
+		{"keyword glued to a number and a dot", "SELECT 1.DROP TABLE dbo.t", "contains DROP"},
+		{"keyword glued to a number", "SELECT 1DROP TABLE dbo.t", "contains DROP"},
+		{"keyword glued to a comparison", "SELECT 1 AS x FROM sys.objects WHERE 1 = 1DELETE dbo.t", "contains DELETE"},
+		{"keyword glued to an exponent", "SELECT 1e5WAITFOR DELAY '00:00:20'", "contains WAITFOR"},
+		{"keyword glued to a hex literal", "SELECT 0x1FGRANT CONTROL SERVER TO x", "contains GRANT"},
+		{"keyword as a column part", "SELECT t.SHUTDOWN FROM t", "contains SHUTDOWN"},
+		{"END after a number and a dot", "SELECT 1. END CONVERSATION @h", "END without CASE"},
+		{"SELECT after a number and a dot", "SELECT 1. SELECT 2", "a second top-level SELECT"},
+		{"line separator ending a comment", "SELECT 1 --\u2028DROP TABLE t", "line-separator"},
+		{"next line ending a comment", "SELECT 1 --\u0085DROP TABLE t", "line-separator"},
+		{"form feed", "SELECT 1\fFROM t", "control"},
 		{"unbalanced closing parenthesis", "SELECT (1))", "unbalanced parentheses"},
 		{"unbalanced opening parenthesis", "SELECT ((1)", "unbalanced parentheses"},
 		{"unterminated string", "SELECT 'abc", "unterminated string"},

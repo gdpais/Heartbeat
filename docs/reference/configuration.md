@@ -159,12 +159,15 @@ reason, without quoting the query. Rejected:
   [`query.go`](../../internal/config/query.go));
 - a name starting with `sp_` or `xp_` (system and extended procedures), and an
   `END` without a matching `CASE`;
-- unbalanced parentheses, or an unterminated string, comment or quoted
-  identifier.
+- unbalanced parentheses, an unterminated string, comment or quoted
+  identifier, or a control or Unicode line-separator character other than
+  tab, CR and LF.
 
 Keywords inside string literals (`'…'`, `N'…'`), comments (`--`, nested
 `/* */`) and quoted identifiers (`[…]`, `"…"`) are ignored, so a column named
-`[Backup]` is fine; a statement after a comment is still caught. The built-in
+`[Backup]` is fine, while `t.Backup` is rejected (a reserved word must be
+quoted there too). A statement after a comment, or glued to a number as in
+`SELECT 1DROP …` or `SELECT 1.DROP …`, is still caught. The built-in
 probe and log-type queries pass the same check. It is a safety net, not the
 control: a text check cannot prove a query has no side effects. What keeps
 probes read-only is the collector's login, which holds only read grants

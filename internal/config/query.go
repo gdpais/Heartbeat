@@ -36,8 +36,9 @@ import (
 //     changes;
 //   - a name starting with sp_ or xp_ (system and extended procedures);
 //   - END without a matching CASE (END CONVERSATION and similar), and
-//     unbalanced parentheses or an unterminated string, comment or quoted
-//     identifier, which would let the server read the text differently.
+//     unbalanced parentheses, an unterminated string, comment or quoted
+//     identifier, or a control or Unicode line-separator character, which
+//     could let the server read the text differently.
 func ValidateReadOnlySelect(query string) error {
 	tokens, err := sqlTokens(query)
 	if err != nil {
@@ -69,12 +70,14 @@ func ValidateReadOnlySelect(query string) error {
 			if routinePrefix(token.text) {
 				return errors.New("calls a system or extended stored procedure (sp_ or xp_ name)")
 			}
-			if token.afterDot {
-				// A column or object name, such as r.status: never a keyword.
-				continue
-			}
+			// Checked after a '.' too: a reserved word must be [quoted] even
+			// as the column part of a name, so t.DROP is never a column.
 			if reason, ok := forbiddenSQLKeywords[token.text]; ok {
 				return fmt.Errorf("contains %s, %s", token.text, reason)
+			}
+			if token.afterDot {
+				// A column or object name, such as r.status or x.value().
+				continue
 			}
 			switch token.text {
 			case "CASE":
@@ -198,9 +201,22 @@ type sqlToken struct {
 
 // sqlTokens splits query into tokens, dropping whitespace and comments.
 func sqlTokens(query string) ([]sqlToken, error) {
+	// Anywhere, comments and strings included.
+	if strings.IndexFunc(query, lineBreakLike) >= 0 {
+		return nil, errors.New("has a control or line-separator character other than tab, CR and LF")
+	}
 	var tokens []sqlToken
+	// afterDot reports a '.' that continues a name: after a name, a quoted
+	// identifier, a variable (@x.value()) or another '.' (db..table).  After
+	// a number or a keyword it continues nothing.
 	afterDot := func() bool {
-		return len(tokens) > 0 && tokens[len(tokens)-1].kind == sqlPunct && tokens[len(tokens)-1].text == "."
+		n := len(tokens)
+		if n < 2 || tokens[n-1].kind != sqlPunct || tokens[n-1].text != "." {
+			return false
+		}
+		before := tokens[n-2]
+		return before.kind == sqlWord || before.kind == sqlQuoted || before.kind == sqlVariable ||
+			(before.kind == sqlPunct && before.text == ".")
 	}
 	for i := 0; i < len(query); {
 		r, size := utf8.DecodeRuneInString(query[i:])
@@ -244,8 +260,8 @@ func sqlTokens(query string) ([]sqlToken, error) {
 			end := wordEnd(query, i)
 			tokens = append(tokens, sqlToken{kind: sqlWord, text: strings.ToUpper(query[i:end]), afterDot: afterDot()})
 			i = end
-		case unicode.IsDigit(r):
-			end := wordEnd(query, i)
+		case '0' <= r && r <= '9':
+			end := numberEnd(query, i)
 			tokens, i = append(tokens, sqlToken{kind: sqlNumber}), end
 		default:
 			tokens, i = append(tokens, sqlToken{kind: sqlPunct, text: string(r)}), i+size
@@ -254,9 +270,9 @@ func sqlTokens(query string) ([]sqlToken, error) {
 	return tokens, nil
 }
 
-// wordEnd returns the index just past the name or number that continues at
-// query[i:]: letters, digits, '_', '@', '#' and '$'.  A '.' ends it, so a
-// multi-part name is several words; "1.5" is two numbers around a '.'.
+// wordEnd returns the index just past the name that continues at query[i:]:
+// letters, digits, '_', '@', '#' and '$'.  A '.' ends it, so a multi-part
+// name is several words.
 func wordEnd(query string, i int) int {
 	for i < len(query) {
 		r, size := utf8.DecodeRuneInString(query[i:])
@@ -266,6 +282,49 @@ func wordEnd(query string, i int) int {
 		i += size
 	}
 	return i
+}
+
+// numberEnd returns the index just past the number that starts at query[i]
+// with a digit, read as SQL Server reads it: 0x and hex digits, or digits, an
+// optional fraction and an optional exponent.  Anything else ends it, so
+// "1DROP" and "1.DROP" are a number followed by the keyword DROP, as the
+// server sees them.
+func numberEnd(query string, i int) int {
+	digits := func(i int, hex bool) int {
+		for i < len(query) && ('0' <= query[i] && query[i] <= '9' ||
+			hex && strings.IndexByte("abcdefABCDEF", query[i]) >= 0) {
+			i++
+		}
+		return i
+	}
+	if strings.HasPrefix(query[i:], "0x") || strings.HasPrefix(query[i:], "0X") {
+		return digits(i+2, true)
+	}
+	i = digits(i, false)
+	if i < len(query) && query[i] == '.' {
+		i = digits(i+1, false)
+	}
+	if i < len(query) && (query[i] == 'e' || query[i] == 'E') {
+		j := i + 1
+		if j < len(query) && (query[j] == '+' || query[j] == '-') {
+			j++
+		}
+		if end := digits(j, false); end > j {
+			i = end
+		}
+	}
+	return i
+}
+
+// lineBreakLike reports a control character other than tab, CR and LF, or a
+// Unicode line separator.  None belongs in a query, and a reader that ended
+// a -- comment at one where the server does not (or the reverse) would see
+// different statements.
+func lineBreakLike(r rune) bool {
+	if r == '\t' || r == '\r' || r == '\n' {
+		return false
+	}
+	return unicode.IsControl(r) || r == '\u2028' || r == '\u2029'
 }
 
 // quotedEnd returns the index just past the literal or identifier that opens
