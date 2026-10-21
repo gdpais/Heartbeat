@@ -436,14 +436,54 @@ loki:
   test:
     enabled: false
 
+# Disk for the OTel Collector's logs export queue (file_storage/export-queue
+# below), so rows the Collector accepted survive a restart: the db-collector
+# has already moved its watermark past them. The claim is
+# otel-collector-queue, mounted through otelCollector.extraVolumes. To run
+# without one (no StorageClass), set enabled: false and make the export-queue
+# volume an emptyDir; the queue then survives a container restart but not a
+# new pod. The queue holds at most 64 MiB, and its file does not shrink
+# below the largest backlog it held; 1Gi is also the smallest gp3 volume.
+otelCollectorQueue:
+  persistence:
+    enabled: true
+    size: 1Gi
+    # Empty uses the cluster's default StorageClass.
+    storageClassName: ""
+
 otelCollector:
   enabled: true
   fullnameOverride: otel-collector
-  mode: deployment
+  # A one-replica StatefulSet, like the db-collector: the replacement pod is
+  # not created until the old one is gone, so two Collectors never open the
+  # export queue at once. A Deployment starts the replacement of an evicted
+  # pod while the old one still runs. The queue is a plain claim, not a
+  # volumeClaimTemplate, which could never change on an existing StatefulSet.
+  # As a StatefulSet the subchart names its ConfigMap otel-collector-statefulset
+  # and labels the pods component: statefulset-collector.
+  mode: statefulset
+  replicaCount: 1
   image:
     repository: otel/opentelemetry-collector-contrib
   command:
     name: otelcol-contrib
+  # The image runs as user 10001. fsGroup makes the export queue's volume
+  # writable by it (kind's local-path volumes are world-writable anyway).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  extraVolumes:
+    - name: export-queue
+      persistentVolumeClaim:
+        claimName: otel-collector-queue
+  extraVolumeMounts:
+    - name: export-queue
+      mountPath: /var/lib/otelcol/export-queue
   resources:
     requests:
       cpu: 50m
@@ -469,6 +509,14 @@ otelCollector:
     extensions:
       health_check:
         endpoint: ${env:MY_POD_IP}:13133
+      # The logs exporter's queue, on the export-queue volume
+      # (otelCollectorQueue). fsync on every write: the db-collector moves its
+      # watermark as soon as a batch is queued, so a node crash must not lose
+      # or corrupt it. It costs a few disk syncs per OTLP request and per
+      # exported batch, a few per second during a backlog.
+      file_storage/export-queue:
+        directory: /var/lib/otelcol/export-queue
+        fsync: true
     receivers:
       otlp:
         protocols:
@@ -508,9 +556,23 @@ otelCollector:
         # ingestion_burst_size_mb (6) is never taken, so the queue cuts
         # batches at 4 MiB. While a batch waits the queue fills (64 MiB), the
         # receiver answers 503 (see the logs pipeline), and the db-collector
-        # keeps its watermark and retries. The queue is in memory: rows in it
-        # when the Collector restarts are lost.
+        # keeps its watermark and retries.
+        #
+        # The queue is on disk (file_storage/export-queue), so rows in it
+        # when the Collector restarts are sent after the restart. The order
+        # holds except for the batches being sent when it stopped (at most
+        # two): the persistent queue puts them back at its end, behind the
+        # rest. Loki takes their rows unless it already has rows of the same
+        # stream more than an hour newer, that is when the queue held more
+        # than an hour of that stream; LokiDiscardingLogs then fires. In the
+        # kind test a restart lost none of 6,000 rows spanning 45 minutes,
+        # and 1,297 of 6,000 spanning three hours. A queue of one request
+        # would keep the order, but the db-collector's export then waits for
+        # Loki, its probes time out and its targets back off: of a 12,000-row
+        # backlog Loki held 74% after 13 minutes, against all of it after
+        # 100 seconds with this queue.
         sending_queue:
+          storage: file_storage/export-queue
           num_consumers: 1
           sizer: bytes
           queue_size: 67108864
@@ -521,7 +583,7 @@ otelCollector:
         retry_on_failure:
           max_elapsed_time: 0s
     service:
-      extensions: [health_check]
+      extensions: [health_check, file_storage/export-queue]
       pipelines:
         metrics:
           receivers: [otlp]

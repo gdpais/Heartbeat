@@ -47,7 +47,7 @@ engine images. It ends by listing pods and services; all six pods should be
 `1/1 Running`:
 
 ```text
-alertmanager-0, db-collector-0, grafana-…, loki-0, otel-collector-…, prometheus-…
+alertmanager-0, db-collector-0, grafana-…, loki-0, otel-collector-0, prometheus-…
 ```
 
 Check the endpoints:
@@ -171,10 +171,10 @@ make kind-e2e
 
 This creates a second, temporary cluster (`heartbeat-e2e-<id>`) with its own
 SQL Server, runs every check above and more (invalid config, rollouts,
-persistence after pod replacement), prints measurements, and deletes what it
-created. Your `heartbeat` cluster is untouched. It takes about 10 minutes and
-ends with `All kind e2e checks passed`. CI runs the same script on every pull
-request.
+persistence after pod replacement, an OTel Collector restart during a log
+backlog), prints measurements, and deletes what it created. Your `heartbeat`
+cluster is untouched. It takes about 10 minutes and ends with
+`All kind e2e checks passed`. CI runs the same script on every pull request.
 
 ## 10. Clean up
 

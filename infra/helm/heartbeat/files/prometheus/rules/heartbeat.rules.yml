@@ -176,7 +176,7 @@ groups:
           severity: warning
         annotations:
           summary: "Loki is discarding log rows ({{ $labels.reason }})"
-          description: "Loki discarded log rows in the last 10 minutes for {{ $labels.reason }}; they are not in Loki and will not be sent again. too_far_behind means rows arrived more than an hour behind their stream: check that the OTel Collector's logs exporter keeps one consumer."
+          description: "Loki discarded log rows in the last 10 minutes for {{ $labels.reason }}; they are not in Loki and will not be sent again. too_far_behind means rows arrived more than an hour behind their stream: check that the OTel Collector's logs exporter keeps one consumer, and whether the Collector restarted during a backlog of more than an hour."
       # The collector should never log in with more than VIEW SERVER STATE and
       # VIEW ANY DEFINITION. The flag is rechecked about every 10 minutes, so
       # 15m keeps a single stale check from firing it.

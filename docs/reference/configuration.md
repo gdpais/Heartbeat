@@ -204,8 +204,12 @@ Rules:
 - The watermark of each collector, target and log type is a file under
   `HEARTBEAT_STATE_DIR` (`outsystems_logs/<collector>.<target>.<log type>.json`).
   It moves only after the OTel Collector accepted the batch, so delivery is at
-  least once. Removing a collector leaves its files; a collector re-added with
-  the same `id` resumes from them.
+  least once. The chart's Collector keeps accepted batches in a queue on disk
+  (the `otelCollectorQueue` volume), so a Collector restart does not lose
+  them, within one limit described in
+  [application observability](../architecture/application-observability.md).
+  Removing a collector leaves its files; a collector re-added with the same
+  `id` resumes from them.
 - The login needs `SELECT` on the `oslog_*` views the queries read (the
   current and the previous week's) and nothing else; see
   [database targets](../guides/database-targets.md#outsystems-logging-database).

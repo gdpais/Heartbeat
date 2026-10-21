@@ -7,7 +7,9 @@
 #
 # Before use: create the Secret below, set the endpoint, and install the
 # platform's own dashboards and alert rules. Heartbeat ships content only for
-# Grafana (files/grafana, files/prometheus).
+# Grafana (files/grafana, files/prometheus). The Collector's export queue
+# needs a volume: the default StorageClass, or set
+# otelCollectorQueue.persistence.storageClassName.
 #
 #   kubectl create secret generic heartbeat-platform-otlp \
 #     --from-literal=endpoint=https://otlp.example.internal \
@@ -38,7 +40,7 @@ dbCollector:
       - podSelector:
           matchLabels:
             app.kubernetes.io/name: otelCollector
-            component: standalone-collector
+            component: statefulset-collector
 
 otelCollector:
   ports:
@@ -99,7 +101,9 @@ otelCollector:
         headers:
           Authorization: ${env:PLATFORM_OTLP_AUTHORIZATION}
     service:
-      extensions: [health_check]
+      # A list replaces the chart's, so it names the export queue's storage
+      # too: otlp_http/logs keeps the chart's on-disk sending queue.
+      extensions: [health_check, file_storage/export-queue]
       pipelines:
         metrics:
           receivers: [otlp, prometheus]

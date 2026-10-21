@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Heartbeat chart values",
-  "description": "Validates the embedded integrations.yaml and the db-collector NetworkPolicy and state volume settings. properties.integrations is a copy of packages/config-schema/src/integrations.schema.json (without $schema); tests/chart_schema_test.go fails when they differ.",
+  "description": "Validates the embedded integrations.yaml, the db-collector NetworkPolicy and state volume settings, and the OTel Collector export queue volume. properties.integrations is a copy of packages/config-schema/src/integrations.schema.json (without $schema); tests/chart_schema_test.go fails when they differ.",
   "type": "object",
   "required": [
     "integrations"
@@ -56,6 +56,32 @@
         },
         "persistence": {
           "description": "State volume for the outsystems_logs watermarks, mounted at /var/lib/heartbeat. Disabled means an emptyDir.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "size"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "size": {
+              "type": "string",
+              "minLength": 1
+            },
+            "storageClassName": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "otelCollectorQueue": {
+      "type": "object",
+      "properties": {
+        "persistence": {
+          "description": "Volume for the OTel Collector's logs export queue, the otel-collector-queue claim. Disabled means the export-queue volume in otelCollector.extraVolumes is an emptyDir.",
           "type": "object",
           "additionalProperties": false,
           "required": [
