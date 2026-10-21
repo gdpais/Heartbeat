@@ -2,7 +2,7 @@
 // the product's module, images and releases (ADR 0010).
 module heartbeat/tools/patientzero
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9
