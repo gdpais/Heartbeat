@@ -58,7 +58,9 @@ latency; host/node/runtime metadata; deployment/version context.
 - Map default OutSystems log fields faithfully first, so existing SRE queries
   keep working. Confirm improvements with the SRE team before changing field
   semantics.
-- Avoid storing PII unnecessarily; prefer hashed or normalized identifiers.
+- Keep identifiers out of labels; store raw user, session and client IP values
+  only where access is restricted, and no more of them than investigations need
+  ([ADR 0012](decisions/0012-personal-data-in-telemetry.md)).
 - MuleSoft and generic JSON/plaintext sources come after the OutSystems path is
   proven.
 
