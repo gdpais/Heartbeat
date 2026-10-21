@@ -81,9 +81,9 @@ The mapping from each view's own columns to these names is the
 table of the queries README.
 
 Identifiers are never Loki labels or metric labels. They stay structured
-metadata, queryable with `| User_Id="…"`. Whether to hash user IDs and client
-IPs is a compliance decision still open in the
-[product overview](../product/overview.md#open-questions); the extractor can
+metadata, queryable with `| User_Id="…"`. They are kept raw, with access to
+Loki and Grafana restricted, and production needs compliance sign-off first
+([ADR 0012](decisions/0012-personal-data-in-telemetry.md)); the extractor can
 hash them before export without changing anything else.
 
 ## Derived metrics
