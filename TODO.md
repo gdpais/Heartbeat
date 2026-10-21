@@ -256,7 +256,7 @@ inventory exists; API-managed onboarding [4.4, 10.1] follows in stage 3.
 Generic source expansion [3.4] remains later work. Grafana dashboards [10.4]
 follow the ingest path.
 
-- [ ] Validate this stage: every log-type query against a SQL Server fixture with the `oslog_*` tables, extraction → OTel Collector → Loki and derived metrics → Prometheus on kind, restarts and outages without gaps; generated OTLP traces → Tempo, linked to their logs [16.1–16.2]
+- [ ] Validate this stage: every log-type query against a SQL Server fixture with the `oslog_*` tables, extraction → OTel Collector → Loki and derived metrics → Prometheus on kind, restarts and outages without gaps [16.1–16.2]; Tempo and request traces are not part of this exit [3.6]
 
 ### 3.1 OTel gateway bootstrap (service removed, [ADR 0009](docs/architecture/decisions/0009-remove-the-otel-gateway.md))
 - [x] Create Go service entrypoint `services/otel-gateway/cmd/otel-gateway/`
@@ -307,8 +307,11 @@ Design: [request traces](docs/architecture/application-observability.md#request-
 Heartbeat accepts all three OpenTelemetry signals, so any source that sends
 OTLP traces has somewhere to store them, and step B [3.5] reuses the store. No
 real source sends traces yet, so the tests use generated ones (`telemetrygen`).
-Nothing here waits on the logging-database survey; do it after the phase 2
-items the survey does not block.
+Not part of the phase 2 exit (decided 2026-10-21): OutSystems 11 self-managed
+sends no traces, and the request timeline [3.5] already answers "what happened
+in this request" from logs. Build this together with step B [3.5], as one
+request-traces feature, once something consumes it: the first OTLP trace
+source (OutSystems Cloud or ODC) or the phase 7 investigation timeline.
 
 - [ ] Decide trace storage and retention (ADR; Grafana Tempo in single-binary mode is the natural fit next to Loki)
 - [ ] Tempo as a pinned chart dependency with persistence and retention, off in the `minimal` profile; storage settings in the production example values
@@ -768,15 +771,15 @@ First slice, with phase 2:
 - [x] Traffic profile from the survey's aggregates only (`load/traffic.js`): integration calls per screen request, peak factor, the day's hourly curve (a `day` load profile); duration distributions, error ratio and identifier coverage were not in the extract
 - [x] Service bootstrap: `tools/patientzero/` module, own SQL login with write rights on `patientzero` and `patientzero_log` only, health endpoint, Dockerfile, Helm chart into a `patientzero` namespace, `make patientzero-up` and `make patientzero-down`
 - [x] First entry points: a Traditional screen, a Reactive server action and an exposed REST API; each request runs business SQL and writes its log rows under one `Request_Key`, with the caller's session, user and client IP
-- [ ] More entry points: timers, extension calls and a fake consumed REST partner
 - [x] k6 load: virtual users with stable identities; smoke, steady, peak, soak and day profiles, run as a Job on kind (`make patientzero-load`); the mix in `load/traffic.js` takes the survey's aggregates
-- [ ] Compressed calendar: weekly rotation on demand, backfill within Loki's 168h limit, commits held back past the `lag`, long-running screens and timers, `Instant` in a configured time zone including daylight saving switches; the collector's clock is never changed
-- [ ] Scenario files (fault, duration, expected PromQL/LogQL/alert signals) and an admin endpoint to start them: `blocking` (and deadlock), `bad-deploy`, `slow-partner`, `slow-sql`, `timer-backlog`, `bad-front-end`, `log-growth`, `log-backlog`, `rotation`
-- [ ] Run journal (JSONL): users, sessions, requests, and each fault with its start and end
+- [ ] Scenario runner: scenario files (fault, duration, expected PromQL/LogQL/alert signals), an admin endpoint to start them, and a run journal (JSONL: users, sessions, requests, and each fault with its start and end)
+- [ ] Ingest scenarios: `rotation` (weekly rotation on demand), `log-backlog`, `log-growth`, backfill within Loki's 168h limit, commits held back past the `lag`, and restarts and outages of the db-collector, the OTel Collector, Loki and SQL Server; the collector's clock is never changed
+- [ ] SLO scenarios: `bad-deploy` and `slow-sql` fire the existing burn-rate alerts in Alertmanager, end to end
 - [ ] `make kind-e2e` runs the scenarios against PatientZero and checks their signals; replace the hand-run load in the [live demo](docs/guides/live-demo.md) with them [16.2, 16.3]
 
 Later, each with the phase that needs it:
 - [ ] Phases 3–4: onboard PatientZero through the API and the UI as the reference application [16.3]
+- [ ] Phase 7, with the analyzer and alert work that uses them: timers, extension calls and a fake consumed REST partner; long-running screens and timers; `Instant` in a configured time zone across daylight saving switches; the `blocking` (and deadlock), `slow-partner`, `timer-backlog` and `bad-front-end` scenarios [6, 13]
 - [ ] Phase 7: investigations and reports on PatientZero runs compared with their journals; decide soak runs or a Prometheus TSDB backfill for multi-day baselines and weekly reports [6, 13, 14]
 - [ ] OTLP mode for the OutSystems Cloud/ODC streams and traces [3.4, 3.6]; a MuleSoft-like source [3.4]; an Oracle-backed variant [21]
 

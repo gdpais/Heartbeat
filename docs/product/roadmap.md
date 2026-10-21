@@ -101,8 +101,10 @@ design in [application observability](../architecture/application-observability.
 
 - PatientZero's first slice: the logging-database survey, its schema and
   traffic profile, the business and logging
-  databases on the sandbox, k6 load and the first scenarios, which are part of
-  this phase's exit checks [16.5]
+  databases on the sandbox, k6 load, and the scenario runner with the ingest
+  and SLO scenarios (rotation, backlog, log growth, restarts and outages, a
+  bad deploy, slow SQL), which are part of this phase's exit checks; the other
+  scenarios come with phase 7 [16.5]
 - One reviewed `.sql` query per log type (error, screen, integration, ...),
   watermarked incremental reads, OTLP to the OTel Collector and Loki with
   OutSystems field names kept [3.3]
@@ -111,19 +113,18 @@ design in [application observability](../architecture/application-observability.
 - Derived SRE, infrastructure and business metrics on the collector's
   `/metrics`; recording rules and SLO burn-rate alerts [3.3]
 - OutSystems overview, errors, latency and request-timeline dashboards [10.4, 3.5]
-- Accept OTLP traces from any source: Tempo, a traces pipeline in the OTel
-  Collector and logs ↔ traces links in Grafana, tested with generated traces;
-  ADR first. It does not wait on the logging-database survey [3.6]
 - Use configured application/environment identities until API inventory exists
-- Later: synthesized request traces from `Request_Key` [3.5]; MuleSoft and
+- Later: request traces, Tempo with synthesized spans from `Request_Key`,
+  built together once something consumes them: the first OTLP trace source or
+  phase 7's investigation timeline [3.5, 3.6]; MuleSoft and
   generic sources [3.4]; OutSystems Cloud and ODC through their OTLP streams,
   straight into the OTel Collector (the OTel gateway was removed:
   [ADR 0009](../architecture/decisions/0009-remove-the-otel-gateway.md))
 
 Exit: every query tested against a SQL Server fixture with the `oslog_*`
 tables; logging database → collector → Loki and Prometheus → Grafana on kind,
-including restarts and outages without gaps; generated OTLP traces reach Tempo
-and link to their logs. The phase ends with its release:
+including restarts and outages without gaps, shown by the PatientZero
+scenarios; the SLO scenarios fire the burn-rate alerts. The phase ends with its release:
 the release GitHub App is created then, and release-please cuts the release
 from the commits since `v0.1.0` [0.5].
 
@@ -192,6 +193,9 @@ field/metric semantics, cardinality and database load checked.
 - Session analyzer and investigation UI [6, 12]
 - Alert policy rendering to Prometheus and Alertmanager; adaptive baselines [13]
 - Report templates, schedules, generation and email delivery [7, 14]
+- The rest of PatientZero: timers, extension calls, a fake partner, and the
+  blocking, slow-partner, timer-backlog, bad front-end and daylight saving
+  scenarios [16.5]; request traces if they haven't come earlier [3.5, 3.6]
 - See [operator workflows](../architecture/workflows.md)
 
 Exit: deterministic correlation/baseline/report tests; alert
