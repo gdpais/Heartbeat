@@ -49,7 +49,9 @@ Data path for self-managed OutSystems 11:
    for good a row more than an hour behind the newest row of its stream, so
    batches exported in parallel lost rows during a backlog. While a batch
    waits, the Collector's queue fills and it answers 503: the batch is not
-   delivered and the collector reads it again.
+   delivered and the collector reads it again. The logs pipeline has no
+   batch processor, which would accept rows before they are queued. The
+   queue is in memory, so rows queued when the Collector restarts are lost.
 
 ## OutSystems fields
 

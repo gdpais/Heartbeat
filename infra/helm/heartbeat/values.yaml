@@ -507,8 +507,9 @@ otelCollector:
         # until Loki takes it. A push larger than Loki's
         # ingestion_burst_size_mb (6) is never taken, so the queue cuts
         # batches at 4 MiB. While a batch waits the queue fills (64 MiB), the
-        # receiver answers 503, and the db-collector keeps its watermark and
-        # retries.
+        # receiver answers 503 (see the logs pipeline), and the db-collector
+        # keeps its watermark and retries. The queue is in memory: rows in it
+        # when the Collector restarts are lost.
         sending_queue:
           num_consumers: 1
           sizer: bytes
@@ -526,9 +527,14 @@ otelCollector:
           receivers: [otlp]
           processors: [memory_limiter, resource, batch]
           exporters: [prometheus, debug]
+        # No batch processor: it answers the receiver before the export, so a
+        # full exporter queue dropped rows the db-collector had been told were
+        # delivered. Without it a full queue fails the request, the receiver
+        # answers 503 and the db-collector retries; the exporter's queue
+        # batches instead.
         logs:
           receivers: [otlp]
-          processors: [memory_limiter, resource, batch]
+          processors: [memory_limiter, resource]
           exporters: [otlp_http/logs, debug]
       telemetry:
         metrics:
