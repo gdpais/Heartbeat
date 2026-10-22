@@ -80,7 +80,7 @@ the rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Release workflows: release-please keeps a release pull request (`CHANGELOG.md`, `version.txt`, chart `version`/`appVersion`); a `vX.Y.Z` tag on `master` that passed CI publishes multi-arch images and the chart to GHCR and lists their digests in the GitHub release
 - [x] Change-based CI: slow jobs run only when a change can affect them, every job on `master`; one required check, `ci-ok` ([ADR 0007](docs/architecture/decisions/0007-change-based-ci-with-one-required-check.md))
 - [x] Switch the `master` ruleset's required checks from `test`, `Helm chart` and `kind end-to-end` to `ci-ok`
-- [ ] Pin GitHub Actions by commit SHA, kept current by Renovate; they are pinned by major tag
+- [x] Pin GitHub Actions by commit SHA, kept current by Renovate; `make test` fails on an unpinned `uses:` ([CONTRIBUTING.md](CONTRIBUTING.md#ci)). Renovate bumps the pins only once its app is installed [0.4]
 - [ ] At the end of phase 2: create the release GitHub App; set `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY` ([setup](CONTRIBUTING.md#releases)). Until then the release-please job is skipped and no releases are cut, not even by hand; the first release pull request then covers every Conventional Commit since `v0.1.0`
 - [ ] At `1.0.0`, the first production release: remove `"prerelease": true` from `release-please-config.json`
 - [x] Tag ruleset on all tags (not only `v*`, so later component tags are covered): no updates or deletions
@@ -577,7 +577,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Prefer collector processors/config before custom service code
 
 ### 9.6 Network access to the bundled backends
-- [ ] NetworkPolicies for the OTel Collector, Prometheus, Alertmanager and Loki: only the components that use each one reach it (any pod can today, and Loki holds user IDs and client IPs)
+- [x] NetworkPolicies for the OTel Collector, Prometheus, Alertmanager and Loki: only the components that use each one reach it (`backendNetworkPolicies`; Grafana stays open to whatever serves its UI, behind its login)
 
 ---
 
@@ -777,8 +777,8 @@ First slice, with phase 2:
 - [x] Service bootstrap: `tools/patientzero/` module, own SQL login with write rights on `patientzero` and `patientzero_log` only, health endpoint, Dockerfile, Helm chart into a `patientzero` namespace, `make patientzero-up` and `make patientzero-down`
 - [x] First entry points: a Traditional screen, a Reactive server action and an exposed REST API; each request runs business SQL and writes its log rows under one `Request_Key`, with the caller's session, user and client IP
 - [x] k6 load: virtual users with stable identities; smoke, steady, peak, soak and day profiles, run as a Job on kind (`make patientzero-load`); the mix in `load/traffic.js` takes the survey's aggregates
-- [ ] Scenario runner: scenario files (fault, duration, expected PromQL/LogQL/alert signals), an admin endpoint to start them, and a run journal (JSONL: users, sessions, requests, and each fault with its start and end)
-- [ ] Ingest scenarios: `rotation` (weekly rotation on demand), `log-backlog`, `log-growth`, backfill within Loki's 168h limit, commits held back past the `lag`, and restarts and outages of the db-collector, the OTel Collector, Loki and SQL Server; the collector's clock is never changed
+- [x] Scenario runner: scenario files (fault, duration, expected PromQL/LogQL/alert signals), an admin endpoint to start them, and a run journal (JSONL: users, sessions, requests, and each fault with its start and end); in-process `latency` and `errors` faults, `make patientzero-scenario` ([scenarios](tools/patientzero/scenarios/README.md)). Cluster faults (restarts, outages) need the host-side runner the format leaves room for
+- [ ] Ingest scenarios: `rotation` (weekly rotation on demand), `log-backlog`, `log-growth`, backfill within Loki's 168h limit, commits held back past the `lag`, and restarts and outages of the db-collector, the OTel Collector, Loki and SQL Server; the collector's clock is never changed; the restarts and outages are cluster faults, run by a host-side runner with the kubeconfig and Docker ([cluster faults](tools/patientzero/scenarios/README.md#cluster-faults))
 - [ ] SLO scenarios: `bad-deploy` and `slow-sql` fire the existing burn-rate alerts in Alertmanager, end to end
 - [ ] `make kind-e2e` runs the scenarios against PatientZero and checks their signals; replace the hand-run load in the [live demo](docs/guides/live-demo.md) with them [16.2, 16.3]
 

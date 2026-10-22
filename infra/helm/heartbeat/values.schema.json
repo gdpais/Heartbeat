@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Heartbeat chart values",
-  "description": "Validates the embedded integrations.yaml, the db-collector NetworkPolicy and state volume settings, and the OTel Collector export queue volume. properties.integrations is a copy of packages/config-schema/src/integrations.schema.json (without $schema); tests/chart_schema_test.go fails when they differ.",
+  "description": "Validates the embedded integrations.yaml, the db-collector and backend NetworkPolicies, the db-collector state volume settings, and the OTel Collector export queue volume. properties.integrations is a copy of packages/config-schema/src/integrations.schema.json (without $schema); tests/chart_schema_test.go fails when they differ.",
   "type": "object",
   "required": [
     "integrations"
@@ -72,6 +72,87 @@
             },
             "storageClassName": {
               "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "backendNetworkPolicies": {
+      "description": "Ingress NetworkPolicies for the bundled OTel Collector, Prometheus, Alertmanager and Loki. Each admits the bundled components that use the engine, on their ports, plus its extraPeers (NetworkPolicyPeer objects).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "otelCollector",
+        "prometheus",
+        "alertmanager",
+        "loki"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "otelCollector": {
+          "description": "Admitted to the OTLP ports 4317 and 4318, and to 8889 when the prom-exporter port is on.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "extraPeers"
+          ],
+          "properties": {
+            "extraPeers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/networkPolicyPeer"
+              }
+            }
+          }
+        },
+        "prometheus": {
+          "description": "Admitted to 9090.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "extraPeers"
+          ],
+          "properties": {
+            "extraPeers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/networkPolicyPeer"
+              }
+            }
+          }
+        },
+        "alertmanager": {
+          "description": "Admitted to 9093.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "extraPeers"
+          ],
+          "properties": {
+            "extraPeers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/networkPolicyPeer"
+              }
+            }
+          }
+        },
+        "loki": {
+          "description": "Admitted to 3100.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "extraPeers"
+          ],
+          "properties": {
+            "extraPeers": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/networkPolicyPeer"
+              }
             }
           }
         }

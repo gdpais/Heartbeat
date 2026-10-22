@@ -51,6 +51,24 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.sql.existingSecret }}
                   key: PATIENTZERO_SQL_CREDENTIAL
+            {{- if .Values.admin.existingSecret }}
+            - name: PATIENTZERO_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.admin.existingSecret }}
+                  key: {{ .Values.admin.key }}
+                  # Without the Secret the pod still starts; the admin
+                  # endpoints then answer 401.
+                  optional: true
+            {{- end }}
+            - name: PATIENTZERO_JOURNAL_DIR
+              value: /var/lib/patientzero/journal
+            - name: PATIENTZERO_PROMETHEUS_URL
+              value: {{ .Values.signals.prometheusURL | quote }}
+            - name: PATIENTZERO_LOKI_URL
+              value: {{ .Values.signals.lokiURL | quote }}
+            - name: PATIENTZERO_ALERTMANAGER_URL
+              value: {{ .Values.signals.alertmanagerURL | quote }}
           ports:
             - name: http
               containerPort: 8080
@@ -63,6 +81,9 @@ spec:
               path: /readyz
               port: http
             periodSeconds: 5
+          volumeMounts:
+            - name: journal
+              mountPath: /var/lib/patientzero
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
@@ -70,3 +91,7 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
+      volumes:
+        - name: journal
+          emptyDir:
+            sizeLimit: {{ .Values.journal.sizeLimit }}

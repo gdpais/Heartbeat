@@ -21,7 +21,10 @@ maps fixed NodePorts to these ports on 127.0.0.1 only.
 
 Inside the cluster every component keeps its Compose-era name and port
 (`prometheus:9090`, `alertmanager:9093`, `loki:3100`, `otel-collector:4318`,
-`db-collector:8082`). PostgreSQL and Redis are not deployed
+`db-collector:8082`), and NetworkPolicies admit only the components that use
+each one ([network access](../guides/kubernetes-local.md#network-access)): a
+pod of your own times out on them, so reach them through the host ports above,
+Grafana or `kubectl port-forward`. PostgreSQL and Redis are not deployed
 until a service uses them (ADR 0003).
 
 ## DB collector (`:8082`)

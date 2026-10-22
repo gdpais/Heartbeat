@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=scenario.schema.json
+version: 1
+name: orderlist-latency
+description: >-
+  Every OrderList screen takes 3 seconds longer for three minutes, before
+  its business SQL. The 95th percentile of PatientZero's screen latency in
+  Heartbeat's derived metrics goes above the 2 s SLO threshold, then comes
+  back down once the fault ends.
+load: steady
+steps:
+  - name: baseline
+    duration: 1m
+  - name: slow
+    duration: 3m
+    fault:
+      type: latency
+      params:
+        entry_points: [OrderList]
+        delay: 3s
+        jitter: 500ms
+signals:
+  # Screen rows are stamped with the request's start, so the collector reads
+  # them with a 1m lag: these signals trail the fault by about two minutes.
+  - name: screen-p95-above-slo
+    promql: >-
+      histogram_quantile(0.95, sum by (le) (rate(heartbeat_outsystems_operation_duration_seconds_bucket{application="PatientZero",log_type="screen"}[1m])))
+    condition: "> 2"
+    step: slow
+    within: 4m
+  - name: screen-p95-recovers
+    promql: >-
+      histogram_quantile(0.95, sum by (le) (rate(heartbeat_outsystems_operation_duration_seconds_bucket{application="PatientZero",log_type="screen"}[1m])))
+    condition: "< 1"
+    step: slow
+    from: end
+    within: 5m

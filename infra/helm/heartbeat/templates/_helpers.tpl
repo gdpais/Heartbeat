@@ -68,3 +68,61 @@ Empty when there is no limit. Call with (dict "limit" $c.resources.limits.memory
 {{- printf "%dMiB" (int64 (floor (divf (mulf $bytes 0.8) 1048576))) -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Pod labels of a bundled engine's pods, as the subchart's selector helpers
+render them: name, instance and, for the Prometheus server, component. They
+follow each subchart's nameOverride (the OTel Collector's default name is its
+alias). Used as a NetworkPolicy's podSelector and as a peer, so a pod of
+another release or chart never matches. Call with (dict "root" $ "engine"
+"prometheus"); engine is prometheus, alertmanager, grafana, loki or
+otelCollector, or db-collector for Heartbeat's own collector.
+*/}}
+{{- define "heartbeat.enginePodLabels" -}}
+{{- $v := .root.Values }}
+{{- if eq .engine "db-collector" }}
+{{- include "heartbeat.selectorLabels" (dict "root" .root "component" "db-collector") }}
+{{- else if eq .engine "prometheus" }}
+{{- /* The prometheus.server.matchLabels helper. */}}
+app.kubernetes.io/name: {{ $v.prometheus.nameOverride | default "prometheus" | trunc 63 | trimSuffix "-" }}
+app.kubernetes.io/component: {{ $v.prometheus.server.name | default "server" }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+{{- else if eq .engine "alertmanager" }}
+app.kubernetes.io/name: {{ $v.prometheus.alertmanager.nameOverride | default "alertmanager" | trunc 63 | trimSuffix "-" }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+{{- else if eq .engine "grafana" }}
+app.kubernetes.io/name: {{ $v.grafana.nameOverride | default "grafana" | trunc 63 | trimSuffix "-" }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+{{- else if eq .engine "loki" }}
+app.kubernetes.io/name: {{ $v.loki.nameOverride | default "loki" | trunc 63 | trimSuffix "-" }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+{{- else if eq .engine "otelCollector" }}
+app.kubernetes.io/name: {{ $v.otelCollector.nameOverride | default "otelCollector" | trunc 63 | trimSuffix "-" }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+{{- else }}
+{{- fail (printf "heartbeat.enginePodLabels: unknown engine %q" .engine) }}
+{{- end }}
+{{- end }}
+
+{{/*
+A NetworkPolicyPeer (as YAML) for the pods of one engine in this release.
+Call like heartbeat.enginePodLabels.
+*/}}
+{{- define "heartbeat.enginePeer" -}}
+podSelector:
+  matchLabels:
+    {{- include "heartbeat.enginePodLabels" . | trim | nindent 4 }}
+{{- end }}
+
+{{/*
+Whether the bundled Prometheus scrapes a job of prometheus.scrapeConfigs:
+"true" when Prometheus is on and the job is listed and not disabled.
+Call with (dict "root" $ "job" "loki").
+*/}}
+{{- define "heartbeat.prometheusScrapes" -}}
+{{- $p := .root.Values.prometheus }}
+{{- $job := get ($p.scrapeConfigs | default dict) .job }}
+{{- if and $p.enabled (kindIs "map" $job) }}
+{{- if or (not (hasKey $job "enabled")) $job.enabled }}true{{ end }}
+{{- end }}
+{{- end }}

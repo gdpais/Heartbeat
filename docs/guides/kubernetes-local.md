@@ -28,6 +28,7 @@ Heartbeat's own objects (fixed names; one release per namespace):
 | `Service/db-collector-headless` | Headless, `publishNotReadyAddresses`; Prometheus discovers the collector through it even while it is unready |
 | `Service/db-collector` | Operator access (health, admin endpoints); ready pods only. kind: NodePort with `externalTrafficPolicy: Local`, so the NetworkPolicy sees the host's address |
 | `NetworkPolicy/db-collector` | Ingress to port 8082 only from the bundled Prometheus and the `dbCollector.networkPolicy.scrapers` (a shared Prometheus or another platform's scraper) and `.operators` peers; no peers means deny all. kind adds every source outside the pod subnet `10.244.0.0/16` (the host through the loopback NodePort, and containers on the Docker `kind` network); the production example adds a VPN range. Kubelet probes and `kubectl port-forward` are not affected. Needs a CNI that enforces NetworkPolicy (kind's kindnet does) |
+| `NetworkPolicy/otel-collector`, `/prometheus`, `/alertmanager`, `/loki` | Ingress to each bundled engine only from the components that use it, on their ports; see [network access](#network-access). Rendered only for an engine that is on |
 | `ConfigMap/heartbeat-integrations` | `integrations.yaml`, rendered from the `integrations` values |
 | `ConfigMap/heartbeat-prometheus-rules` | Rule files; Prometheus mounts them at `/etc/prometheus-rules` and its config reloader reloads on change |
 | `ConfigMap/heartbeat-dashboards` | Dashboards; label `grafana_dashboard: "1"` for shared Grafanas with a dashboard sidecar |
@@ -47,6 +48,75 @@ Rules the chart keeps (checked by `make chart-check`): only namespaced
 objects, no CRDs; deterministic rendering (no random values, lookups or
 hooks), because Argo CD renders the chart itself; Secrets created outside the
 chart and referenced by name; renders with Helm 3 and Helm 4.
+
+## Network access
+
+Every Heartbeat component and bundled engine except Grafana has an ingress
+NetworkPolicy, so a pod in the namespace (or in another one) reaches only what
+the chart lists. Loki holds raw user IDs, session IDs and client IPs, so who
+reaches it is part of their protection
+([ADR 0012](../architecture/decisions/0012-personal-data-in-telemetry.md)).
+The engine policies are `backendNetworkPolicies` in the values; the
+collector's is `dbCollector.networkPolicy`.
+
+| Policy | Port | Admitted from | Why |
+| --- | --- | --- | --- |
+| `db-collector` | 8082 | Prometheus | Scrape |
+| `otel-collector` | 4318 | db-collector | OTLP/HTTP logs from `outsystems_logs` collectors |
+| | 8889 | Prometheus | Scrape of the Collector's Prometheus exporter (metrics pushed as OTLP) |
+| `prometheus` | 9090 | Grafana | Prometheus datasource |
+| `alertmanager` | 9093 | Prometheus | Alerts, and the `alertmanager` scrape job |
+| `loki` | 3100 | OTel Collector | OTLP log pushes |
+| | 3100 | Grafana | Loki datasource |
+| | 3100 | Prometheus | The `loki` scrape job |
+| | 9095, 7946 | Loki | Its own gRPC (compactor address) and memberlist ring, through its Services |
+
+A row exists only while both ends are on: `minimal` renders no Loki or
+Collector policy and admits neither to anything, a disabled scrape job admits
+no Prometheus, and the external-platform example renders only the Collector's
+policy, for the db-collector. An engine nothing uses denies all ingress
+(`ingress: []`); an empty `from`, which would admit every source, is never
+rendered. Peers match by the pods' `app.kubernetes.io/name` and `instance`
+labels in the release namespace, so whoever may create pods there can claim
+them: RBAC on the namespace is part of the access control.
+
+Not covered, by design:
+
+- **Grafana** has no policy. Whatever serves its UI (an ingress, a load
+  balancer, the operator) must reach port 3000, and its login is the control.
+  Anonymous viewing is on only in the kind values, so on kind any pod, and
+  any container on the Docker `kind` network, can query Loki through
+  Grafana's datasource; that is why kind holds only synthetic data. Grafana has no
+  Alertmanager datasource and Prometheus does not scrape Grafana, so neither
+  flow is admitted anywhere.
+- **Kubelet probes** come from the pod's node, which NetworkPolicy does not
+  filter: the collector's `:8082`, the Collector's `:13133`, Prometheus's
+  `:9090` and its reloader's `:8080`, Alertmanager's `:9093` and its
+  reloader's `:8080`, Loki's `:3100` and Grafana's `:3000`.
+- **`kubectl port-forward`** connects from inside the pod, so NetworkPolicy
+  never sees it. It is how operators reach Loki, and the others outside kind:
+  `kubectl -n heartbeat port-forward svc/loki 3100`.
+- **PatientZero** sends nothing to the engines: it writes its logs to SQL
+  Server, and the db-collector reads them.
+
+`backendNetworkPolicies.<engine>.extraPeers` admits more NetworkPolicyPeers
+to an engine's ports (the Collector: 4317, 4318, and 8889 while its exporter
+is on; Prometheus 9090; Alertmanager 9093; Loki 3100), such as a shared
+Grafana or Prometheus in another namespace (a `namespaceSelector` and a
+`podSelector` in one peer) or an operator range. `kind.yaml` adds every
+source outside the pod subnet to Prometheus, Alertmanager and the Collector,
+as for the collector, so the loopback NodePorts and `make health` keep
+working; Loki has no NodePort and stays limited to its three clients.
+`backendNetworkPolicies.enabled: false` removes the four engine policies.
+
+On kind, the API server's service and pod proxy (which `make kind-e2e` uses)
+also comes from the node, so it is not filtered either; in a cluster whose
+control plane runs elsewhere it is. kind's kindnet enforces NetworkPolicy,
+and `make kind-e2e` checks it: pods the policies do not list, in the
+namespace and in another one with Grafana's labels, time out on the
+collector, Loki, Prometheus, Alertmanager and the Collector, while the
+flows above keep working. A cluster whose CNI does not enforce NetworkPolicy
+accepts the objects and drops nothing.
 
 ## Secrets
 

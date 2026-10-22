@@ -38,9 +38,14 @@ if $own_cluster; then
 fi
 
 port_forward_pid=
+# The NetworkPolicy step's second namespace.
+other_ns=kind-e2e-netpol
 cleanup() {
 	status=$?
 	[ -z "$port_forward_pid" ] || kill "$port_forward_pid" 2>/dev/null || true
+	if ! $own_cluster; then
+		kubectl --context "$CONTEXT" delete namespace "$other_ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+	fi
 	if [ "$status" -ne 0 ] && kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
 		echo "--- diagnostics"
 		kubectl --context "$CONTEXT" -n "$NAMESPACE" get pods -o wide || true
@@ -136,9 +141,9 @@ prometheus_answers() { [ -n "$(prom_value prometheus_tsdb_lowest_timestamp_secon
 # Prints the type Prometheus scraped for a metric (counter, gauge, ...).
 metric_type() { svc_get prometheus:9090 "/api/v1/metadata?metric=$1" | jq -r --arg m "$1" '.data[$m][0].type // empty'; }
 has_value() { [ -n "$(prom_value "$1")" ]; }
-probe_pod_phase() { k -n "$NAMESPACE" get pod np-probe -o jsonpath='{.status.phase}'; }
-probe_pod_exit() { k -n "$NAMESPACE" get pod np-probe -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}'; }
-probe_pod_done() { case "$(probe_pod_phase)" in Succeeded | Failed) true ;; *) false ;; esac; }
+# pod_phase <pod> [namespace], pod_done <pod> [namespace]: a one-shot pod's phase.
+pod_phase() { k -n "${2:-$NAMESPACE}" get pod "$1" -o jsonpath='{.status.phase}'; }
+pod_done() { case "$(pod_phase "$@")" in Succeeded | Failed) true ;; *) false ;; esac; }
 # Lines Loki returns for a LogQL query over the last hour.
 loki_count() {
 	svc_get loki:3100 "/loki/api/v1/query_range?limit=1000&query=$(printf '%s' "$1" | jq -sRr @uri)" |
@@ -194,7 +199,23 @@ cat >>"$WORK/e2e.yaml" <<EOF
             database_name: master
             credential_ref: env/sqlserver-dev
 EOF
-export EXTRA_VALUES="$WORK/e2e.yaml ${E2E_EXTRA_VALUES:-}"
+# The test's own OTLP sender (the identifier step) is admitted to the OTel
+# Collector as an extra peer, next to kind.yaml's operator range: lists
+# replace, they do not merge.
+cat >"$WORK/e2e-netpol.yaml" <<EOF
+backendNetworkPolicies:
+  otelCollector:
+    extraPeers:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except:
+            - 10.244.0.0/16
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: kind-e2e-otlp-sender
+EOF
+base_values="$WORK/e2e-netpol.yaml ${E2E_EXTRA_VALUES:-}"
+export EXTRA_VALUES="$WORK/e2e.yaml $base_values"
 scripts/kind.sh sqlserver-up
 
 # ----------------------------------------------------------------------------
@@ -302,11 +323,19 @@ cat >"$WORK/otlp-log.json" <<EOF
   }]}]
 }]}
 EOF
-# Sent from the Prometheus pod: `kubectl create --raw` through the service
-# proxy does not send the body as application/json, so the receiver answers 415.
-k -n "$NAMESPACE" exec deployment/prometheus -c prometheus-server -- wget -q -T 10 -O /dev/null \
-	--header 'Content-Type: application/json' --post-data "$(cat "$WORK/otlp-log.json")" \
-	http://otel-collector:4318/v1/logs || fail "the Collector rejected the OTLP log record"
+# Sent from a pod the Collector's NetworkPolicy admits (e2e-netpol.yaml).
+# `kubectl create --raw` through the service proxy does not send the body as
+# application/json, so the receiver would answer 415.
+prom_image=$(k -n "$NAMESPACE" get deployment prometheus -o jsonpath='{.spec.template.spec.containers[?(@.name=="prometheus-server")].image}')
+k -n "$NAMESPACE" delete pod otlp-sender --ignore-not-found --wait=true >/dev/null
+k -n "$NAMESPACE" run otlp-sender --image="$prom_image" --restart=Never --labels=app.kubernetes.io/name=kind-e2e-otlp-sender \
+	--command -- wget -q -T 10 -O /dev/null --header 'Content-Type: application/json' \
+	--post-data "$(cat "$WORK/otlp-log.json")" http://otel-collector:4318/v1/logs >/dev/null
+wait_for 120 "OTLP sender finished" pod_done otlp-sender
+sender_phase=$(pod_phase otlp-sender)
+sender_log=$(k -n "$NAMESPACE" logs otlp-sender 2>&1 || true)
+k -n "$NAMESPACE" delete pod otlp-sender --wait=false >/dev/null
+[ "$sender_phase" = Succeeded ] || fail "the Collector rejected the OTLP log record: $sender_log"
 log_query="{service_name=\"e2e-identifiers\"} | user_id=\"$user_id\""
 wait_for 120 "log line in Loki" log_found "$log_query"
 stream=$(loki_query "$log_query" | jq -c '.data.result[0].stream')
@@ -360,7 +389,7 @@ cat >>"$WORK/e2e-oslogs.yaml" <<EOF
             database_name: heartbeat_oslog_e2e
             credential_ref: env/sqlserver-dev
 EOF
-EXTRA_VALUES="$WORK/e2e-oslogs.yaml ${E2E_EXTRA_VALUES:-}" scripts/kind.sh deploy >/dev/null
+EXTRA_VALUES="$WORK/e2e-oslogs.yaml $base_values" scripts/kind.sh deploy >/dev/null
 # kubelet propagates the ConfigMap, then the collector hot-reloads it.
 wait_for 240 "3 rows extracted" value_is 'sum(heartbeat_outsystems_extract_rows_total{collector="oslogs-e2e"})' 3
 wait_for 120 "3 log lines in Loki" loki_count_is '{service_name="E2eShop"}' 3
@@ -386,37 +415,86 @@ admin_config | jq -e '.readiness.status == "ready" and .version != ""' >/dev/nul
 	fail "GET /admin/config with the admin token did not return diagnostics"
 pass "/readyz is status only ($readyz); /admin/config answers 401 without the token"
 
-step "the NetworkPolicy admits only Prometheus to the collector"
+step "NetworkPolicies admit only the components that use each service"
+# The flows the policies allow, beyond those the steps above already prove
+# (db-collector -> OTel Collector -> Loki, Prometheus -> the collector and
+# Alertmanager, Grafana -> Prometheus): Prometheus scrapes every target, and
+# Grafana's Loki datasource answers.
 collector_url=http://db-collector-headless:8082/healthz
 k -n "$NAMESPACE" exec deployment/prometheus -c prometheus-server -- wget -q -T 5 -O /dev/null "$collector_url" ||
 	fail "Prometheus cannot reach the collector's port 8082"
-# Same image, tool and Service name as from Prometheus, from a pod the policy
-# does not list. kindnet drops the connection, so only timeout's kill ends it
-# (wget's own -T is longer): exit 124 or 143. Any other failure (DNS,
-# refused) is not the policy. sh stays PID 1: busybox timeout execs wget in
-# its own process, and PID 1 ignores the SIGTERM it would send.
-prom_image=$(k -n "$NAMESPACE" get deployment prometheus -o jsonpath='{.spec.template.spec.containers[?(@.name=="prometheus-server")].image}')
+for job in db-collector otel-collector loki alertmanager; do
+	wait_for 60 "Prometheus scrapes $job" value_is "up{job=\"$job\"}" 1
+done
+svc_get grafana:3000 /api/datasources/proxy/uid/loki/loki/api/v1/labels | jq -e '.status == "success"' >/dev/null ||
+	fail "Grafana's Loki datasource cannot reach Loki"
+pass "Prometheus scrapes the collector, the OTel Collector, Loki and Alertmanager; Grafana queries Loki"
+# Operators reach Loki through kubectl port-forward, which NetworkPolicy does
+# not filter. kubectl runs directly, as in admin_forward.
+kubectl --context "$CONTEXT" -n "$NAMESPACE" port-forward svc/loki :3100 >"$WORK/loki-forward.log" 2>&1 &
+port_forward_pid=$!
+wait_for 30 "port-forward to Loki" grep -q '^Forwarding from 127.0.0.1:' "$WORK/loki-forward.log"
+loki_port=$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9]*\) .*/\1/p' "$WORK/loki-forward.log" | head -n 1)
+loki_ready=$(curl -sS --max-time 5 "http://127.0.0.1:$loki_port/ready" || true)
+kill "$port_forward_pid" 2>/dev/null || true
+wait "$port_forward_pid" 2>/dev/null || true
+port_forward_pid=
+[ "$loki_ready" = ready ] || fail "Loki through kubectl port-forward answered '$loki_ready', want ready"
+pass "Loki answers through kubectl port-forward"
+# The same image and tool as Prometheus, from pods the policies do not list:
+# one in this namespace without the components' labels, and one in another
+# namespace with Grafana's labels (a podSelector peer only matches pods in
+# the policy's own namespace). kindnet drops the connection, so only
+# timeout's kill ends it (wget's own -T is longer): exit 124 or 143. Any
+# other failure (DNS, refused) is not the policy. Grafana, which has no
+# policy, is the control: it shows that the pod's DNS and network work. sh
+# stays PID 1: busybox timeout execs wget in its own process, and PID 1
+# ignores the SIGTERM it would send. The pod in this namespace also tries
+# Prometheus's and Alertmanager's NodePorts on the node, which kind.yaml opens
+# to every source outside the pod subnet: the policy must still see the pod.
+blocked="db-collector-headless:8082/healthz loki:3100/ready prometheus:9090/-/ready alertmanager:9093/-/ready otel-collector:4318/v1/logs"
+probe_script='for url in "$@"; do timeout 10 wget -q -T 30 -O /dev/null "$url"; echo "$url $?"; done'
+node_ip=$(k get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+k create namespace "$other_ns" --dry-run=client -o yaml | k apply -f - >/dev/null
+# A pod is rejected until the namespace's default ServiceAccount exists.
+wait_for 60 "default ServiceAccount in $other_ns" k -n "$other_ns" get serviceaccount default
 k -n "$NAMESPACE" delete pod np-probe --ignore-not-found --wait=true >/dev/null
+k -n "$other_ns" delete pod np-probe --ignore-not-found --wait=true >/dev/null
+# shellcheck disable=SC2086 # $blocked is a list of words
 k -n "$NAMESPACE" run np-probe --image="$prom_image" --restart=Never --labels=app.kubernetes.io/name=np-probe \
-	--command -- sh -c 'timeout 10 wget -q -T 30 -O /dev/null "$0"; exit $?' "$collector_url" >/dev/null
-wait_for 120 "probe pod finished" probe_pod_done
-probe_log=$(k -n "$NAMESPACE" logs np-probe 2>&1 || true)
-phase=$(probe_pod_phase)
-exit_code=$(probe_pod_exit)
+	--command -- sh -c "$probe_script" sh $(printf 'http://%s ' $blocked) "http://$node_ip:30090/-/ready" "http://$node_ip:30093/-/ready" \
+	http://grafana:3000/api/health >/dev/null
+# shellcheck disable=SC2086
+k -n "$other_ns" run np-probe --image="$prom_image" --restart=Never \
+	--labels=app.kubernetes.io/name=grafana,app.kubernetes.io/instance=heartbeat \
+	--command -- sh -c "$probe_script" sh $(printf '%s\n' $blocked | sed "s|^\([^:]*\):|http://\1.$NAMESPACE:|") \
+	"http://grafana.$NAMESPACE:3000/api/health" >/dev/null
+wait_for 180 "probe pod finished" pod_done np-probe
+wait_for 180 "probe pod in $other_ns finished" pod_done np-probe "$other_ns"
+results=$({
+	k -n "$NAMESPACE" logs np-probe
+	k -n "$other_ns" logs np-probe
+} 2>&1 | grep '^http' || true)
+k delete namespace "$other_ns" --wait=false >/dev/null
 k -n "$NAMESPACE" delete pod np-probe --wait=false >/dev/null
-[ "$phase" = Failed ] || fail "a pod other than Prometheus reached the collector's port 8082"
-case "$exit_code" in
-124 | 143) ;;
-*) fail "probe pod failed with exit code $exit_code, not a connection timeout: $probe_log" ;;
-esac
-pass "Prometheus reaches port 8082; another pod in the namespace times out (exit $exit_code)"
+printf '%s\n' "$results" | sed 's/^/      /'
+[ "$(printf '%s\n' "$results" | grep -c .)" = 14 ] || fail "expected 14 probe results"
+printf '%s\n' "$results" | while read -r url code; do
+	case "$url:$code" in
+	*grafana*:0) ;;
+	*grafana*) fail "the probe pod cannot reach Grafana ($url exit $code), so its other results prove nothing" ;;
+	*:124 | *:143) ;;
+	*) fail "$url from a pod the policies do not list: exit $code, not a connection timeout" ;;
+	esac
+done
+pass "unlisted pods time out on the collector, Loki, Prometheus, Alertmanager and the OTel Collector, NodePorts included"
 
 # ----------------------------------------------------------------------------
 step "a valid ConfigMap update is hot-reloaded without a restart"
 uid_before=$(collector_pod_uid)
 version_before=$(config_version)
 sed -e 's/scrape_interval: 15s/scrape_interval: 20s/' "$WORK/e2e.yaml" >"$WORK/e2e-reload.yaml"
-EXTRA_VALUES="$WORK/e2e-reload.yaml ${E2E_EXTRA_VALUES:-}" scripts/kind.sh deploy >/dev/null
+EXTRA_VALUES="$WORK/e2e-reload.yaml $base_values" scripts/kind.sh deploy >/dev/null
 # kubelet propagates ConfigMap updates within about a minute.
 wait_for 180 "new config version active" version_changed_from "$version_before"
 [ "$(collector_pod_uid)" = "$uid_before" ] || fail "collector pod was replaced by a config change"
@@ -552,7 +630,7 @@ EOF
 done
 # Deployed before Loki stops: a Helm upgrade would start it again. Until the
 # databases below exist, the targets only fail to connect.
-EXTRA_VALUES="$WORK/e2e-backlog.yaml ${E2E_EXTRA_VALUES:-}" scripts/kind.sh deploy >/dev/null
+EXTRA_VALUES="$WORK/e2e-backlog.yaml $base_values" scripts/kind.sh deploy >/dev/null
 k -n "$NAMESPACE" scale statefulset/loki --replicas=0 >/dev/null
 k -n "$NAMESPACE" wait --for=delete pod/loki-0 --timeout=3m >/dev/null
 for backlog in $backlogs; do

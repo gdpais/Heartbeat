@@ -35,6 +35,37 @@ dbCollector:
           except:
             - 10.244.0.0/16
 
+# The same operator access to the engines with a loopback NodePort (make
+# health, the demo helpers): Prometheus, Alertmanager and the OTel Collector's
+# OTLP ports. Pods stay limited to the components that use each engine. Loki
+# has no NodePort: operators reach it with `kubectl port-forward`, which
+# NetworkPolicy does not filter. Verified by hand on kind v0.33 with kindnet:
+# the host reaches all three through their NodePorts, and Alertmanager's
+# times out without this peer. Their Services keep externalTrafficPolicy
+# Cluster (Alertmanager's chart has no setting for it), and the host's traffic
+# still matched the range in that check, unlike what the collector's comment
+# above found earlier. kind-e2e checks that a pod is still refused through
+# these NodePorts.
+backendNetworkPolicies:
+  otelCollector:
+    extraPeers:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except:
+            - 10.244.0.0/16
+  prometheus:
+    extraPeers:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except:
+            - 10.244.0.0/16
+  alertmanager:
+    extraPeers:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except:
+            - 10.244.0.0/16
+
 prometheus:
   server:
     retention: 2d
