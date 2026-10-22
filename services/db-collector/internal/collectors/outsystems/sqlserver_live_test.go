@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -27,6 +28,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	collectorconfig "heartbeat/internal/config"
+	"heartbeat/services/db-collector/internal/collectors"
 	connector "heartbeat/services/db-collector/internal/connectors/sqlserver"
 	"heartbeat/services/db-collector/internal/export/otlp"
 	collectormetadata "heartbeat/services/db-collector/internal/metadata"
@@ -656,5 +658,80 @@ EXEC sys.sp_executesql @sql, N'@instant datetime2(3), @message varchar(2000), @k
 	want = append(want, "before-rotation", "after-rotation")
 	if got := receiver.received(); !sameRows(got, want) {
 		t.Fatalf("after the rotation delivered %v, want %v", got, want)
+	}
+}
+
+// heldReceiver is an OTel Collector that holds every request until release
+// is closed, as the chart's Collector does while Loki has not taken the
+// batch before.
+type heldReceiver struct {
+	otlpReceiver
+	release chan struct{}
+}
+
+func (r *heldReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	select {
+	case <-r.release:
+	case <-req.Context().Done():
+		return
+	}
+	r.otlpReceiver.ServeHTTP(w, req)
+}
+
+// While a batch waits for the OTel Collector, the collector's login holds
+// nothing on SQL Server: no running request, no open transaction, and no
+// lock but the shared database lock every connection holds.  The rows were
+// read and the connection returned to the pool before the export started.
+func TestWaitingExportHoldsNothingOnSQLServer(t *testing.T) {
+	server := newLiveServer(t)
+	setupFixtures(t, server)
+	sa := server.sa(t, fixtureDatabase)
+	table := cycleTable(t, sa, "oslog_Error", "oslog_Error")
+	exec(t, sa, `INSERT INTO dbo.`+table+` (Id, Instant, Session_Id, User_Id, Espace_Id, Tenant_Id, Message, Stack, Module_Name, Server, Espace_Name, Request_Key)
+VALUES ('held-1', DATEADD(MINUTE, -5, SYSUTCDATETIME()), '', 7, 1, 0, 'Order failed', 'at Shop.Checkout()', 'ShopCore', 'FE-01', 'ShopCore', 'held-1')`)
+
+	receiver := &heldReceiver{release: make(chan struct{})}
+	collector := httptest.NewServer(receiver)
+	defer collector.Close()
+	manager := connector.NewManager(connector.EnvCredentialResolver{})
+	manager.TrustServerCertificate = true
+	t.Cleanup(func() { _ = manager.Close() })
+	executor := NewExecutor(SQLServerSource{Manager: manager}, NewStore(t.TempDir()), otlp.NewClient(), nil, slog.New(slog.DiscardHandler))
+	defer executor.Close(context.Background())
+	item := collectormetadata.ScheduledProbe{
+		CollectorID: "oslogs",
+		Target:      server.target(fixtureDatabase, liveOSLogCredentialRef),
+		Definition:  collectormetadata.ProbeDefinition{Name: "error"},
+		OutSystemsLogs: collectorconfig.OutSystemsLogsConfig{
+			Lag: time.Minute, BatchLimit: 100, InitialLookback: 15 * time.Minute, LogTimezone: "UTC", LogsEndpoint: collector.URL,
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, _, err := executor.RunProbe(ctx, item)
+	cancel()
+	if !errors.Is(err, collectors.ErrBlocked) {
+		t.Fatalf("RunProbe: %v, want the export waiting", err)
+	}
+
+	login, _, _ := strings.Cut(os.Getenv("HEARTBEAT_CREDENTIAL_SQLSERVER_TEST_OSLOG"), ":")
+	var sessions, busy, locks int
+	row := sa.QueryRowContext(context.Background(), `SELECT
+    (SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE login_name = @login),
+    (SELECT COUNT(*) FROM sys.dm_exec_sessions s WHERE s.login_name = @login
+        AND (s.open_transaction_count > 0 OR EXISTS (SELECT 1 FROM sys.dm_exec_requests r WHERE r.session_id = s.session_id))),
+    (SELECT COUNT(*) FROM sys.dm_tran_locks l JOIN sys.dm_exec_sessions s ON s.session_id = l.request_session_id
+        WHERE s.login_name = @login AND l.resource_type <> 'DATABASE')`, sql.Named("login", login))
+	if err := row.Scan(&sessions, &busy, &locks); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("while the export waits: %d sessions of %s, %d busy, %d locks", sessions, login, busy, locks)
+	if busy != 0 || locks != 0 {
+		t.Fatalf("while the export waits, %s has %d busy sessions and %d locks; want none", login, busy, locks)
+	}
+
+	close(receiver.release)
+	executor.Close(context.Background())
+	if got := receiver.received(); !sameRows(got, []string{"held-1"}) {
+		t.Fatalf("delivered %v after the Collector accepted", got)
 	}
 }

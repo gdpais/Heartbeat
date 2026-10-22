@@ -603,7 +603,9 @@ const lokiIngestionBurst = 6 << 20
 // The logs pipeline must deliver a backlog to Loki in order and lose nothing
 // the db-collector counted delivered: no batch processor, which accepts rows
 // before they are queued, one export consumer, no retry deadline, and
-// batches below Loki's ingestion burst.
+// batches below Loki's ingestion burst.  The queue holds one request and the
+// receiver waits for room in it: a larger queue sends the requests it was
+// sending at a restart after the rest, out of order.
 func checkLogDelivery(t *testing.T, objects map[string]object) {
 	t.Helper()
 	config, ok := collectorRelay(t, objects)
@@ -613,9 +615,11 @@ func checkLogDelivery(t *testing.T, objects map[string]object) {
 	var relay struct {
 		Exporters map[string]struct {
 			SendingQueue struct {
-				NumConsumers int    `yaml:"num_consumers"`
-				Sizer        string `yaml:"sizer"`
-				Batch        struct {
+				NumConsumers    int    `yaml:"num_consumers"`
+				Sizer           string `yaml:"sizer"`
+				QueueSize       int    `yaml:"queue_size"`
+				BlockOnOverflow bool   `yaml:"block_on_overflow"`
+				Batch           struct {
 					Sizer   string `yaml:"sizer"`
 					MaxSize int    `yaml:"max_size"`
 				} `yaml:"batch"`
@@ -644,6 +648,9 @@ func checkLogDelivery(t *testing.T, objects map[string]object) {
 		q := e.SendingQueue
 		if q.NumConsumers != 1 {
 			t.Errorf("%s sending_queue.num_consumers = %d, want 1", name, q.NumConsumers)
+		}
+		if q.Sizer != "requests" || q.QueueSize != 1 || !q.BlockOnOverflow {
+			t.Errorf("%s sending_queue sizer %q, queue_size %d, block_on_overflow %t; want one request, the receiver waiting for room", name, q.Sizer, q.QueueSize, q.BlockOnOverflow)
 		}
 		if q.Batch.Sizer != "bytes" || q.Batch.MaxSize <= 0 || q.Batch.MaxSize >= lokiIngestionBurst {
 			t.Errorf("%s sending_queue.batch = %+v, want sizer bytes and max_size below %d", name, q.Batch, lokiIngestionBurst)

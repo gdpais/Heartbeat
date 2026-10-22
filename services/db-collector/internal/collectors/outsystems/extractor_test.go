@@ -555,9 +555,10 @@ func TestMetricsFollowTheCollectorLifecycle(t *testing.T) {
 		},
 	}
 	executor.InitCollector(collector)
-	// Three counters for each of the two selected log types, at 0.
-	if got := testutil.CollectAndCount(registry); got != 6 {
-		t.Fatalf("%d series after init, want 6", got)
+	// Three counters and the export-blocked gauge for each of the two
+	// selected log types, at 0.
+	if got := testutil.CollectAndCount(registry); got != 8 {
+		t.Fatalf("%d series after init, want 8", got)
 	}
 	executor.ForgetCollector("oslogs")
 	if got := testutil.CollectAndCount(registry); got != 0 {

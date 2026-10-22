@@ -1,0 +1,374 @@
+package outsystems
+
+import (
+	"context"
+	"errors"
+	"os"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+
+	collectorconfig "heartbeat/internal/config"
+	"heartbeat/services/db-collector/internal/collectors"
+	collectormetadata "heartbeat/services/db-collector/internal/metadata"
+)
+
+// gatedExporter is an OTel Collector that holds every export until it is
+// released, as the chart's Collector does while Loki has not taken the batch
+// before.  It honours the context, as otlp.Client does.
+type gatedExporter struct {
+	fakeExporter
+	mu      sync.Mutex
+	gate    chan struct{}
+	fail    error
+	started int
+	// sourceOpen, when set, reports whether a query is still running; an
+	// export that starts while one is fails the test.
+	sourceOpen func() bool
+	t          *testing.T
+}
+
+func newGatedExporter(t *testing.T) *gatedExporter {
+	return &gatedExporter{gate: make(chan struct{}), t: t}
+}
+
+func (g *gatedExporter) Export(ctx context.Context, endpoint string, resourceLogs []*logspb.ResourceLogs) error {
+	g.mu.Lock()
+	g.started++
+	gate, fail := g.gate, g.fail
+	g.mu.Unlock()
+	if g.sourceOpen != nil && g.sourceOpen() {
+		g.t.Errorf("an export started while the query was still open")
+	}
+	select {
+	case <-gate:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if fail != nil {
+		return fail
+	}
+	return g.fakeExporter.Export(ctx, endpoint, resourceLogs)
+}
+
+// release lets the held exports, and every later one, through.
+func (g *gatedExporter) release() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	close(g.gate)
+}
+
+// eventually reports whether cond holds within a second.
+func eventually(cond func() bool) bool {
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if cond() {
+			return true
+		}
+	}
+	return cond()
+}
+
+func (g *gatedExporter) exports() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.started
+}
+
+// gated returns x with a gated exporter.
+func gated(x *extraction) *gatedExporter {
+	g := newGatedExporter(x.t)
+	x.executor.Exporter = g
+	return g
+}
+
+// runFor runs one call with a probe deadline of d.
+func (x *extraction) runFor(d time.Duration) error {
+	x.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	_, _, err := x.executor.RunProbe(ctx, x.item)
+	return err
+}
+
+// settle waits for every background export to end.
+func (x *extraction) settle() {
+	x.t.Helper()
+	done := make(chan struct{})
+	go func() {
+		x.executor.exports.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		x.t.Fatal("background exports did not end")
+	}
+}
+
+func (x *extraction) savedWatermark() (Watermark, bool) {
+	x.t.Helper()
+	watermark, found, err := NewStore(x.executor.Store.Dir()).Load(WatermarkKey{Collector: "oslogs", Target: "logging-db", LogType: "error"})
+	if err != nil {
+		x.t.Fatal(err)
+	}
+	return watermark, found
+}
+
+// A Collector that holds a batch past the probe deadline is backpressure:
+// the call returns collectors.ErrBlocked, not a failure, the log type reads
+// nothing more while it waits, and once the Collector accepts the batch the
+// watermark moves and extraction resumes where it stopped, in order.
+func TestExtractionWaitsForABlockedCollectorWithoutFailing(t *testing.T) {
+	x := newExtraction(t, t.TempDir(), 2)
+	g := gated(x)
+	for i, key := range []string{"a", "b", "c", "d"} {
+		x.source.insert(key, at(time.Duration(i+1)*time.Minute))
+	}
+
+	err := x.runFor(50 * time.Millisecond)
+	if !errors.Is(err, collectors.ErrBlocked) || !strings.Contains(err.Error(), "1 rows waiting for the OTel Collector at http://otel:4318") {
+		t.Fatalf("RunProbe error = %v, want ErrBlocked", err)
+	}
+	if got := x.gauge(x.metrics.exportBlocked); got != 1 {
+		t.Fatalf("export blocked = %v, want 1", got)
+	}
+	if got := x.counter(x.metrics.exportFailures); got != 0 {
+		t.Fatalf("export failures = %v, want 0: waiting is not failing", got)
+	}
+	if _, found := x.savedWatermark(); found {
+		t.Fatal("the watermark moved before the Collector accepted the batch")
+	}
+	if !strings.Contains(x.logs.String(), "waiting for the OTel Collector; this log type is paused") {
+		t.Fatalf("no warning when the export blocked:\n%s", x.logs)
+	}
+
+	// While it waits, later calls neither read nor export, and return at once.
+	started := time.Now()
+	if err := x.runFor(5 * time.Second); !errors.Is(err, collectors.ErrBlocked) {
+		t.Fatalf("second call: %v, want ErrBlocked", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("a call with a blocked export took %s, want it to return at once", elapsed)
+	}
+	if len(x.source.params) != 1 || g.exports() != 1 {
+		t.Fatalf("%d queries and %d exports while blocked, want 1 and 1", len(x.source.params), g.exports())
+	}
+
+	g.release()
+	x.settle()
+	if got := x.gauge(x.metrics.exportBlocked); got != 0 {
+		t.Fatalf("export blocked = %v after the export, want 0", got)
+	}
+	if watermark, found := x.savedWatermark(); !found || !watermark.Instant.Equal(at(time.Minute)) {
+		t.Fatalf("watermark %+v (found %v), want the accepted batch's end", watermark, found)
+	}
+	if got := x.counter(x.metrics.rows); got != 1 {
+		t.Fatalf("rows extracted = %v, want 1", got)
+	}
+	if !strings.Contains(x.logs.String(), "accepted by the OTel Collector; extraction resumes") {
+		t.Fatalf("no log when the export was accepted:\n%s", x.logs)
+	}
+	x.mustRun()
+	if got := x.exporter.keys(); len(got) != 0 {
+		t.Fatalf("the plain exporter was used: %v", got)
+	}
+	if got := g.keys(); !slices.Equal(got, []string{"a", "b", "c", "d"}) {
+		t.Fatalf("delivered %v, want every row once, in order", got)
+	}
+}
+
+// The query has returned and released its connection before the export
+// starts, so nothing is held open on SQL Server while the export waits.
+func TestExtractionClosesTheQueryBeforeExporting(t *testing.T) {
+	x := newExtraction(t, t.TempDir(), 100)
+	open := &openSource{fakeSource: x.source}
+	x.executor.Source = open
+	g := gated(x)
+	g.sourceOpen = open.isOpen
+	x.source.insert("a", at(time.Minute))
+	if err := x.runFor(50 * time.Millisecond); !errors.Is(err, collectors.ErrBlocked) {
+		t.Fatalf("RunProbe: %v", err)
+	}
+	if open.isOpen() {
+		t.Fatal("the query is still open while the export waits")
+	}
+	g.release()
+	x.settle()
+}
+
+// openSource reports whether a query is running.
+type openSource struct {
+	*fakeSource
+	mu   sync.Mutex
+	open bool
+}
+
+func (s *openSource) Query(ctx context.Context, target collectormetadata.DatabaseTarget, query string, params QueryParams) (Batch, error) {
+	s.mu.Lock()
+	s.open = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.open = false
+		s.mu.Unlock()
+	}()
+	return s.fakeSource.Query(ctx, target, query, params)
+}
+
+func (s *openSource) isOpen() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.open
+}
+
+// Once one log type is blocked, the Collector is known to be busy: the
+// target's other log types start their export and return at once instead of
+// waiting until the deadline, so every log type still runs in the cycle.
+func TestABlockedExportStopsOtherLogTypesFromWaiting(t *testing.T) {
+	x := newExtraction(t, t.TempDir(), 100)
+	g := gated(x)
+	x.source.insert("a", at(time.Minute))
+	if err := x.runFor(50 * time.Millisecond); !errors.Is(err, collectors.ErrBlocked) {
+		t.Fatalf("error log type: %v", err)
+	}
+	general := x.item
+	general.Definition.Name = "general"
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _, err := x.executor.RunProbe(ctx, general)
+	if !errors.Is(err, collectors.ErrBlocked) || time.Since(started) > time.Second {
+		t.Fatalf("general log type: %v after %s; want ErrBlocked at once", err, time.Since(started))
+	}
+	if !eventually(func() bool { return g.exports() == 2 }) {
+		t.Fatalf("%d exports, want one per log type", g.exports())
+	}
+	g.release()
+	x.settle()
+}
+
+// An export the Collector rejects for good fails the log type's next call,
+// which counts it; the call after reads the batch again.
+func TestAFailedBackgroundExportFailsTheNextCall(t *testing.T) {
+	dir := t.TempDir()
+	x := newExtraction(t, dir, 100)
+	g := gated(x)
+	g.fail = errors.New("receiver rejected the request: 400 Bad Request")
+	x.source.insert("a", at(time.Minute))
+	if err := x.runFor(50 * time.Millisecond); !errors.Is(err, collectors.ErrBlocked) {
+		t.Fatalf("first call: %v", err)
+	}
+	g.release()
+	x.settle()
+	if got := x.counter(x.metrics.exportFailures); got != 1 {
+		t.Fatalf("export failures = %v, want 1", got)
+	}
+	err := x.run()
+	if err == nil || errors.Is(err, collectors.ErrBlocked) || !strings.Contains(err.Error(), "400 Bad Request") {
+		t.Fatalf("second call: %v, want the export's error", err)
+	}
+	if got := x.gauge(x.metrics.exportBlocked); got != 0 {
+		t.Fatalf("export blocked = %v after the export ended, want 0", got)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("a watermark was saved after a failed export: %v", entries)
+	}
+	g.mu.Lock()
+	g.fail = nil
+	g.mu.Unlock()
+	x.mustRun()
+	if got := g.keys(); !slices.Equal(got, []string{"a"}) {
+		t.Fatalf("delivered %v after the failure", got)
+	}
+}
+
+// The batches held while their exports wait are bounded: past
+// MaxHeldBytes, a log type still reads, in a smaller batch.
+func TestHeldBatchesShrinkOtherReads(t *testing.T) {
+	x := newExtraction(t, t.TempDir(), 100)
+	x.executor.MaxHeldBytes = 2 * minBatchBytes
+	x.executor.MaxBatchBytes = 2 * minBatchBytes
+	g := gated(x)
+	// One row of about 2 MiB (its key is both Message and Request_Key).
+	x.source.insert(strings.Repeat("k", minBatchBytes), at(time.Minute))
+	if err := x.runFor(50 * time.Millisecond); !errors.Is(err, collectors.ErrBlocked) {
+		t.Fatalf("first log type: %v", err)
+	}
+	if held := x.executor.exports.heldBytes(); held < 2*minBatchBytes {
+		t.Fatalf("held %d bytes, want the waiting batch's, over 2 MiB", held)
+	}
+	general := x.item
+	general.Definition.Name = "general"
+	_ = x.runForItem(general, 50*time.Millisecond)
+	if got := x.source.params[1].MaxBytes; got != minBatchBytes {
+		t.Fatalf("second read allowed %d bytes, want the floor %d once the budget is spent", got, minBatchBytes)
+	}
+	g.release()
+	x.settle()
+	if held := x.executor.exports.heldBytes(); held != 0 {
+		t.Fatalf("held %d bytes after every export ended", held)
+	}
+}
+
+func (x *extraction) runForItem(item collectormetadata.ScheduledProbe, d time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	_, _, err := x.executor.RunProbe(ctx, item)
+	return err
+}
+
+// A reload stops a changed collector and starts it again: its exports carry
+// on.  A collector that does not come back has its exports cancelled after
+// the grace, leaving the watermark.
+func TestExportsOutliveAReloadButNotARemoval(t *testing.T) {
+	x := newExtraction(t, t.TempDir(), 100)
+	x.executor.orphanAfter = 50 * time.Millisecond
+	g := gated(x)
+	collector := collectorconfig.CollectorRuntimeConfig{ID: "oslogs", Kind: collectorconfig.KindOutSystemsLogs, Enabled: true}
+	x.executor.InitCollector(collector)
+	x.source.insert("a", at(time.Minute))
+	if err := x.runFor(50 * time.Millisecond); !errors.Is(err, collectors.ErrBlocked) {
+		t.Fatalf("RunProbe: %v", err)
+	}
+	// Reload: stopped and started again within the grace.
+	x.executor.ForgetCollector("oslogs")
+	x.executor.InitCollector(collector)
+	time.Sleep(150 * time.Millisecond)
+	if err := x.run(); !errors.Is(err, collectors.ErrBlocked) {
+		t.Fatalf("after a reload: %v, want the export still waiting", err)
+	}
+	// Removal: not started again.
+	x.executor.ForgetCollector("oslogs")
+	x.settle()
+	if _, found := x.savedWatermark(); found {
+		t.Fatal("a cancelled export moved the watermark")
+	}
+	if got := g.keys(); len(got) != 0 {
+		t.Fatalf("delivered %v", got)
+	}
+}
+
+// Close waits for the exports until its context ends, then cancels them;
+// a cancelled export leaves the watermark.
+func TestCloseCancelsExportsThatDoNotEnd(t *testing.T) {
+	x := newExtraction(t, t.TempDir(), 100)
+	gated(x)
+	x.source.insert("a", at(time.Minute))
+	if err := x.runFor(50 * time.Millisecond); !errors.Is(err, collectors.ErrBlocked) {
+		t.Fatalf("RunProbe: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	x.executor.Close(ctx)
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("Close took %s", elapsed)
+	}
+	if _, found := x.savedWatermark(); found {
+		t.Fatal("a cancelled export moved the watermark")
+	}
+}

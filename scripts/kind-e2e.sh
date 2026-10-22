@@ -156,13 +156,14 @@ log_found() { loki_query "$1" | jq -e '.data.result | length > 0'; }
 loki_value() {
 	svc_get loki:3100 "/loki/api/v1/query?query=$(printf '%s' "$1" | jq -sRr @uri)" | jq -r '.data.result[0].value[1] // "0"'
 }
-# Bytes in the OTel Collector's logs export queue, from its own metrics
-# (port 8888, which nothing scrapes; the pod proxy reaches it).
-otel_queue_bytes() {
+# The size of the OTel Collector's logs export queue, in the queue's sizer
+# (requests in the chart's), from its own metrics (port 8888, which nothing
+# scrapes; the pod proxy reaches it).
+otel_queue_size() {
 	k get --raw "/api/v1/namespaces/$NAMESPACE/pods/otel-collector-0:8888/proxy/metrics" |
 		awk '/^otelcol_exporter_queue_size[{]/ && /exporter="otlp_http\/logs"/ { printf "%.0f\n", $2; exit }'
 }
-otel_queue_holds() { bytes=$(otel_queue_bytes) && [ -n "$bytes" ] && gt "$bytes" 0; }
+otel_queue_holds() { size=$(otel_queue_size) && [ -n "$size" ] && gt "$size" 0; }
 otel_pod_uid() { k -n "$NAMESPACE" get pod otel-collector-0 -o jsonpath='{.metadata.uid}'; }
 otel_replacement_ready() {
 	[ "$(otel_pod_uid)" != "$1" ] &&
@@ -516,95 +517,146 @@ pass "Prometheus TSDB and Alertmanager silences survived pod replacement"
 # ----------------------------------------------------------------------------
 step "a Collector restart during a log backlog loses no rows"
 # The db-collector moves its watermark once the OTel Collector has queued a
-# batch, so the rows in that queue exist nowhere else. With Loki stopped, the
-# collector extracts a backlog into the queue; the Collector is then
-# restarted, and once Loki is back it must hold every row the db-collector
-# counted delivered, each once. After a restart the queue sends the batches
-# it was sending last (values.yaml, otlp_http/logs), and Loki takes them only
-# within an hour of the newest row of their stream: the rows span
-# BACKLOG_SPAN_S seconds, 45 minutes by default.
+# batch, so the request in that queue exists nowhere else. With Loki stopped,
+# two collectors extract a backlog each, of 6,000 rows spanning 45 minutes
+# and three hours; the Collector is restarted, and once Loki is back it must
+# hold every row of both, each once. Loki rejects for good a row more than an
+# hour behind the newest of its stream, so the three-hour backlog fails if a
+# restart sends a request out of order, as a queue of more than one request
+# does (values.yaml, otlp_http/logs). With the chart's one-request queue the
+# db-collector waits for the Collector instead: its targets stay up and
+# heartbeat_outsystems_export_blocked is 1.
 backlog_rows=6000
-backlog_span_s=${BACKLOG_SPAN_S:-2700}
+backlogs="45m:2700 3h:10800"
 cp "$WORK/e2e.yaml" "$WORK/e2e-backlog.yaml"
-cat >>"$WORK/e2e-backlog.yaml" <<EOF
-    - id: oslogs-backlog
+for backlog in $backlogs; do
+	name=${backlog%%:*} span_s=${backlog#*:}
+	cat >>"$WORK/e2e-backlog.yaml" <<EOF
+    - id: oslogs-backlog-$name
       kind: outsystems_logs
       enabled: true
       config:
         environment: local-dev
         scrape_interval: 10s
         lag: 10s
-        initial_lookback: $((backlog_span_s / 60 + 10))m
+        initial_lookback: $((span_s / 60 + 10))m
         probes:
           - name: error
         targets:
-          - name: backlog-db
+          - name: backlog-db-$name
             host: $SQL_CONTAINER
             port: 1433
-            database_name: heartbeat_oslog_backlog
+            database_name: heartbeat_oslog_backlog_$name
             credential_ref: env/sqlserver-dev
 EOF
+done
 # Deployed before Loki stops: a Helm upgrade would start it again. Until the
-# database below exists, the target only fails to connect.
+# databases below exist, the targets only fail to connect.
 EXTRA_VALUES="$WORK/e2e-backlog.yaml ${E2E_EXTRA_VALUES:-}" scripts/kind.sh deploy >/dev/null
 k -n "$NAMESPACE" scale statefulset/loki --replicas=0 >/dev/null
 k -n "$NAMESPACE" wait --for=delete pod/loki-0 --timeout=3m >/dev/null
-# Long text in every row, as error rows with stacks have.
-fixture_output=$({
-	printf 'CREATE DATABASE heartbeat_oslog_backlog;\nGO\nUSE heartbeat_oslog_backlog;\nGO\n'
-	cat services/db-collector/internal/collectors/outsystems/testdata/oslog/error.sql
-	printf '\nGO\nCREATE USER [%s] FOR LOGIN [%s];\nGRANT SELECT ON dbo.oslog_Error TO [%s];\nGRANT SELECT ON dbo.oslog_Error_Previous TO [%s];\n' "$oslog_login" "$oslog_login" "$oslog_login" "$oslog_login"
-	cat <<EOF
+for backlog in $backlogs; do
+	name=${backlog%%:*} span_s=${backlog#*:}
+	# Long text in every row, as error rows with stacks have: about 3 KB, so
+	# each backlog is several 4 MiB requests and both fit a 64 MiB queue.
+	fixture_output=$({
+		printf 'CREATE DATABASE heartbeat_oslog_backlog_%s;\nGO\nUSE heartbeat_oslog_backlog_%s;\nGO\n' "$name" "$name"
+		cat services/db-collector/internal/collectors/outsystems/testdata/oslog/error.sql
+		printf '\nGO\nCREATE USER [%s] FOR LOGIN [%s];\nGRANT SELECT ON dbo.oslog_Error TO [%s];\nGRANT SELECT ON dbo.oslog_Error_Previous TO [%s];\n' "$oslog_login" "$oslog_login" "$oslog_login" "$oslog_login"
+		cat <<EOF
 WITH numbers AS (
     SELECT TOP ($backlog_rows) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i
     FROM sys.all_objects a CROSS JOIN sys.all_objects b
 )
 INSERT INTO dbo.oslog_Error_3 (Id, Instant, Session_Id, User_Id, Espace_Id, Tenant_Id, Message, Stack, Module_Name, Server, EnvironmentInformation, Espace_Name, Request_Key)
 SELECT CONCAT('backlog-', i),
-    DATEADD(MILLISECOND, -CAST(60000 + CAST($backlog_span_s AS bigint) * 1000 * ($backlog_rows - i) / $backlog_rows AS int), GETUTCDATE()),
-    '', 0, 1, 0, CONCAT('e2e backlog row ', i, ' ', REPLICATE('m', 1900)), REPLICATE('s', 2000),
-    'E2eBacklog', 'e2e', REPLICATE('e', 2000), 'E2eBacklog', CONCAT('backlog-', i)
+    DATEADD(MILLISECOND, -CAST(60000 + CAST($span_s AS bigint) * 1000 * ($backlog_rows - i) / $backlog_rows AS int), GETUTCDATE()),
+    '', 0, 1, 0, CONCAT('e2e backlog row ', i, ' ', REPLICATE('m', 1000)), REPLICATE('s', 1000),
+    'E2eBacklog$name', 'e2e', REPLICATE('e', 1000), 'E2eBacklog$name', CONCAT('backlog-', i)
 FROM numbers;
 GO
 EOF
-} | SQLCMDPASSWORD=$password docker exec -i -e SQLCMDPASSWORD "$SQL_CONTAINER" \
-	/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b 2>&1) ||
-	fail "loading the backlog fixture failed: $fixture_output"
-rows_query='sum(heartbeat_outsystems_extract_rows_total{collector="oslogs-backlog"})'
-# Several 4 MiB batches: about 36 MiB of the queue's 64 MiB.
-wait_for 300 "$backlog_rows rows counted delivered with Loki down" value_is "$rows_query" "$backlog_rows"
-wait_for 60 "rows in the Collector's queue" otel_queue_holds
-queued_before=$(otel_queue_bytes)
+	} | SQLCMDPASSWORD=$password docker exec -i -e SQLCMDPASSWORD "$SQL_CONTAINER" \
+		/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b 2>&1) ||
+		fail "loading the $name backlog fixture failed: $fixture_output"
+done
+backlog_read() { prom_value "sum(heartbeat_outsystems_extract_rows_total{collector=\"oslogs-backlog-$1\"})"; }
+backlog_blocked() { value_is "max(heartbeat_outsystems_export_blocked{collector=\"oslogs-backlog-$1\"})" 1; }
+# Settled when the Collector took every row (a queue that holds them all) or
+# when the db-collector waits for it on both backlogs (the one-request queue).
+backlog_settled() {
+	all=true blocked=true
+	for backlog in $backlogs; do
+		name=${backlog%%:*}
+		[ "$(backlog_read "$name")" = "$backlog_rows" ] || all=false
+		backlog_blocked "$name" || blocked=false
+	done
+	$all || $blocked
+}
+wait_for 300 "the db-collector delivered every row or waits for the Collector" backlog_settled
+wait_for 60 "a request in the Collector's queue" otel_queue_holds
+for backlog in $backlogs; do
+	name=${backlog%%:*}
+	read_before=$(backlog_read "$name")
+	if [ "$read_before" != "$backlog_rows" ]; then
+		backlog_blocked "$name" || fail "the $name backlog stopped at $read_before rows without waiting for the Collector"
+		target_up "backlog-db-$name" 1 || fail "the backlog-db-$name target is down while it waits for the Collector"
+	fi
+	printf '      %s backlog: %s rows delivered with Loki down; export blocked: %s; target up: %s\n' "$name" "$read_before" \
+		"$(prom_value "max(heartbeat_outsystems_export_blocked{collector=\"oslogs-backlog-$name\"})")" \
+		"$(prom_value "heartbeat_collector_target_up{target=\"backlog-db-$name\"}")"
+done
+queued_before=$(otel_queue_size)
 uid_before=$(otel_pod_uid)
 k -n "$NAMESPACE" delete pod otel-collector-0 --wait=true >/dev/null
 wait_for 180 "Collector replacement ready" otel_replacement_ready "$uid_before"
-queued_after=$(otel_queue_bytes)
-printf '      Collector queue: %s bytes before the restart, %s after\n' "$queued_before" "${queued_after:-?}"
+queued_after=$(otel_queue_size)
+printf '      Collector queue: %s before the restart, %s after\n' "$queued_before" "${queued_after:-?}"
 k -n "$NAMESPACE" scale statefulset/loki --replicas=1 >/dev/null
 k -n "$NAMESPACE" rollout status statefulset/loki --timeout 5m >/dev/null
 # Distinct rows by their Request_Key, and lines in total: a batch the
 # Collector sent again after the restart (delivery is at least once) would
-# count twice in the total if Loki kept both copies. Waits for every row, or
-# until the count stops growing for 90s.
-range="$((backlog_span_s / 60 + 30))m"
-distinct_query="count(sum by (Request_Key) (count_over_time({service_name=\"E2eBacklog\"}[$range])))"
-total_query="sum(count_over_time({service_name=\"E2eBacklog\"}[$range]))"
+# count twice in the total if Loki kept both copies. Waits for every row of
+# both backlogs, or until no count moves for 90s.
+distinct_query() { echo "count(sum by (Request_Key) (count_over_time({service_name=\"E2eBacklog$1\"}[$(($2 / 60 + 30))m])))"; }
+total_query() { echo "sum(count_over_time({service_name=\"E2eBacklog$1\"}[$(($2 / 60 + 30))m]))"; }
+# Prints "<name>=<rows read>/<distinct rows in Loki> " per backlog.
+backlog_counts() {
+	for backlog in $backlogs; do
+		name=${backlog%%:*} span_s=${backlog#*:}
+		printf '%s=%s/%s ' "$name" "$(backlog_read "$name")" "$(loki_value "$(distinct_query "$name" "$span_s")")"
+	done
+}
 start=$(date +%s) since=$start last=
 while :; do
-	distinct=$(loki_value "$distinct_query")
-	[ "$distinct" = "$backlog_rows" ] && break
-	[ "$distinct" = "$last" ] || { last=$distinct; since=$(date +%s); }
-	[ $(($(date +%s) - since)) -lt 90 ] && [ $(($(date +%s) - start)) -lt 420 ] || break
+	counts=$(backlog_counts)
+	complete=true
+	for backlog in $backlogs; do
+		case "$counts " in *"${backlog%%:*}=$backlog_rows/$backlog_rows "*) ;; *) complete=false ;; esac
+	done
+	$complete && break
+	[ "$counts" = "$last" ] || { last=$counts; since=$(date +%s); }
+	[ $(($(date +%s) - since)) -lt 90 ] && [ $(($(date +%s) - start)) -lt 600 ] || break
 	sleep 5
 done
-read_rows=$(prom_value "$rows_query")
-distinct=$(loki_value "$distinct_query")
-total=$(loki_value "$total_query")
 behind=$(svc_get loki:3100 /metrics | awk '/^loki_discarded_samples_total[{]/ && /reason="too_far_behind"/ { sum += $2 } END { print sum + 0 }')
-printf '      after %ss: db-collector read %s rows; Loki holds %s distinct rows in %s lines and rejected %s as too far behind\n' \
-	$(($(date +%s) - start)) "$read_rows" "$distinct" "$total" "$behind"
-[ "$distinct" = "$read_rows" ] || fail "Loki holds $distinct of the $read_rows rows the db-collector counted delivered"
-[ "$total" = "$read_rows" ] || fail "Loki holds $total lines for $read_rows rows: a row was stored twice"
-pass "the Collector restarted with $queued_before bytes queued; Loki holds all $read_rows rows once"
+printf '      after %ss: Loki rejected %s rows as too far behind\n' $(($(date +%s) - start)) "$behind"
+failed=
+for backlog in $backlogs; do
+	name=${backlog%%:*} span_s=${backlog#*:}
+	read_rows=$(backlog_read "$name")
+	distinct=$(loki_value "$(distinct_query "$name" "$span_s")")
+	total=$(loki_value "$(total_query "$name" "$span_s")")
+	printf '      %s backlog: db-collector read %s rows; Loki holds %s distinct rows in %s lines\n' "$name" "$read_rows" "$distinct" "$total"
+	if [ "$read_rows" != "$backlog_rows" ]; then
+		failed="$failed; the db-collector read $read_rows of the $backlog_rows rows of the $name backlog"
+	elif [ "$distinct" != "$read_rows" ]; then
+		failed="$failed; Loki holds $distinct of the $read_rows rows of the $name backlog"
+	elif [ "$total" != "$read_rows" ]; then
+		failed="$failed; Loki holds $total lines for the $read_rows rows of the $name backlog: a row was stored twice"
+	fi
+done
+[ -z "$failed" ] || fail "${failed#; }"
+pass "the Collector restarted during two backlogs (45 minutes and three hours); Loki holds all $backlog_rows rows of each, once"
 
 printf '\nAll kind e2e checks passed on %s.\n' "$CLUSTER"

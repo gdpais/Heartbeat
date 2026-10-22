@@ -156,12 +156,71 @@ func TestExportRetriesTransientFailures(t *testing.T) {
 	}
 }
 
+// By default a request is retried until it is accepted: a busy Collector is
+// waited for.  The backoff doubles up to MaxBackoff.
+func TestExportRetriesUntilAccepted(t *testing.T) {
+	rcv := &receiver{t: t, script: []int{503, 503, 503, 503, 503, 503, 503, 503}}
+	server := httptest.NewServer(rcv)
+	defer server.Close()
+	var waits []time.Duration
+	if err := testClient(&waits).Export(context.Background(), server.URL, []*logspb.ResourceLogs{logs("a", "1")}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if got := strings.Join(rcv.records(), ","); got != "1" || rcv.attempts != 9 {
+		t.Fatalf("received %q in %d attempts", got, rcv.attempts)
+	}
+	want := []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second, 5 * time.Second, 5 * time.Second, 5 * time.Second}
+	if fmt.Sprint(waits) != fmt.Sprint(want) {
+		t.Fatalf("waits = %v, want %v", waits, want)
+	}
+}
+
+// An attempt that timed out waiting for a busy Collector is retried at once,
+// on the same request.
+func TestExportRetriesATimedOutAttemptAtOnce(t *testing.T) {
+	release := make(chan struct{})
+	var mu sync.Mutex
+	attempts, delivered := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		attempts++
+		first := attempts == 1
+		mu.Unlock()
+		if first {
+			// The first attempt waits until the client gives up.
+			<-release
+			return
+		}
+		if _, err := decodeRequest(req); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		mu.Lock()
+		delivered++
+		mu.Unlock()
+	}))
+	defer server.Close()
+	defer close(release)
+	var waits []time.Duration
+	client := testClient(&waits)
+	client.HTTP.Timeout = 50 * time.Millisecond
+	if err := client.Export(context.Background(), server.URL, []*logspb.ResourceLogs{logs("a", "1")}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts != 2 || delivered != 1 || len(waits) != 0 {
+		t.Fatalf("attempts %d, delivered %d, waits %v; want a second attempt at once", attempts, delivered, waits)
+	}
+}
+
 func TestExportGivesUpAfterMaxAttempts(t *testing.T) {
 	rcv := &receiver{t: t, script: []int{500, 500, 500, 500, 500}}
 	server := httptest.NewServer(rcv)
 	defer server.Close()
 	var waits []time.Duration
-	err := testClient(&waits).Export(context.Background(), server.URL, []*logspb.ResourceLogs{logs("a", "1")})
+	client := testClient(&waits)
+	client.MaxAttempts = 4
+	err := client.Export(context.Background(), server.URL, []*logspb.ResourceLogs{logs("a", "1")})
 	if err == nil || !strings.Contains(err.Error(), "attempt 4 of 4") || !strings.Contains(err.Error(), "500 Internal Server Error: scripted 500") {
 		t.Fatalf("Export error = %v", err)
 	}
@@ -189,7 +248,9 @@ func TestExportRetriesNetworkErrors(t *testing.T) {
 	url := server.URL
 	server.Close()
 	var waits []time.Duration
-	err := testClient(&waits).Export(context.Background(), url, []*logspb.ResourceLogs{logs("a", "1")})
+	client := testClient(&waits)
+	client.MaxAttempts = 4
+	err := client.Export(context.Background(), url, []*logspb.ResourceLogs{logs("a", "1")})
 	if err == nil || len(waits) != 3 {
 		t.Fatalf("Export error = %v after waits %v; want 4 failed attempts", err, waits)
 	}

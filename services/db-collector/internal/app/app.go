@@ -42,6 +42,10 @@ var collectorKinds = []string{heartbeatconfig.KindSQLServer, heartbeatconfig.Kin
 // outsystems_logs watermarks.
 const outSystemsStateDir = "outsystems_logs"
 
+// exportDrainTimeout is how long shutdown waits for outsystems_logs exports
+// that are still running after the pollers stopped.
+const exportDrainTimeout = 5 * time.Second
+
 // Config holds the top-level runtime parameters for the db-collector service.
 type Config struct {
 	// ListenAddr is the TCP address on which the HTTP server will listen
@@ -156,8 +160,16 @@ func Run(ctx context.Context, cfg Config) error {
 		newLifecycle: func(parent context.Context) *pollerLifecycle {
 			return newPollerLifecycle(parent, runner, logger)
 		},
-		closeConnections: manager.Close,
-		timeouts:         defaultTimeouts(),
+		closeConnections: func() error {
+			// outsystems_logs exports still running in the background get a
+			// few seconds to be accepted; the rest are cancelled and their
+			// rows read again after the restart.
+			ctx, cancel := context.WithTimeout(context.Background(), exportDrainTimeout)
+			defer cancel()
+			logs.Close(ctx)
+			return manager.Close()
+		},
+		timeouts: defaultTimeouts(),
 	})
 }
 
@@ -593,21 +605,26 @@ func (r readinessReport) httpStatus() int {
 
 // collectorReport is the per-collector section of readinessReport.
 type collectorReport struct {
-	ID                 string         `json:"id"`
-	Phase              string         `json:"phase"`
-	Ready              bool           `json:"ready"`
-	StartedAt          time.Time      `json:"started_at"`
-	LastCycleFinished  *time.Time     `json:"last_cycle_finished"`
-	CycleAgeSeconds    *float64       `json:"cycle_age_seconds"`
-	StaleAfterSeconds  float64        `json:"stale_after_seconds"`
-	Restarts           int            `json:"restarts"`
-	ConsecutiveCrashes int            `json:"consecutive_crashes"`
-	NextRestart        *time.Time     `json:"next_restart,omitempty"`
-	TargetsTotal       int            `json:"targets_total"`
-	TargetsOK          int            `json:"targets_ok"`
-	TargetsFailed      int            `json:"targets_failed"`
-	TargetsBackoff     int            `json:"targets_backoff"`
-	Targets            []targetReport `json:"targets"`
+	ID                 string     `json:"id"`
+	Phase              string     `json:"phase"`
+	Ready              bool       `json:"ready"`
+	StartedAt          time.Time  `json:"started_at"`
+	LastCycleFinished  *time.Time `json:"last_cycle_finished"`
+	CycleAgeSeconds    *float64   `json:"cycle_age_seconds"`
+	StaleAfterSeconds  float64    `json:"stale_after_seconds"`
+	Restarts           int        `json:"restarts"`
+	ConsecutiveCrashes int        `json:"consecutive_crashes"`
+	NextRestart        *time.Time `json:"next_restart,omitempty"`
+	TargetsTotal       int        `json:"targets_total"`
+	TargetsOK          int        `json:"targets_ok"`
+	TargetsFailed      int        `json:"targets_failed"`
+	TargetsBackoff     int        `json:"targets_backoff"`
+	// TargetsBlocked counts targets whose probes ran but wait for their
+	// output to be accepted downstream (collectors.TargetBlocked): an
+	// outsystems_logs log type waiting for the OTel Collector. They are up,
+	// not failed.
+	TargetsBlocked int            `json:"targets_blocked"`
+	Targets        []targetReport `json:"targets"`
 }
 
 // targetReport is the per-target section of readinessReport.
@@ -618,7 +635,8 @@ type targetReport struct {
 	LastSuccess         *time.Time `json:"last_success"`
 	NextAttempt         *time.Time `json:"next_attempt,omitempty"`
 	// Error is the raw probe or driver error of the target's last failed
-	// cycle, also set while it backs off. It can name the host, port and
+	// cycle, also set while it backs off. For a blocked target it says what
+	// waits downstream and for how long. It can name the host, port and
 	// login but never the password: hosts are validated at config load so
 	// the connection URL always parses. Admin endpoints only.
 	Error string `json:"error,omitempty"`
@@ -786,6 +804,8 @@ func addTargets(report *collectorReport, targets []collectors.TargetResult, with
 			report.TargetsFailed++
 		case collectors.TargetBackoff:
 			report.TargetsBackoff++
+		case collectors.TargetBlocked:
+			report.TargetsBlocked++
 		}
 		var errText string
 		if withErrors && target.Err != nil {

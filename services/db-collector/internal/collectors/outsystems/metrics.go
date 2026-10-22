@@ -30,6 +30,10 @@ const (
 	// MetricLogDelay is now minus the newest Instant extracted, set when rows
 	// arrive: how far behind the platform's own log service is.
 	MetricLogDelay = "heartbeat_outsystems_log_delay_seconds"
+	// MetricExportBlocked is 1 while the log type waits for the OTel
+	// Collector to accept a batch, past the cycle that read it: its
+	// extraction is paused, but its target is up (export.go).  0 otherwise.
+	MetricExportBlocked = "heartbeat_outsystems_export_blocked"
 )
 
 // metricLabels are the label names of every extraction metric.
@@ -47,6 +51,7 @@ type Metrics struct {
 	exportFailures *prometheus.CounterVec
 	stuck          *prometheus.CounterVec
 	logDelay       *prometheus.GaugeVec
+	exportBlocked  *prometheus.GaugeVec
 	derived        *derived
 }
 
@@ -74,9 +79,13 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 			Name: MetricLogDelay,
 			Help: "Seconds between now and the newest OutSystems log Instant extracted, set when rows arrive.",
 		}, metricLabels),
+		exportBlocked: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: MetricExportBlocked,
+			Help: "Whether the OutSystems log type waits for the OTel Collector to accept a batch, its extraction paused (1), or not (0).",
+		}, metricLabels),
 		derived: newDerived(),
 	}
-	for _, collector := range append([]prometheus.Collector{m.rows, m.lag, m.exportFailures, m.stuck, m.logDelay}, m.derived.collectors()...) {
+	for _, collector := range append([]prometheus.Collector{m.rows, m.lag, m.exportFailures, m.stuck, m.logDelay, m.exportBlocked}, m.derived.collectors()...) {
 		if err := reg.Register(collector); err != nil {
 			return nil, fmt.Errorf("register outsystems metrics: %w", err)
 		}
@@ -90,7 +99,8 @@ func labelValues(item collectormetadata.ScheduledProbe) []string {
 }
 
 // initCollector creates the counters of every log type collector extracts at
-// 0, so increase() sees the first row and the first failure.
+// 0, so increase() sees the first row and the first failure, and its
+// export-blocked gauge at 0.
 func (m *Metrics) initCollector(collector collectorconfig.CollectorRuntimeConfig) {
 	if m == nil || !collector.Enabled {
 		return
@@ -104,6 +114,7 @@ func (m *Metrics) initCollector(collector collectorconfig.CollectorRuntimeConfig
 			for _, vec := range []*prometheus.CounterVec{m.rows, m.exportFailures, m.stuck} {
 				_, _ = vec.GetMetricWithLabelValues(values...)
 			}
+			_, _ = m.exportBlocked.GetMetricWithLabelValues(values...)
 		}
 	}
 }
@@ -119,6 +130,7 @@ func (m *Metrics) forgetCollector(collectorID string) {
 	m.exportFailures.DeletePartialMatch(labels)
 	m.stuck.DeletePartialMatch(labels)
 	m.logDelay.DeletePartialMatch(labels)
+	m.exportBlocked.DeletePartialMatch(labels)
 	m.derived.forget(collectorID)
 }
 
@@ -163,6 +175,19 @@ func (m *Metrics) setLag(item collectormetadata.ScheduledProbe, lag time.Duratio
 	}
 	if gauge, err := m.lag.GetMetricWithLabelValues(labelValues(item)...); err == nil {
 		gauge.Set(lag.Seconds())
+	}
+}
+
+func (m *Metrics) setExportBlocked(item collectormetadata.ScheduledProbe, blocked bool) {
+	if m == nil {
+		return
+	}
+	if gauge, err := m.exportBlocked.GetMetricWithLabelValues(labelValues(item)...); err == nil {
+		value := 0.0
+		if blocked {
+			value = 1
+		}
+		gauge.Set(value)
 	}
 }
 

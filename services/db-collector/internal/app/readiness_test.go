@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -146,5 +147,30 @@ func TestEvaluateReadinessAddsErrorTextOnlyWhenAsked(t *testing.T) {
 		if (got != "") != withErrors {
 			t.Fatalf("withErrors=%t: error text %q", withErrors, got)
 		}
+	}
+}
+
+// A target waiting for the OTel Collector is reported as blocked, apart from
+// failed ones, with what it waits for, and keeps the pod ready.
+func TestEvaluateReadinessReportsBlockedTargets(t *testing.T) {
+	now := time.Now()
+	state := collectorState{
+		Collector: collectorConfig("oslogs", "prod"), Phase: phaseRunning, Started: now, HasCycle: true,
+		LastCycle: collectors.CycleResult{CollectorID: "oslogs", Finished: now, Targets: []collectors.TargetResult{
+			{Target: "logging-db", State: collectors.TargetBlocked, LastSuccess: now,
+				Err: fmt.Errorf("log type error: 120 rows waiting for the OTel Collector at http://otel-collector:4318 to accept them, for 2m0s: %w", collectors.ErrBlocked)},
+			{Target: "other-db", State: collectors.TargetOK, LastSuccess: now},
+		}},
+	}
+	report, _ := evaluateReadiness(readinessInput{initialized: true, warm: true, collectors: []collectorState{state}, grace: time.Second, now: now, withErrors: true})
+	if report.Status != statusReady {
+		t.Fatalf("status %s (%v), want ready", report.Status, report.Reasons)
+	}
+	c := report.Collectors[0]
+	if c.TargetsTotal != 2 || c.TargetsBlocked != 1 || c.TargetsOK != 1 || c.TargetsFailed != 0 {
+		t.Fatalf("counts %+v", c)
+	}
+	if target := c.Targets[0]; target.State != "blocked" || !strings.Contains(target.Error, "waiting for the OTel Collector") {
+		t.Fatalf("target %+v", target)
 	}
 }
