@@ -558,7 +558,8 @@ k -n "$NAMESPACE" wait --for=delete pod/loki-0 --timeout=3m >/dev/null
 for backlog in $backlogs; do
 	name=${backlog%%:*} span_s=${backlog#*:}
 	# Long text in every row, as error rows with stacks have: about 3 KB, so
-	# each backlog is several 4 MiB requests and both fit a 64 MiB queue.
+	# each backlog is several 4 MiB requests, and both together fit in the
+	# 64 MiB queue earlier charts had (to show what that queue loses).
 	fixture_output=$({
 		printf 'CREATE DATABASE heartbeat_oslog_backlog_%s;\nGO\nUSE heartbeat_oslog_backlog_%s;\nGO\n' "$name" "$name"
 		cat services/db-collector/internal/collectors/outsystems/testdata/oslog/error.sql

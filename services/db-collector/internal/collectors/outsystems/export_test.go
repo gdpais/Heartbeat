@@ -3,6 +3,8 @@ package outsystems
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
@@ -14,6 +16,7 @@ import (
 
 	collectorconfig "heartbeat/internal/config"
 	"heartbeat/services/db-collector/internal/collectors"
+	"heartbeat/services/db-collector/internal/export/otlp"
 	collectormetadata "heartbeat/services/db-collector/internal/metadata"
 )
 
@@ -286,9 +289,10 @@ func TestAFailedBackgroundExportFailsTheNextCall(t *testing.T) {
 	}
 }
 
-// The batches held while their exports wait are bounded: past
-// MaxHeldBytes, a log type still reads, in a smaller batch.
-func TestHeldBatchesShrinkOtherReads(t *testing.T) {
+// The batches held while their exports wait are bounded: once less than
+// minBatchBytes of MaxHeldBytes is left, another log type reads nothing and
+// is blocked too, until an export ends.
+func TestHeldBatchesBlockOtherReads(t *testing.T) {
 	x := newExtraction(t, t.TempDir(), 100)
 	x.executor.MaxHeldBytes = 2 * minBatchBytes
 	x.executor.MaxBatchBytes = 2 * minBatchBytes
@@ -303,14 +307,42 @@ func TestHeldBatchesShrinkOtherReads(t *testing.T) {
 	}
 	general := x.item
 	general.Definition.Name = "general"
-	_ = x.runForItem(general, 50*time.Millisecond)
-	if got := x.source.params[1].MaxBytes; got != minBatchBytes {
-		t.Fatalf("second read allowed %d bytes, want the floor %d once the budget is spent", got, minBatchBytes)
+	err := x.runForItem(general, 50*time.Millisecond)
+	if !errors.Is(err, collectors.ErrBlocked) || !strings.Contains(err.Error(), "batches of other log types") {
+		t.Fatalf("second log type: %v, want blocked by the held budget", err)
+	}
+	if len(x.source.params) != 1 {
+		t.Fatalf("%d queries, want none past the budget", len(x.source.params))
 	}
 	g.release()
 	x.settle()
 	if held := x.executor.exports.heldBytes(); held != 0 {
 		t.Fatalf("held %d bytes after every export ended", held)
+	}
+	if err := x.runForItem(general, time.Second); err != nil {
+		t.Fatalf("second log type after the export: %v", err)
+	}
+	if got := x.source.params[1].MaxBytes; got != 2*minBatchBytes {
+		t.Fatalf("second read allowed %d bytes, want the whole budget back", got)
+	}
+}
+
+// reserve grants what is left, down to minBatchBytes, and then nothing.
+func TestReserveStopsAtTheFloor(t *testing.T) {
+	var s exportState
+	const max = 10 * minBatchBytes
+	if got := s.reserve(8*minBatchBytes, max); got != 8*minBatchBytes {
+		t.Fatalf("first grant %d", got)
+	}
+	if got := s.reserve(8*minBatchBytes, max); got != 2*minBatchBytes {
+		t.Fatalf("second grant %d, want what is left", got)
+	}
+	if got := s.reserve(8*minBatchBytes, max); got != 0 || s.heldBytes() != max {
+		t.Fatalf("third grant %d, held %d; want nothing past the budget", got, s.heldBytes())
+	}
+	s.release(max)
+	if got := s.reserve(minBatchBytes/2, max); got != minBatchBytes/2 {
+		t.Fatalf("a small batch got %d", got)
 	}
 }
 
@@ -340,6 +372,9 @@ func TestExportsOutliveAReloadButNotARemoval(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	if err := x.run(); !errors.Is(err, collectors.ErrBlocked) {
 		t.Fatalf("after a reload: %v, want the export still waiting", err)
+	}
+	if got := x.gauge(x.metrics.exportBlocked); got != 1 {
+		t.Fatalf("export blocked = %v after a reload, want 1", got)
 	}
 	// Removal: not started again.
 	x.executor.ForgetCollector("oslogs")
@@ -371,4 +406,73 @@ func TestCloseCancelsExportsThatDoNotEnd(t *testing.T) {
 	if _, found := x.savedWatermark(); found {
 		t.Fatal("a cancelled export moved the watermark")
 	}
+}
+
+// delayedExporter accepts every export after delay.
+type delayedExporter struct {
+	fakeExporter
+	delay time.Duration
+}
+
+func (d *delayedExporter) Export(ctx context.Context, endpoint string, resourceLogs []*logspb.ResourceLogs) error {
+	select {
+	case <-time.After(d.delay):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return d.fakeExporter.Export(ctx, endpoint, resourceLogs)
+}
+
+// The calls of one target wait for exports at most half the poll interval in
+// all, so a slow Collector that accepts each batch just within a call cannot
+// use up the cycle and leave the target's last log types unstarted.
+func TestATargetWaitsAtMostHalfTheInterval(t *testing.T) {
+	x := newExtraction(t, t.TempDir(), 100)
+	x.executor.Exporter = &delayedExporter{delay: 700 * time.Millisecond}
+	x.item.Assignment.IntervalSeconds = 2
+	x.source.insert("a", at(time.Minute))
+	if err := x.runFor(5 * time.Second); err != nil {
+		t.Fatalf("first log type: %v, want its batch accepted within the budget", err)
+	}
+	general := x.item
+	general.Definition.Name = "general"
+	started := time.Now()
+	err := x.runForItem(general, 5*time.Second)
+	if elapsed := time.Since(started); !errors.Is(err, collectors.ErrBlocked) || elapsed > 600*time.Millisecond {
+		t.Fatalf("second log type: %v after %s; want ErrBlocked once the target's 1 s budget is spent", err, elapsed)
+	}
+	x.settle()
+}
+
+// A blocked export says why the Collector does not take it, and an attempt
+// that failed for another reason than waiting is a warning: an unreachable
+// or failing Collector is not taken for a busy one.  The lag keeps growing.
+func TestABlockedExportReportsItsLastError(t *testing.T) {
+	x := newExtraction(t, t.TempDir(), 100)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "queue storage failed", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	client := otlp.NewClient()
+	client.InitialBackoff, client.MaxBackoff = time.Millisecond, 10*time.Millisecond
+	x.executor.Exporter = client
+	x.item.OutSystemsLogs.LogsEndpoint = server.URL
+	x.source.insert("a", at(time.Minute))
+	if err := x.runFor(200 * time.Millisecond); !errors.Is(err, collectors.ErrBlocked) {
+		t.Fatalf("first call: %v", err)
+	}
+	x.now = x.now.Add(10 * time.Minute)
+	err := x.run()
+	if !errors.Is(err, collectors.ErrBlocked) || !strings.Contains(err.Error(), "the last: receiver answered 500 Internal Server Error") {
+		t.Fatalf("RunProbe error = %v, want the last attempt's error", err)
+	}
+	if !strings.Contains(x.logs.String(), "export failed; retrying until the OTel Collector accepts it") || strings.Count(x.logs.String(), "export failed; retrying") != 1 {
+		t.Fatalf("want one warning for the failing attempts:\n%s", x.logs)
+	}
+	if got := x.gauge(x.metrics.lag); got != (25 * time.Minute).Seconds() {
+		t.Fatalf("extract lag = %vs while blocked, want 1500 (now minus the initial watermark)", got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	x.executor.Close(ctx)
 }

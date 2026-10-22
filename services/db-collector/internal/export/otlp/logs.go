@@ -129,6 +129,9 @@ func (c *Client) send(ctx context.Context, url string, body []byte) error {
 		if errors.As(err, &permanent) || (c.MaxAttempts > 0 && attempt >= c.MaxAttempts) || ctx.Err() != nil {
 			return fmt.Errorf("export logs to %s (%s): %w", url, c.attemptText(attempt), err)
 		}
+		if observe, ok := ctx.Value(retryObserverKey{}).(RetryObserver); ok && observe != nil {
+			observe(attempt, err)
+		}
 		wait := min(max(backoff, retryAfter), c.MaxBackoff)
 		if isTimeout(err) && retryAfter == 0 {
 			wait = 0
@@ -138,6 +141,18 @@ func (c *Client) send(ctx context.Context, url string, body []byte) error {
 		}
 		backoff = min(2*backoff, c.MaxBackoff)
 	}
+}
+
+// RetryObserver is told about every failed attempt that will be retried.
+type RetryObserver func(attempt int, err error)
+
+type retryObserverKey struct{}
+
+// WithRetryObserver returns a context under which [Client.Export] calls
+// observe for every failed attempt it retries, so a caller that waits for an
+// export can tell why it waits.
+func WithRetryObserver(ctx context.Context, observe RetryObserver) context.Context {
+	return context.WithValue(ctx, retryObserverKey{}, observe)
 }
 
 // attemptText describes attempt for an error message.

@@ -163,8 +163,15 @@ func TestExportRetriesUntilAccepted(t *testing.T) {
 	server := httptest.NewServer(rcv)
 	defer server.Close()
 	var waits []time.Duration
-	if err := testClient(&waits).Export(context.Background(), server.URL, []*logspb.ResourceLogs{logs("a", "1")}); err != nil {
+	var observed []string
+	ctx := WithRetryObserver(context.Background(), func(attempt int, err error) {
+		observed = append(observed, fmt.Sprintf("%d:%v", attempt, err))
+	})
+	if err := testClient(&waits).Export(ctx, server.URL, []*logspb.ResourceLogs{logs("a", "1")}); err != nil {
 		t.Fatalf("Export: %v", err)
+	}
+	if len(observed) != 8 || !strings.Contains(observed[0], "1:receiver answered 503") {
+		t.Fatalf("observed %v, want each of the 8 retried attempts", observed)
 	}
 	if got := strings.Join(rcv.records(), ","); got != "1" || rcv.attempts != 9 {
 		t.Fatalf("received %q in %d attempts", got, rcv.attempts)

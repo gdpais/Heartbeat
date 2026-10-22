@@ -55,6 +55,7 @@ import (
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 
 	collectorconfig "heartbeat/internal/config"
+	"heartbeat/services/db-collector/internal/collectors"
 	collectorexport "heartbeat/services/db-collector/internal/export"
 	collectormetadata "heartbeat/services/db-collector/internal/metadata"
 	catalogoutsystems "heartbeat/services/db-collector/internal/probes/outsystems"
@@ -154,24 +155,36 @@ func (e *Executor) RunProbe(ctx context.Context, item collectormetadata.Schedule
 	// for a whole call, so the Collector is busy, and the target's other log
 	// types must still get their turn in this cycle.
 	if err := e.awaitExport(ctx, item, key, false); err != nil {
-		return nil, nil, err
+		return nil, nil, e.blocked(item, key, location, err)
 	}
 	watermark := e.watermark(key, item, location)
 	for batch := 1; ; batch++ {
 		started := time.Now()
 		full, err := e.extractBatch(ctx, item, key, query, location, &watermark)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, e.blocked(item, key, location, err)
 		}
 		// Wait for the batch until the deadline: a Collector that keeps up
 		// accepts it well within it.
 		if err := e.awaitExport(ctx, item, key, true); err != nil {
-			return nil, nil, err
+			return nil, nil, e.blocked(item, key, location, err)
 		}
 		if !full || batch >= e.maxBatches() || !timeLeft(ctx, time.Since(started)) {
 			return nil, nil, nil
 		}
 	}
+}
+
+// blocked returns err, and when it is [collectors.ErrBlocked] it updates the
+// log type's lag from its stored watermark first, which no batch moves while
+// the log type waits.
+func (e *Executor) blocked(item collectormetadata.ScheduledProbe, key WatermarkKey, location *time.Location, err error) error {
+	if errors.Is(err, collectors.ErrBlocked) {
+		if watermark, found, loadErr := e.Store.Load(key); loadErr == nil && found {
+			e.Metrics.setLag(item, e.clock().Sub(Real(watermark.Instant, location)))
+		}
+	}
+	return err
 }
 
 // extractBatch reads one batch and starts its export, after which the
@@ -194,6 +207,10 @@ func (e *Executor) extractBatch(ctx context.Context, item collectormetadata.Sche
 		return false, nil
 	}
 	granted := e.exports.reserve(e.maxBatchBytes(), e.maxHeldBytes())
+	if granted == 0 {
+		return false, fmt.Errorf("log type %s: waiting for the OTel Collector to accept the batches of other log types, which hold %d MiB of the %d MiB allowed: %w",
+			item.Definition.Name, e.exports.heldBytes()>>20, e.maxHeldBytes()>>20, collectors.ErrBlocked)
+	}
 	batch, err := e.Source.Query(ctx, item.Target, query, QueryParams{
 		From: watermark.Instant, To: to, Limit: settings.BatchLimit, MaxBytes: granted,
 		DateTime: watermark.InstantType == "DATETIME",

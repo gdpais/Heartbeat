@@ -621,6 +621,7 @@ func checkLogDelivery(t *testing.T, objects map[string]object) {
 				BlockOnOverflow bool   `yaml:"block_on_overflow"`
 				Batch           struct {
 					Sizer   string `yaml:"sizer"`
+					MinSize *int   `yaml:"min_size"`
 					MaxSize int    `yaml:"max_size"`
 				} `yaml:"batch"`
 			} `yaml:"sending_queue"`
@@ -654,6 +655,9 @@ func checkLogDelivery(t *testing.T, objects map[string]object) {
 		}
 		if q.Batch.Sizer != "bytes" || q.Batch.MaxSize <= 0 || q.Batch.MaxSize >= lokiIngestionBurst {
 			t.Errorf("%s sending_queue.batch = %+v, want sizer bytes and max_size below %d", name, q.Batch, lokiIngestionBurst)
+		}
+		if q.Batch.MinSize == nil || *q.Batch.MinSize != 0 {
+			t.Errorf("%s sending_queue.batch.min_size is not 0: with one request queued, a small request would wait flush_timeout", name)
 		}
 		if d, err := time.ParseDuration(e.RetryOnFailure.MaxElapsedTime); err != nil || d != 0 {
 			t.Errorf("%s retry_on_failure.max_elapsed_time = %q, want 0s (no deadline)", name, e.RetryOnFailure.MaxElapsedTime)

@@ -2,13 +2,16 @@ package outsystems
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 
 	"heartbeat/services/db-collector/internal/collectors"
+	"heartbeat/services/db-collector/internal/export/otlp"
 	collectormetadata "heartbeat/services/db-collector/internal/metadata"
 )
 
@@ -36,26 +39,36 @@ import (
 //     Collector that keeps up is never seen as blocked.  An export that is
 //     still pending at the end of the call blocks the log type: the call
 //     returns [collectors.ErrBlocked], the target stays up, and
-//     heartbeat_outsystems_export_blocked is 1 until the export ends.  Once
-//     an export to a Collector is blocked, calls stop waiting for theirs to
-//     the same Collector, so the target's other log types still run within
-//     the cycle.
+//     heartbeat_outsystems_export_blocked is 1 until the export ends.  The
+//     error names the last failed attempt, and an attempt that failed for
+//     another reason than waiting (a wrong endpoint, a 5xx) is logged as a
+//     warning, so a Collector that cannot be reached is not mistaken for a
+//     busy one.
+//   - Waiting is bounded so the target's other log types still run within
+//     the cycle: the calls of one target wait at most half the poll interval
+//     in all, and once an export to a Collector is blocked, calls stop
+//     waiting for theirs to the same Collector.
 //   - An export that ends with an error (a request the Collector rejected
 //     for good) fails the next call of its log type, which reads the batch
 //     again, as a failed export always has.
 //
 // The batches held at once, read, being exported or pending, are bounded by
 // [Executor.MaxHeldBytes] of row data, so a backlog in every log type while
-// the Collector is blocked cannot exhaust the collector's memory.
+// the Collector is blocked cannot exhaust the collector's memory: past it, a
+// log type reads a smaller batch, and once less than [minBatchBytes] is
+// left, it reads nothing and is blocked too until an export ends.
 
 // DefaultMaxHeldBytes bounds the row data of every batch the executor holds
 // at once: eight batches of [DefaultMaxBatchBytes], as many as eight targets
 // extracting at once.
 const DefaultMaxHeldBytes = 8 * DefaultMaxBatchBytes
 
-// minBatchBytes is the least row data a batch is allowed when the held
-// budget is spent, so every log type keeps moving, in smaller batches.
+// minBatchBytes is the least row data a batch is allowed to read when the
+// held budget is nearly spent; with less left, the log type waits.
 const minBatchBytes = 1 << 20
+
+// warnEvery spaces the warnings of one export's failed attempts.
+const warnEvery = 5 * time.Minute
 
 // orphanGrace is how long the exports of a stopped collector keep trying
 // before they are cancelled.  A reload stops a changed collector and starts
@@ -72,9 +85,15 @@ type export struct {
 	// done is closed when the export ends; err is set before.
 	done chan struct{}
 	err  error
+	// The fields below are guarded by exportState.mu.
 	// blocked reports that the export outlived the call that started it.
-	// Guarded by Executor.exportMu.
 	blocked bool
+	// lastErr is the error of the last failed attempt, and attempts their
+	// number.
+	lastErr  error
+	attempts int
+	// warned is when a failed attempt was last logged as a warning.
+	warned time.Time
 }
 
 // exportState is the executor's bookkeeping of background exports.
@@ -92,6 +111,18 @@ type exportState struct {
 	held int64
 	// collectors holds a context per collector for its exports.
 	collectors map[string]*collectorExports
+	// waits holds each target's time spent waiting for exports in the
+	// current poll interval.
+	waits map[targetKey]*waitWindow
+}
+
+// targetKey is a target of a collector.
+type targetKey struct{ collector, target string }
+
+// waitWindow is the time a target's calls spent waiting since start.
+type waitWindow struct {
+	start time.Time
+	used  time.Duration
 }
 
 // collectorExports scopes the exports of one collector.
@@ -108,6 +139,7 @@ func (s *exportState) init() {
 		s.ctx, s.cancel = context.WithCancel(context.Background())
 		s.pending = map[WatermarkKey]*export{}
 		s.collectors = map[string]*collectorExports{}
+		s.waits = map[targetKey]*waitWindow{}
 	})
 }
 
@@ -155,6 +187,11 @@ func (s *exportState) orphan(collectorID string, grace time.Duration) {
 		}
 		c.cancel()
 		delete(s.collectors, collectorID)
+		for key := range s.waits {
+			if key.collector == collectorID {
+				delete(s.waits, key)
+			}
+		}
 		for key, p := range s.pending {
 			if key.Collector == collectorID && isDone(p) {
 				delete(s.pending, key)
@@ -164,17 +201,16 @@ func (s *exportState) orphan(collectorID string, grace time.Duration) {
 }
 
 // reserve takes up to want bytes of the held budget max and returns how
-// much a batch may read: want when the budget allows, else what is left but
-// at least minBatchBytes.
+// much a batch may read: want when the budget allows, else what is left, or
+// 0, reserving nothing, when less than minBatchBytes (or want) is left.
 func (s *exportState) reserve(want, max int64) int64 {
 	s.init()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	grant := want
-	if left := max - s.held; left < grant {
-		grant = left
+	grant := min(want, max-s.held)
+	if grant < min(want, minBatchBytes) {
+		return 0
 	}
-	grant = min(want, maxInt64(grant, minBatchBytes))
 	s.held += grant
 	return grant
 }
@@ -204,13 +240,6 @@ func (s *exportState) heldBytes() int64 {
 	return s.held
 }
 
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 func isDone(e *export) bool {
 	select {
 	case <-e.done:
@@ -229,7 +258,9 @@ func (e *Executor) startExport(item collectormetadata.ScheduledProbe, key Waterm
 	endpoint := item.OutSystemsLogs.LogsEndpoint
 	pending := &export{logType: key.LogType, endpoint: endpoint, rows: len(rows), started: time.Now(), done: make(chan struct{})}
 	s.mu.Lock()
-	ctx := s.collectorContext(item.CollectorID)
+	ctx := otlp.WithRetryObserver(s.collectorContext(item.CollectorID), func(attempt int, err error) {
+		e.attemptFailed(key, pending, attempt, err)
+	})
 	s.pending[key] = pending
 	s.wg.Add(1)
 	s.mu.Unlock()
@@ -253,6 +284,7 @@ func (e *Executor) startExport(item collectormetadata.ScheduledProbe, key Waterm
 				err = fmt.Errorf("log type %s: rows delivered, but the watermark is only kept in memory: %w", key.LogType, saveErr)
 			}
 		}
+		elapsed := time.Since(pending.started)
 		s.mu.Lock()
 		s.held -= batch.Bytes
 		blocked := pending.blocked
@@ -266,7 +298,7 @@ func (e *Executor) startExport(item collectormetadata.ScheduledProbe, key Waterm
 		s.mu.Unlock()
 		if blocked {
 			metrics.setExportBlocked(item, false)
-			attrs := []any{"collector", key.Collector, "target", key.Target, "log_type", key.LogType, "rows", len(rows), "waited", time.Since(pending.started).Round(time.Millisecond).String()}
+			attrs := []any{"collector", key.Collector, "target", key.Target, "log_type", key.LogType, "rows", len(rows), "waited", elapsed.Round(time.Millisecond).String()}
 			if err != nil {
 				e.logger().Warn("outsystems_logs export stopped waiting for the OTel Collector", append(attrs, "error", err)...)
 			} else {
@@ -277,8 +309,52 @@ func (e *Executor) startExport(item collectormetadata.ScheduledProbe, key Waterm
 	return pending
 }
 
-// awaitExport waits for key's pending export, if any.  With wait false, or
-// while another export to the same endpoint is blocked, it only checks.  It returns nil when no
+// attemptFailed records a failed attempt of pending, which the OTLP client
+// retries, and logs it as a warning unless the attempt timed out waiting for
+// a busy Collector, at most every warnEvery.
+func (e *Executor) attemptFailed(key WatermarkKey, pending *export, attempt int, err error) {
+	s := &e.exports
+	now := time.Now()
+	s.mu.Lock()
+	pending.lastErr, pending.attempts = err, attempt
+	warn := !isTimeout(err) && now.Sub(pending.warned) >= warnEvery
+	if warn {
+		pending.warned = now
+	}
+	s.mu.Unlock()
+	if warn {
+		e.logger().Warn("outsystems_logs export failed; retrying until the OTel Collector accepts it",
+			"collector", key.Collector, "target", key.Target, "log_type", key.LogType, "endpoint", pending.endpoint, "attempt", attempt, "error", err)
+	}
+}
+
+// isTimeout reports whether err is, or wraps, a network timeout: an attempt
+// that waited for room in a busy Collector's queue.
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// waitBudget returns how long a call for item may wait for an export now:
+// what is left of half the poll interval in the target's current interval.
+// Without an interval it is unbounded.
+func (s *exportState) waitBudget(item collectormetadata.ScheduledProbe, now time.Time) time.Duration {
+	interval := time.Duration(item.Assignment.IntervalSeconds) * time.Second
+	if interval <= 0 {
+		return time.Duration(1<<63 - 1)
+	}
+	key := targetKey{item.CollectorID, item.Target.Name}
+	w := s.waits[key]
+	if w == nil || now.Sub(w.start) >= interval {
+		w = &waitWindow{start: now}
+		s.waits[key] = w
+	}
+	return max(interval/2-w.used, 0)
+}
+
+// awaitExport waits for key's pending export, if any.  With wait false, while
+// another export to the same endpoint is blocked, or once the target's calls
+// have waited half the poll interval, it only checks.  It returns nil when no
 // export is pending or the pending one was accepted, the export's error when
 // it failed, and an [collectors.ErrBlocked] error when it is still running,
 // which blocks the log type.
@@ -291,20 +367,31 @@ func (e *Executor) awaitExport(ctx context.Context, item collectormetadata.Sched
 		s.mu.Unlock()
 		return nil
 	}
+	var budget time.Duration
 	if wait {
+		budget = s.waitBudget(item, time.Now())
 		for other, p := range s.pending {
 			if other != key && p.blocked && p.endpoint == pending.endpoint {
-				wait = false
+				budget = 0
 				break
 			}
 		}
 	}
 	s.mu.Unlock()
-	if wait {
+	if budget > 0 {
+		started := time.Now()
+		timer := time.NewTimer(budget)
 		select {
 		case <-pending.done:
 		case <-ctx.Done():
+		case <-timer.C:
 		}
+		timer.Stop()
+		s.mu.Lock()
+		if w := s.waits[targetKey{item.CollectorID, item.Target.Name}]; w != nil {
+			w.used += time.Since(started)
+		}
+		s.mu.Unlock()
 	}
 	s.mu.Lock()
 	if isDone(pending) {
@@ -316,14 +403,20 @@ func (e *Executor) awaitExport(ctx context.Context, item collectormetadata.Sched
 	}
 	first := !pending.blocked
 	pending.blocked = true
+	lastErr, attempts := pending.lastErr, pending.attempts
 	s.mu.Unlock()
 	waited := time.Since(pending.started).Round(time.Second)
+	// Set on every call: a reload recreates the gauge at 0.
+	e.Metrics.setExportBlocked(item, true)
 	if first {
-		e.Metrics.setExportBlocked(item, true)
 		// Info, not a warning: a busy Collector is normal during a backlog,
 		// and the lag alert covers a long wait.
 		e.logger().Info("outsystems_logs export is waiting for the OTel Collector; this log type is paused until it is accepted",
 			"collector", key.Collector, "target", key.Target, "log_type", key.LogType, "rows", pending.rows, "endpoint", pending.endpoint)
+	}
+	if lastErr != nil {
+		return fmt.Errorf("log type %s: %d rows waiting for the OTel Collector at %s to accept them, for %s (%d attempts failed, the last: %v): %w",
+			key.LogType, pending.rows, pending.endpoint, waited, attempts, lastErr, collectors.ErrBlocked)
 	}
 	return fmt.Errorf("log type %s: %d rows waiting for the OTel Collector at %s to accept them, for %s: %w",
 		key.LogType, pending.rows, pending.endpoint, waited, collectors.ErrBlocked)

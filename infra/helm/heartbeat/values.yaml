@@ -575,9 +575,13 @@ otelCollector:
           sizer: requests
           queue_size: 1
           block_on_overflow: true
+          # The batcher only cuts requests at 4 MiB: with one request in
+          # the queue there is nothing to merge, and a min_size (8 KiB by
+          # default) would hold every small request for flush_timeout.
           batch:
             flush_timeout: 1s
             sizer: bytes
+            min_size: 0
             max_size: 4194304
         retry_on_failure:
           max_elapsed_time: 0s
