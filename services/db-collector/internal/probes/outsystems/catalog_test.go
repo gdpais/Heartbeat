@@ -119,3 +119,15 @@ func TestValidateRejectsUnknownLogTypes(t *testing.T) {
 		})
 	}
 }
+
+// Every built-in query passes the check every query_template override must
+// pass, so the two cannot drift apart.
+func TestQueriesAreOneReadOnlySelect(t *testing.T) {
+	catalog := DefaultCatalog()
+	for _, name := range catalog.Names() {
+		query, _ := catalog.Get(name)
+		if err := heartbeatconfig.ValidateReadOnlySelect(query.SQL); err != nil {
+			t.Errorf("%s.sql must be one read-only SELECT: it %v", name, err)
+		}
+	}
+}

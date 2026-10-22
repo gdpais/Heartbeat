@@ -162,7 +162,12 @@ The built-in probes, their source views and the metrics they emit are listed
 in the [metrics reference](../../docs/reference/metrics-and-endpoints.md#sql-server-probe-metrics).
 
 If a collector overrides `query_template` for a probe, the runtime uses that
-SQL instead of the catalog default.
+SQL instead of the catalog default. The configuration loader accepts only one
+read-only `SELECT` (`ValidateReadOnlySelect` in
+[`internal/config/query.go`](../../internal/config/query.go)), and the catalog
+tests run every built-in query through the same check; the
+[rules](../../docs/reference/configuration.md#collectors) say what it rejects
+and why the read-only login, not the check, is the control.
 
 `go run ./services/db-collector/cmd/probe-catalog` lists every probe's
 metrics, and `-sql <probe>` prints the batch the collector sends, session
@@ -173,7 +178,9 @@ runs it as the collector's login.
 
 `internal/collectors/runner.go` contains the row decoding path:
 
-- query rows are read into `map[string]any`
+- query rows are read into `map[string]any`, at most the probe's `max_rows`
+  (default 10000); a row past the limit fails the probe with
+  `ErrTooManyRows` without being scanned
 - `[]byte` values are normalized to strings
 - numeric values are converted with `toFloat64` and multiplied by the
   descriptor's `Scale`

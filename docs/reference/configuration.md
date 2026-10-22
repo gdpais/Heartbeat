@@ -97,8 +97,9 @@ collectors:
         - name: waits
         - name: blocking
           timeout_ms: 5000       # optional per-probe timeout override
+          max_rows: 1000         # optional; the most rows the probe may return, 1–100000; default 10000
         - name: storage
-          query_template: "…"    # optional SQL override of the catalog query
+          query_template: "…"    # optional SQL override of the catalog query: one read-only SELECT
       targets:
         - name: finance-prod     # required, unique within the collector; becomes the `target` label
           environment: prod      # optional; defaults to config.environment
@@ -125,13 +126,57 @@ larger value is rejected when the configuration is loaded or reloaded. A probe
 that has not stopped 2s after its timeout is abandoned and fails as a timeout.
 Every database read also gives up after 30s, the 25s maximum plus a margin for
 the cancel round trip, so the driver never cuts off a probe that is still
-within its timeout; only an already-dead connection reaches it. A
-`query_template` override runs with the same login and the same session
-settings, and must be a single `SELECT` query, not a procedure call; review it
-against the
+within its timeout; only an already-dead connection reaches it.
+
+A probe reads at most `max_rows` rows (default 10000, at most 100000). When
+its query returns more, the collector stops reading at the first row past the
+limit, cancels the query and fails the probe for that cycle, as for a query
+error: the error is logged (`returned more rows than max_rows`), the target is
+reported failed, and `heartbeat_collector_probe_errors_total{reason="error"}`
+grows ([metrics reference](metrics-and-endpoints.md#collector-self-observability)).
+The built-in probes return at most a few hundred rows; the limit stops an
+override, or a server with unusually many databases or files, from filling
+the collector's memory and the metric series. `max_rows` applies to `sqlserver`
+collectors only and is rejected on other kinds.
+
+A `query_template` override runs with the same login and the same session
+settings. It must be exactly one read-only `SELECT`, optionally led by `WITH`
+(CTEs); the configuration is rejected when it is loaded or reloaded
+otherwise, with an error that names the collector, target and probe and the
+reason, without quoting the query. Rejected:
+
+- more than one statement: anything after a `;` other than comments or more
+  `;`, or a second top-level `SELECT` that does not follow `UNION`, `EXCEPT`
+  or `INTERSECT` (T-SQL needs no `;` between statements);
+- a first word other than `SELECT` or `WITH`, so a bare procedure name too;
+- DML and DDL (`INSERT`, `UPDATE`, `DELETE`, `MERGE`, `TRUNCATE`, `CREATE`,
+  `ALTER`, `DROP`, `ADD`), permissions (`GRANT`, `DENY`, `REVOKE`), `EXEC` and
+  `EXECUTE`, `SELECT … INTO`, `OPENROWSET`, `OPENQUERY`, `OPENDATASOURCE`,
+  `WAITFOR`, `SHUTDOWN`, `DBCC`, `BACKUP`, `RESTORE`, `USE`, and the other
+  T-SQL statement keywords: `SET`, `DECLARE`, transactions (`BEGIN`,
+  `COMMIT`, `ROLLBACK`, `SAVE`), `KILL`, `RECONFIGURE` and the like (the full
+  list is in
+  [`query.go`](../../internal/config/query.go)). The query hints
+  `MERGE JOIN`, `MERGE UNION`, `USE HINT (…)` and `USE PLAN` are allowed;
+- a name starting with `sp_` or `xp_` (system and extended procedures), and an
+  `END` without a matching `CASE`;
+- unbalanced parentheses, an unterminated string, comment or quoted
+  identifier, or a control or Unicode line-separator character other than
+  tab, CR and LF.
+
+Keywords inside string literals (`'…'`, `N'…'`), comments (`--`, nested
+`/* */`) and quoted identifiers (`[…]`, `"…"`) are ignored, so a column named
+`[Backup]` is fine, while `t.Backup` is rejected (a reserved word must be
+quoted there too). A statement after a comment, or glued to a number as in
+`SELECT 1DROP …`, `SELECT 1.DROP …` or `SELECT 1eDROP …`, is still caught.
+The built-in probe and log-type queries pass the same check. It is a safety
+net, not the
+control: a text check cannot prove a query has no side effects. What keeps
+probes read-only is the collector's login, which holds only read grants
+([login permissions](../guides/database-targets.md#collector-login-permissions)).
+Review every override against the
 [probe review checklist](../architecture/database-observability.md#probe-review-checklist)
-and with the DBAs; see the
-[login permissions](../guides/database-targets.md#collector-login-permissions).
+and with the DBAs.
 
 #### `outsystems_logs` collectors
 
@@ -143,8 +188,10 @@ It uses the same document as `sqlserver`: `environment`, `credential_ref`,
 a log type, named after its query file in
 [`queries/`](../../services/db-collector/internal/probes/outsystems/queries/README.md)
 (`error.sql` is `error`). `query_template` replaces that query for one
-collector, under the same contract; `timeout_ms` works as for SQL Server
-probes. `scrape_interval` is the poll interval.
+collector, under the same contract, and must be one read-only `SELECT` as for
+SQL Server probes; `timeout_ms` works as for SQL Server probes. `max_rows`
+does not apply: `batch_limit` bounds every read. `scrape_interval` is the poll
+interval.
 
 ```yaml
 collectors:
@@ -189,7 +236,10 @@ Rules:
   compared case-insensitively) can be extracted by one enabled collector
   only; two would send every row twice.
 - `lag`, `batch_limit`, `initial_lookback`, `log_timezone` and `probes[].lag`
-  are rejected on other kinds.
+  are rejected on other kinds, and `probes[].max_rows` on this one.
+- A query reads at most `batch_limit` rows: the collector stops at the first
+  row past it and fails the cycle without sending anything, so a
+  `query_template` that ignores `@limit` cannot fill the collector's memory.
 - A batch stops reading once it holds about 8 MiB of row data, at the next
   row with a new `Instant`, and is then handled as a full batch: rows that
   share an `Instant` are never split. This bounds the collector's memory when
