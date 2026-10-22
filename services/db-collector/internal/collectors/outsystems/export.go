@@ -10,6 +10,7 @@ import (
 
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 
+	collectorconfig "heartbeat/internal/config"
 	"heartbeat/services/db-collector/internal/collectors"
 	"heartbeat/services/db-collector/internal/export/otlp"
 	collectormetadata "heartbeat/services/db-collector/internal/metadata"
@@ -45,9 +46,10 @@ import (
 //     warning, so a Collector that cannot be reached is not mistaken for a
 //     busy one.
 //   - Waiting is bounded so the target's other log types still run within
-//     the cycle: the calls of one target wait at most half the poll interval
-//     in all, and once an export to a Collector is blocked, calls stop
-//     waiting for theirs to the same Collector.
+//     the cycle: in each cycle, which the call of the target's first log
+//     type starts, its calls wait at most half the poll interval in all, and
+//     once an export to a Collector is blocked, calls stop waiting for
+//     theirs to the same Collector.
 //   - An export that ends with an error (a request the Collector rejected
 //     for good) fails the next call of its log type, which reads the batch
 //     again, as a failed export always has.
@@ -112,8 +114,11 @@ type exportState struct {
 	// collectors holds a context per collector for its exports.
 	collectors map[string]*collectorExports
 	// waits holds each target's time spent waiting for exports in the
-	// current poll interval.
+	// current cycle.
 	waits map[targetKey]*waitWindow
+	// firsts holds each target's first log type, whose call starts the
+	// target's cycle.
+	firsts map[targetKey]string
 }
 
 // targetKey is a target of a collector.
@@ -140,6 +145,7 @@ func (s *exportState) init() {
 		s.pending = map[WatermarkKey]*export{}
 		s.collectors = map[string]*collectorExports{}
 		s.waits = map[targetKey]*waitWindow{}
+		s.firsts = map[targetKey]string{}
 	})
 }
 
@@ -156,10 +162,18 @@ func (s *exportState) collectorContext(collectorID string) context.Context {
 }
 
 // adopt keeps collectorID's exports going: the collector started (again).
-func (s *exportState) adopt(collectorID string) {
+// It also records each target's first log type: the Runner calls a target's
+// log types in order, so a call of the first one starts the target's cycle.
+func (s *exportState) adopt(collector collectorconfig.CollectorRuntimeConfig) {
+	collectorID := collector.ID
 	s.init()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, target := range collector.Targets {
+		if len(target.Probes) > 0 {
+			s.firsts[targetKey{collectorID, target.Name}] = target.Probes[0].Name
+		}
+	}
 	if c := s.collectors[collectorID]; c != nil && c.orphaned != nil {
 		c.orphaned.Stop()
 		c.orphaned = nil
@@ -190,6 +204,11 @@ func (s *exportState) orphan(collectorID string, grace time.Duration) {
 		for key := range s.waits {
 			if key.collector == collectorID {
 				delete(s.waits, key)
+			}
+		}
+		for key := range s.firsts {
+			if key.collector == collectorID {
+				delete(s.firsts, key)
 			}
 		}
 		for key, p := range s.pending {
@@ -335,9 +354,23 @@ func isTimeout(err error) bool {
 	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
+// startCall notes a call for item: a call of the target's first log type
+// starts a new cycle, with the whole wait budget.
+func (s *exportState) startCall(item collectormetadata.ScheduledProbe, now time.Time) {
+	s.init()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := targetKey{item.CollectorID, item.Target.Name}
+	if first, ok := s.firsts[key]; ok && first == item.Definition.Name {
+		s.waits[key] = &waitWindow{start: now}
+	}
+}
+
 // waitBudget returns how long a call for item may wait for an export now:
-// what is left of half the poll interval in the target's current interval.
-// Without an interval it is unbounded.
+// what is left of half the poll interval in the target's current cycle.
+// The cycle starts with the call of its first log type (startCall); for a
+// collector the executor was not told about, an interval after the last
+// cycle started.  Without an interval it is unbounded.  s.mu must be held.
 func (s *exportState) waitBudget(item collectormetadata.ScheduledProbe, now time.Time) time.Duration {
 	interval := time.Duration(item.Assignment.IntervalSeconds) * time.Second
 	if interval <= 0 {
@@ -345,7 +378,7 @@ func (s *exportState) waitBudget(item collectormetadata.ScheduledProbe, now time
 	}
 	key := targetKey{item.CollectorID, item.Target.Name}
 	w := s.waits[key]
-	if w == nil || now.Sub(w.start) >= interval {
+	if _, known := s.firsts[key]; w == nil || (!known && now.Sub(w.start) >= interval) {
 		w = &waitWindow{start: now}
 		s.waits[key] = w
 	}
@@ -404,10 +437,11 @@ func (e *Executor) awaitExport(ctx context.Context, item collectormetadata.Sched
 	first := !pending.blocked
 	pending.blocked = true
 	lastErr, attempts := pending.lastErr, pending.attempts
+	// Set on every call, since a reload recreates the gauge at 0, and under
+	// the lock, so the export ending sets 0 after it.
+	e.Metrics.setExportBlocked(item, true)
 	s.mu.Unlock()
 	waited := time.Since(pending.started).Round(time.Second)
-	// Set on every call: a reload recreates the gauge at 0.
-	e.Metrics.setExportBlocked(item, true)
 	if first {
 		// Info, not a warning: a busy Collector is normal during a backlog,
 		// and the lag alert covers a long wait.

@@ -265,9 +265,9 @@ Rules:
   ([metrics](metrics-and-endpoints.md#outsystems-log-extraction)). At most
   64 MiB of row data is held in such batches across all log types; near
   that, a batch reads only what is left, and with less than 1 MiB left the
-  other log types wait too. The calls of one target wait for the Collector
-  at most half the poll interval in all, so its other log types still run
-  in the cycle. The error in `GET /admin/config` names the last failed
+  other log types wait too. In each cycle the calls of one target wait for
+  the Collector at most half the poll interval in all, so its other log
+  types still run. The error in `GET /admin/config` names the last failed
   attempt, and an attempt that failed for another reason than waiting (a
   wrong `opentelemetry.endpoint`, a 5xx) is also logged as a warning.
   Removing a collector leaves its files; a collector re-added with the same

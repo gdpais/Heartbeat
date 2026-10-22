@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 
 	collectorconfig "heartbeat/internal/config"
@@ -314,6 +315,9 @@ func TestHeldBatchesBlockOtherReads(t *testing.T) {
 	if len(x.source.params) != 1 {
 		t.Fatalf("%d queries, want none past the budget", len(x.source.params))
 	}
+	if got := testutil.ToFloat64(x.metrics.exportBlocked.WithLabelValues("oslogs", "prod", "logging-db", "general")); got != 1 {
+		t.Fatalf("export blocked = %v for the log type waiting for the budget, want 1", got)
+	}
 	g.release()
 	x.settle()
 	if held := x.executor.exports.heldBytes(); held != 0 {
@@ -324,6 +328,9 @@ func TestHeldBatchesBlockOtherReads(t *testing.T) {
 	}
 	if got := x.source.params[1].MaxBytes; got != 2*minBatchBytes {
 		t.Fatalf("second read allowed %d bytes, want the whole budget back", got)
+	}
+	if got := testutil.ToFloat64(x.metrics.exportBlocked.WithLabelValues("oslogs", "prod", "logging-db", "general")); got != 0 {
+		t.Fatalf("export blocked = %v once the log type reads again, want 0", got)
 	}
 }
 
@@ -440,6 +447,40 @@ func TestATargetWaitsAtMostHalfTheInterval(t *testing.T) {
 	err := x.runForItem(general, 5*time.Second)
 	if elapsed := time.Since(started); !errors.Is(err, collectors.ErrBlocked) || elapsed > 600*time.Millisecond {
 		t.Fatalf("second log type: %v after %s; want ErrBlocked once the target's 1 s budget is spent", err, elapsed)
+	}
+	x.settle()
+}
+
+// The wait budget belongs to the target's cycle, which the call of its first
+// log type starts, not to a window that drifts across cycles: a cycle never
+// gets the rest of an earlier window on top of its own.
+func TestTheWaitBudgetFollowsTheCycle(t *testing.T) {
+	x := newExtraction(t, t.TempDir(), 100)
+	x.executor.Exporter = &delayedExporter{delay: 700 * time.Millisecond}
+	x.item.Assignment.IntervalSeconds = 2
+	x.executor.InitCollector(collectorconfig.CollectorRuntimeConfig{
+		ID: "oslogs", Kind: collectorconfig.KindOutSystemsLogs, Enabled: true,
+		Targets: []collectorconfig.TargetRuntimeConfig{{Name: "logging-db", EnvironmentSlug: "prod",
+			Probes: []collectorconfig.ProbeRuntimeConfig{{Name: "error"}, {Name: "general"}}}},
+	})
+	general := x.item
+	general.Definition.Name = "general"
+	// An earlier cycle: general waits a little, early in a window.
+	x.source.insert("a", at(time.Minute))
+	if err := x.runForItem(general, 5*time.Second); err != nil {
+		t.Fatalf("earlier cycle: %v", err)
+	}
+	time.Sleep(800 * time.Millisecond)
+	// This cycle: error spends most of the budget; general gets the rest.
+	x.now = x.now.Add(time.Minute)
+	x.source.insert("b", at(9*time.Minute+30*time.Second))
+	if err := x.runFor(5 * time.Second); err != nil {
+		t.Fatalf("error log type: %v", err)
+	}
+	started := time.Now()
+	err := x.runForItem(general, 5*time.Second)
+	if elapsed := time.Since(started); !errors.Is(err, collectors.ErrBlocked) || elapsed > 600*time.Millisecond {
+		t.Fatalf("general: %v after %s; want ErrBlocked within what is left of this cycle's 1 s", err, elapsed)
 	}
 	x.settle()
 }

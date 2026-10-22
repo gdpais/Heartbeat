@@ -151,6 +151,7 @@ func (e *Executor) RunProbe(ctx context.Context, item collectormetadata.Schedule
 		return nil, nil, err
 	}
 	key := WatermarkKey{Collector: item.CollectorID, Target: item.Target.Name, LogType: logType}
+	e.exports.startCall(item, time.Now())
 	// An export left by an earlier call is only checked: it already waited
 	// for a whole call, so the Collector is busy, and the target's other log
 	// types must still get their turn in this cycle.
@@ -208,9 +209,12 @@ func (e *Executor) extractBatch(ctx context.Context, item collectormetadata.Sche
 	}
 	granted := e.exports.reserve(e.maxBatchBytes(), e.maxHeldBytes())
 	if granted == 0 {
+		e.Metrics.setExportBlocked(item, true)
 		return false, fmt.Errorf("log type %s: waiting for the OTel Collector to accept the batches of other log types, which hold %d MiB of the %d MiB allowed: %w",
 			item.Definition.Name, e.exports.heldBytes()>>20, e.maxHeldBytes()>>20, collectors.ErrBlocked)
 	}
+	// Not waiting, for the budget or an export (none is pending here).
+	e.Metrics.setExportBlocked(item, false)
 	batch, err := e.Source.Query(ctx, item.Target, query, QueryParams{
 		From: watermark.Instant, To: to, Limit: settings.BatchLimit, MaxBytes: granted,
 		DateTime: watermark.InstantType == "DATETIME",
@@ -327,7 +331,7 @@ func checkContract(batch Batch, from, to time.Time, limit int) ([]time.Time, str
 // collector's counters at 0, and keeps the exports of a collector that was
 // stopped less than a minute ago going.
 func (e *Executor) InitCollector(collector collectorconfig.CollectorRuntimeConfig) {
-	e.exports.adopt(collector.ID)
+	e.exports.adopt(collector)
 	e.Metrics.initCollector(collector)
 }
 
