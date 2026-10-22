@@ -528,3 +528,89 @@ func TestListingAndRefusals(t *testing.T) {
 		t.Errorf("start without Loki: %d %s, want 422", w.Code, w.Body)
 	}
 }
+
+// windowLedger answers every log type with rows, and records the windows a
+// delivery check asked it for.
+type windowLedger struct {
+	mu    sync.Mutex
+	rows  int64
+	asked [][2]time.Time
+}
+
+func (l *windowLedger) Count(_ context.Context, _ string, from, to time.Time, _ time.Duration) (int64, int64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.asked = append(l.asked, [2]time.Time{from, to})
+	return l.rows, 0, nil
+}
+
+// A delivery check counts the rows of its steps as they actually ran: from
+// the start of its from_step to the end of its to_step, once its window has
+// opened, and the journal records that window and each log type's counts.
+func TestDeliveryCheckCountsTheRowsOfItsSteps(t *testing.T) {
+	loki := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[0,"7"]}]}}`)
+	}))
+	defer loki.Close()
+	reg := scenario.NewRegistry()
+	inject.Register(reg, &inject.Injector{}, map[string][]string{"PatientZero_Web": {"OrderList"}})
+	file := fmt.Sprintf(scenarioTemplate, "deliver", "60ms", "latency", "{delay: 1ms}", `
+  - name: every-row
+    delivery: {log_types: [screen, general]}
+    step: hurt
+    from: end
+    within: 300ms
+`)
+	s, err := scenario.Parse([]byte(file), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := &windowLedger{rows: 7}
+	cfg := Config{
+		Scenarios: []*scenario.Scenario{s}, Registry: reg, Scopes: []scenario.Scope{scenario.ScopeInProcess},
+		Sources:    signal.Sources{Loki: loki.URL},
+		JournalDir: t.TempDir(), PollInterval: 10 * time.Millisecond, SummaryInterval: 40 * time.Millisecond,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	if r := New(context.Background(), cfg); r.Scenarios()[0].Runnable {
+		t.Fatal("a delivery check without a ledger must make the scenario not runnable")
+	}
+	cfg.Sources.Ledger, cfg.Sources.Application = ledger, "PatientZero"
+	r := New(context.Background(), cfg)
+	started := time.Now()
+	st, err := r.Start("deliver")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if got, _ := r.Status(); got.State != StatePassed {
+		t.Fatalf("run %s: %+v", got.State, got.Checks)
+	}
+	ledger.mu.Lock()
+	window := ledger.asked[0]
+	ledger.mu.Unlock()
+	if window[0].Before(started.Add(-time.Second)) || window[1].Sub(window[0]) < 90*time.Millisecond {
+		t.Errorf("rows' window %v, want from the run's start to the end of hurt, at least 90ms", window)
+	}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/admin/runs/"+st.Run+"/journal", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.Handler(token).ServeHTTP(w, req)
+	var check map[string]any
+	for _, l := range strings.Split(strings.TrimSpace(w.Body.String()), "\n") {
+		var jl journal.Line
+		if err := json.Unmarshal([]byte(l), &jl); err != nil {
+			t.Fatal(err)
+		}
+		if jl.Event == journal.Check {
+			_ = json.Unmarshal(jl.Data, &check)
+		}
+	}
+	delivery, _ := check["delivery"].([]any)
+	if check["kind"] != "delivery" || check["rows_from"] == nil || check["rows_to"] == nil || len(delivery) != 2 {
+		t.Fatalf("check line %v, want the delivery's window and two log types", check)
+	}
+	if first := delivery[0].(map[string]any); first["log_type"] != "screen" || first["loki"] != 7.0 || first["expected"] != 7.0 {
+		t.Errorf("screen count %v", first)
+	}
+}

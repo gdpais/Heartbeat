@@ -188,6 +188,9 @@ func (r *Runner) runnable(s *scenario.Scenario) error {
 		if r.cfg.Sources.URLFor(sig.Kind()) == "" {
 			return fmt.Errorf("signal %q needs a %s URL, and none is configured", sig.Name, sig.Kind())
 		}
+		if sig.Kind() == scenario.KindDelivery && (r.cfg.Sources.Ledger == nil || r.cfg.Sources.Application == "") {
+			return fmt.Errorf("signal %q is a delivery check, which needs the ledger of committed rows", sig.Name)
+		}
 	}
 	return nil
 }

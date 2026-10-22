@@ -117,7 +117,7 @@ func TestParseRejects(t *testing.T) {
 		{"bad duration", "duration: 30s", "duration: soon", "not a duration"},
 		{"zero duration", "duration: 30s", "duration: 0s", "duration must be more than 0"},
 		{"duplicate step", "name: warm", "name: hurt", "step name \"hurt\" is used twice"},
-		{"two sources", "promql: sum(up)", "promql: sum(up)\n    logql: '{a=\"b\"}'", "exactly one of promql, logql or alert"},
+		{"two sources", "promql: sum(up)", "promql: sum(up)\n    logql: '{a=\"b\"}'", "exactly one of promql, logql, alert or delivery"},
 		{"no condition", "    condition: \"> 0\"\n    within: 3m", "    within: 3m", "condition \"\" must be"},
 		{"bad condition", `condition: "> 0"`, `condition: "about 3"`, "condition \"about 3\""},
 		{"alert without state", "    state: firing\n", "", "needs state firing or resolved"},
@@ -213,4 +213,72 @@ func TestRegistry(t *testing.T) {
 		}
 	}()
 	reg.Register(FaultType{Name: "slow", Scope: ScopeInProcess, New: func(map[string]any) (Fault, error) { return nopFault{}, nil }})
+}
+
+const withDelivery = `
+version: 1
+name: demo
+description: A demo.
+steps:
+  - name: warm
+    duration: 30s
+  - name: hurt
+    duration: 2m
+    fault:
+      type: slow
+      params: {delay: 1s}
+  - name: calm
+    duration: 1m
+signals:
+  - name: every-row
+    delivery:
+      log_types: [screen, general]
+    step: calm
+    from: end
+    within: 3m
+  - name: late-rows-lost
+    delivery:
+      log_types: [error]
+      from_step: hurt
+      to_step: hurt
+      lost_after: 30s
+    step: calm
+    within: 3m
+`
+
+func TestParseDelivery(t *testing.T) {
+	s, err := Parse([]byte(withDelivery), testRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	every, late := s.Signals[0], s.Signals[1]
+	if every.Kind() != KindDelivery || every.Delivery.FromStep != "warm" || every.Delivery.ToStep != "calm" || every.Delivery.LostAfter != 0 {
+		t.Errorf("defaults: %+v, want the rows of every step and none lost", every.Delivery)
+	}
+	if late.Delivery.LostAfter.D() != 30*time.Second || !strings.Contains(late.Query(), "but those committed more than 30s late") {
+		t.Errorf("lost_after: %+v, query %q", late.Delivery, late.Query())
+	}
+}
+
+func TestParseRejectsBadDelivery(t *testing.T) {
+	for _, c := range []struct{ name, from, to, want string }{
+		{"no log types", "log_types: [screen, general]", "log_types: []", "delivery needs log_types"},
+		{"unknown log type", "log_types: [screen, general]", "log_types: [screen, audit]", "log type \"audit\" is not one of"},
+		{"twice", "log_types: [screen, general]", "log_types: [screen, screen]", "listed twice"},
+		{"unknown step", "from_step: hurt", "from_step: cold", "from_step \"cold\" is not a step"},
+		{"out of order", "from_step: hurt\n      to_step: hurt", "from_step: calm\n      to_step: hurt", "comes after to_step"},
+		{"window too early", "    step: calm\n    from: end", "    step: hurt\n    from: end", "opens at or after the end of its to_step \"calm\""},
+		{"with a condition", "    step: calm\n    within: 3m", "    step: calm\n    condition: \"> 0\"\n    within: 3m", "no condition, state or labels"},
+		{"with a query", "      lost_after: 30s\n", "      lost_after: 30s\n    promql: sum(up)\n", "exactly one of promql, logql, alert or delivery"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if !strings.Contains(withDelivery, c.from) {
+				t.Fatalf("test case: %q not in the scenario", c.from)
+			}
+			_, err := Parse([]byte(strings.Replace(withDelivery, c.from, c.to, 1)), testRegistry())
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("error = %v, want one containing %q", err, c.want)
+			}
+		})
+	}
 }
