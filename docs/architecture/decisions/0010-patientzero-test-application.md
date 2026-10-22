@@ -2,7 +2,9 @@
 
 - Status: Accepted; first slice being built (service, databases, three entry
   points, k6 load). Updated 2026-10-19: the survey ran and the replica is gone
-  (see Context); its DDL and aggregates are what PatientZero uses.
+  (see Context); its DDL and aggregates are what PatientZero uses. Updated
+  2026-10-23: the `bad-deploy` and `slow-sql` rows below describe those
+  scenarios as built.
 - Date: 2026-10-18
 
 ## Context
@@ -59,9 +61,9 @@ First scenarios:
 | Scenario | Injects | Must show |
 | --- | --- | --- |
 | `blocking` | A long transaction holding locks other requests need; a deadlock variant | Blocked requests, lock waits; slower screens and timeout errors for the same requests |
-| `bad-deploy` | A new exception type in one module | `heartbeat_outsystems_error_fingerprints_new_total`, the module's error rate and its alert |
+| `bad-deploy` | A broken publish of one module: its requests fail with a new exception until the previous version is published again | The module's error rate, the exception in Loki, and the error-budget burn-rate alerts in Alertmanager |
 | `slow-partner` | Latency and errors from the consumed REST partner | `heartbeat_outsystems_integration_duration_seconds`, slower parent screens |
-| `slow-sql` | A slow query and a slow extension call | `heartbeat_outsystems_slow_events_total` from `SLOWSQL` and extension rows |
+| `slow-sql` | A slow query: the business statement runs longer in SQL Server (a slow extension call comes with extensions, phase 7) | Running sessions on SQL Server, `heartbeat_outsystems_slow_events_total` from `SLOWSQL` rows, and the latency-budget burn-rate alerts in Alertmanager |
 | `timer-backlog` | Timers that start late against their schedule | `heartbeat_outsystems_timer_delay_seconds` |
 | `bad-front-end` | Errors and latency on one simulated front-end server | Skew in `heartbeat_outsystems_front_end_operations_total` |
 | `log-growth` | Fast growth of `patientzero_log` | The SQL Server storage probes on the logging database |

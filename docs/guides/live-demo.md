@@ -376,6 +376,26 @@ Errors* dashboard meanwhile. The run's journal, what PatientZero injected
 and served every 15 seconds, is in `.tmp/patientzero-scenarios/`
 ([format](../../tools/patientzero/scenarios/README.md#run-journal)).
 
+Two longer scenarios page in Alertmanager, through the chart's SLO
+burn-rate alerts as shipped:
+
+```bash
+make patientzero-scenario NAME=bad-deploy   # about 19 minutes
+make patientzero-scenario NAME=slow-sql     # about 22 minutes
+```
+
+`bad-deploy` publishes a broken version of the checkout module, and every
+`PlaceOrder` fails with a new exception until it is rolled back:
+`OutSystemsErrorBudgetBurnFast` fires within about 5 minutes and resolves
+after the rollback, and `OutSystemsErrorBudgetBurnSlow` fires later. In
+`slow-sql` the order list's query runs about 3 s longer in SQL Server: slow
+SQL in the *OutSystems Overview* dashboard, more running sessions in *SQL
+Server Overview*, and the latency alerts. Open Alertmanager on
+<http://localhost:9093> meanwhile. Each waits for a slow burn that resolves
+only about 40 minutes after its fault started, so give a second run of the
+same scenario that long
+([SLO scenarios](../../tools/patientzero/scenarios/README.md#slo-scenarios)).
+
 ## 6. Alert delivery
 
 Alertmanager routes Watchdog to `deadmans-switch` and every other alert to
