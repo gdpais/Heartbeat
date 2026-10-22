@@ -171,10 +171,10 @@ make kind-e2e
 
 This creates a second, temporary cluster (`heartbeat-e2e-<id>`) with its own
 SQL Server, runs every check above and more (invalid config, rollouts,
-persistence after pod replacement, an OTel Collector restart during a log
-backlog), prints measurements, and deletes what it created. Your `heartbeat`
-cluster is untouched. It takes about 10 minutes and ends with
-`All kind e2e checks passed`. CI runs the same script on every pull request.
+persistence after pod replacement, an OTel Collector restart during two log
+backlogs of 45 minutes and three hours), prints measurements, and deletes
+what it created. Your `heartbeat` cluster is untouched. It takes about 10
+minutes and ends with `All kind e2e checks passed`. CI runs the same script on every pull request.
 
 ## 10. Clean up
 

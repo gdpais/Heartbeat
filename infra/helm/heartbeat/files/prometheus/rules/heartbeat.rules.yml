@@ -145,7 +145,7 @@ groups:
           severity: warning
         annotations:
           summary: "OutSystems {{ $labels.log_type }} logs of {{ $labels.environment }}/{{ $labels.target }} are {{ $value | humanizeDuration }} behind"
-          description: "The {{ $labels.collector }} collector has not extracted {{ $labels.log_type }} rows for more than 30 minutes. Logs, derived metrics and the OutSystems SLO alerts for this target are stale. Check the collector's probe errors and OTLP export failures."
+          description: "The {{ $labels.collector }} collector has not extracted {{ $labels.log_type }} rows for more than 30 minutes. Logs, derived metrics and the OutSystems SLO alerts for this target are stale. Check the collector's probe errors and OTLP export failures, and heartbeat_outsystems_export_blocked: at 1 the OTel Collector holds the rows back, usually because Loki is down or slow."
 
   - name: heartbeat-alerts
     rules:
@@ -169,14 +169,16 @@ groups:
           description: "Prometheus has not scraped {{ $labels.job }} successfully for at least 2 minutes."
       # A row Loki discards is lost: the db-collector has already moved its
       # watermark past it. The OTel Collector retries a rate-limited push, so
-      # that reason is left out.
+      # that reason is left out. too_far_behind comes from batches sent out
+      # of order: several export consumers, or a queue of more than one
+      # request across a Collector restart (values.yaml, otlp_http/logs).
       - alert: LokiDiscardingLogs
         expr: sum by (reason) (increase(loki_discarded_samples_total{reason!="rate_limited"}[10m])) > 0
         labels:
           severity: warning
         annotations:
           summary: "Loki is discarding log rows ({{ $labels.reason }})"
-          description: "Loki discarded log rows in the last 10 minutes for {{ $labels.reason }}; they are not in Loki and will not be sent again. too_far_behind means rows arrived more than an hour behind their stream: check that the OTel Collector's logs exporter keeps one consumer, and whether the Collector restarted during a backlog of more than an hour."
+          description: "Loki discarded log rows in the last 10 minutes for {{ $labels.reason }}; they are not in Loki and will not be sent again. too_far_behind means rows arrived more than an hour behind their stream: check that the OTel Collector's logs exporter keeps one consumer and a queue of one request, which keep its batches in order, across restarts too."
       # The collector should never log in with more than VIEW SERVER STATE and
       # VIEW ANY DEFINITION. The flag is rechecked about every 10 minutes, so
       # 15m keeps a single stale check from firing it.
