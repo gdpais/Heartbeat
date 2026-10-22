@@ -45,6 +45,18 @@ is still pending.
 | Alertmanager | `:9093` | `default` and `deadmans-switch` receivers with no integrations on kind ([ADR 0009](decisions/0009-remove-the-otel-gateway.md)); the always-firing `Watchdog` alert routes to `deadmans-switch`. The production example adds chat receivers and healthchecks.io. |
 | Loki / Grafana | `:3100` / `:3000` | Grafana provisioned with Prometheus (default) and Loki data sources. |
 
+Inside the cluster each component accepts connections only from the components
+that use it, on these ports, through ingress NetworkPolicies: the DB collector
+from Prometheus (`:8082`); the OTel Collector from the DB collector (`:4318`)
+and Prometheus (`:8889`); Prometheus from Grafana (`:9090`); Alertmanager from
+Prometheus (`:9093`); Loki from the OTel Collector, Grafana and Prometheus
+(`:3100`). Grafana is open to whatever serves its UI and relies on its login.
+Kubelet probes and `kubectl port-forward` are not filtered. Loki holds raw user
+and session IDs and client IPs, so this is part of their protection
+([ADR 0012](decisions/0012-personal-data-in-telemetry.md)); the full table and
+the values are in the
+[chart guide](../guides/kubernetes-local.md#network-access).
+
 PostgreSQL and Redis are not deployed until a service uses them
 ([ADR 0003](decisions/0003-helm-on-kind-and-production.md)); integration tests
 use a disposable PostgreSQL fixture. How they will be deployed is

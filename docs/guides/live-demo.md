@@ -377,7 +377,7 @@ These checks come back empty or trivial today, and that is expected:
 
 | Check | Result | Planned in |
 | --- | --- | --- |
-| `hb_k run lokiq --rm -i --restart=Never --image=busybox:1.36 -- wget -qO- http://loki:3100/loki/api/v1/labels` | `{"status":"success"}` with no labels: nothing writes to Loki | Phase 2 |
+| `hb_k get --raw /api/v1/namespaces/heartbeat/services/loki:3100/proxy/loki/api/v1/labels` (a pod of your own would time out: Loki admits only its clients) | `{"status":"success"}` with no labels: nothing writes to Loki | Phase 2 |
 | Evidence from `blocking` and `sessions` | discarded by the default sink | Phase 7 (TODO §12.4) |
 | PostgreSQL | not deployed; the schema exists only in migrations (`make test-integration`) | Phase 3 |
 | Probe assignments from the API | config comes only from YAML | Phase 3 (TODO §2.5) |

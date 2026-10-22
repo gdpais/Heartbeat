@@ -175,6 +175,46 @@ prometheusRules:
 grafanaDashboards:
   enabled: true
 
+# Ingress NetworkPolicies for the bundled engines [9.6], one per engine that
+# is on: otel-collector, prometheus, alertmanager and loki. Only the
+# components that use an engine may connect, on the ports they use; every
+# other pod, in this namespace or another, is dropped:
+#   otel-collector  4318 (OTLP/HTTP) from the db-collector; 8889 (its
+#                   Prometheus exporter) from Prometheus
+#   prometheus      9090 from Grafana (datasource)
+#   alertmanager    9093 from Prometheus (alerts and its scrape)
+#   loki            3100 from the OTel Collector (OTLP), Grafana (datasource)
+#                   and Prometheus (its scrape); gRPC 9095 and memberlist 7946
+#                   from Loki itself
+# A component that is off, or a scrape job that is disabled, is not admitted.
+# Grafana gets no policy: whatever serves its UI (an ingress, a load
+# balancer, the operator) must reach it, and its login is the access control
+# (ADR 0012). Kubelet probes and `kubectl port-forward` are not subject to
+# NetworkPolicy; port-forward is how operators reach Loki and the others
+# directly. Like dbCollector.networkPolicy, it needs a CNI that enforces
+# NetworkPolicy.
+backendNetworkPolicies:
+  enabled: true
+  # extraPeers: more NetworkPolicyPeer objects (podSelector,
+  # namespaceSelector, ipBlock) admitted to the engine's ports, such as a
+  # shared Grafana or Prometheus, or operator ranges. For a peer in another
+  # namespace, put the namespaceSelector and the podSelector in one peer (two
+  # peers would admit the whole namespace, or matching pods in this one).
+  # Peers that are only an empty selector are rejected.
+  otelCollector:
+    # Admitted to 4317 and 4318 (OTLP gRPC and HTTP), and 8889 when the
+    # prom-exporter port is on.
+    extraPeers: []
+  prometheus:
+    # Admitted to 9090.
+    extraPeers: []
+  alertmanager:
+    # Admitted to 9093.
+    extraPeers: []
+  loki:
+    # Admitted to 3100 (push, query and metrics).
+    extraPeers: []
+
 # ---------------------------------------------------------------------------
 # Third-party engines (pinned dependencies, see Chart.yaml)
 # ---------------------------------------------------------------------------
