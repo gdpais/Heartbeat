@@ -286,6 +286,67 @@ install_chart() {
 		--wait --timeout 5m
 }
 
+# kind.yaml's backendNetworkPolicies, which network_peers repeats: the
+# operator range on the OTel Collector, Prometheus and Alertmanager.
+KIND_VALUES=infra/helm/values/kind.yaml
+KIND_PEERS='  otelCollector:
+    extraPeers:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except:
+            - 10.244.0.0/16
+  prometheus:
+    extraPeers:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except:
+            - 10.244.0.0/16
+  alertmanager:
+    extraPeers:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except:
+            - 10.244.0.0/16'
+
+# PatientZero's scenario runner reads Prometheus, Loki and Alertmanager, whose
+# NetworkPolicies admit only Heartbeat's own components and extraPeers. This
+# admits the PatientZero pod to the three. A values file replaces a list, so
+# kind.yaml's peers are repeated, and a change to them stops here.
+network_peers() {
+	current=$(awk '/^backendNetworkPolicies:$/ { on = 1; next }
+		on && /^[^ #]/ { exit }
+		on && NF && $0 !~ /^[[:space:]]*#/' "$KIND_VALUES")
+	[ "$current" = "$KIND_PEERS" ] ||
+		die "$KIND_VALUES no longer has the backendNetworkPolicies peers network_peers repeats; update KIND_PEERS in $0"
+	cat <<EOF
+# PatientZero's scenario signals (tools/patientzero/scripts/patientzero.sh).
+backendNetworkPolicies:
+  prometheus:
+    extraPeers:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except:
+            - 10.244.0.0/16
+      - &patientzero
+        namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: $NAMESPACE
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: patientzero
+  alertmanager:
+    extraPeers:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except:
+            - 10.244.0.0/16
+      - *patientzero
+  loki:
+    extraPeers:
+      - *patientzero
+EOF
+}
+
 # The Heartbeat values that add PatientZero's collectors: the one reading
 # patientzero_log while PatientZero is installed, and the one reading
 # patientzero_scale after make patientzero-scale-collect. With neither, there
@@ -293,6 +354,7 @@ install_chart() {
 # this copies the sandbox's values file, whose last entry is
 # integrations.collectors, and appends to that list. The sandbox target's host
 # is SQLSERVER_CONTAINER, so a throwaway cluster reads its own container.
+# While PatientZero is installed, network_peers follows.
 heartbeat_values() {
 	with_patientzero=
 	if helm status "$RELEASE" --kube-context "$CONTEXT" --namespace "$NAMESPACE" >/dev/null 2>&1; then
@@ -316,6 +378,7 @@ heartbeat_values() {
 		[ -z "$with_patientzero" ] || log_collector patientzero local-dev "" patientzero-log "$LOG_DATABASE"
 		[ -z "$scale_label" ] ||
 			log_collector patientzero-scale "$scale_label" "$scale_lookback" "$scale_label" "$SCALE_DATABASE"
+		[ -z "$with_patientzero" ] || network_peers
 	} >"$HEARTBEAT_VALUES"
 }
 
