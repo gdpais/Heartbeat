@@ -501,6 +501,7 @@ func TestChartProfiles(t *testing.T) {
 
 			checkIntegrations(t, objects)
 			checkCollectorSingleton(t, objects)
+			checkStatefulSetPolicies(t, objects)
 			checkCollectorGoMemLimit(t, objects, profile.goMemLimit)
 			checkInClusterEndpoints(t, objects)
 			checkCollectorNetworkPolicy(t, objects, profile.collectorPeers)
@@ -557,6 +558,36 @@ func checkCollectorSingleton(t *testing.T, objects map[string]object) {
 	}
 	if image := spec.Template.Spec.Containers[0].Image; strings.HasSuffix(image, ":") {
 		t.Errorf("db-collector image %q has no tag", image)
+	}
+}
+
+// The one-replica StatefulSets must use the Parallel pod management policy.
+// With OrderedReady the controller never replaces a pod that did not become
+// Ready (kubernetes/kubernetes#67250): after a bad image or config, the
+// corrected upgrade waits for the broken pod forever and needs a manual pod
+// delete. Alertmanager's chart has no setting for it and keeps OrderedReady.
+func checkStatefulSetPolicies(t *testing.T, objects map[string]object) {
+	t.Helper()
+	for _, name := range []string{"db-collector", "otel-collector", "loki"} {
+		sts, ok := objects["StatefulSet/"+name]
+		if !ok {
+			continue
+		}
+		var spec struct {
+			PodManagementPolicy string `yaml:"podManagementPolicy"`
+			UpdateStrategy      struct {
+				Type string `yaml:"type"`
+			} `yaml:"updateStrategy"`
+		}
+		if err := sts.Spec.Decode(&spec); err != nil {
+			t.Fatal(err)
+		}
+		if spec.PodManagementPolicy != "Parallel" {
+			t.Errorf("StatefulSet/%s podManagementPolicy = %q, want Parallel", name, spec.PodManagementPolicy)
+		}
+		if spec.UpdateStrategy.Type != "" && spec.UpdateStrategy.Type != "RollingUpdate" {
+			t.Errorf("StatefulSet/%s updateStrategy = %q, want RollingUpdate", name, spec.UpdateStrategy.Type)
+		}
 	}
 }
 

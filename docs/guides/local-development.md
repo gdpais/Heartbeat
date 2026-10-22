@@ -166,7 +166,10 @@ change hot-reloads without a restart; an invalid one is rejected while
 collection continues; a SQL Server outage shows as a failed target without
 restarting the collector; a collector update never runs two
 collectors (it prints the rollout time, collection gap and SQL Server session
-count); and Prometheus data and Alertmanager silences survive pod replacement.
+count); a deploy replaces a collector pod that never became Ready, and moves a
+StatefulSet created with `OrderedReady` to `Parallel` without restarting a pod
+whose template it does not change; and Prometheus data and Alertmanager
+silences survive pod replacement.
 It takes about 10 minutes.
 
 ### How integration tests stay isolated
@@ -232,5 +235,6 @@ change. See the [configuration reference](../reference/configuration.md).
 | Image pulls fail with `429 Too Many Requests` | Docker Hub's anonymous rate limit. `docker login`, wait, and rerun |
 | SQL Server never becomes healthy on Apple silicon | Rosetta emulation is off in Docker Desktop, or Docker has too little memory |
 | `make sqlserver-dev-up` says the credential must be a dedicated login, not `sa` | `.env.sqlserver-dev` predates the least-privilege login. Run `make sqlserver-dev-init` (it adds the login and keeps the SA password), then `make sqlserver-dev-up` again |
-| `helm upgrade` fails with `resource StatefulSet/heartbeat/db-collector not ready ... 1 pods have failed` | The collector is crash-looping; `kubectl --context kind-heartbeat -n heartbeat logs db-collector-0` says why. A StatefulSet does not replace a pod that never became Ready ([kubernetes/kubernetes#67250](https://github.com/kubernetes/kubernetes/issues/67250)), so a pod stuck on an older image would block the new one. The deploy handles that case itself: it prints `db-collector-0 is not Ready on revision ...; replacing it`, deletes the pod once and deploys again. If the error remains, the crash is in the image or config just deployed: fix it and rerun `make kind-deploy` |
+| `helm upgrade` fails with `resource StatefulSet/heartbeat/db-collector not ready ... 1 pods have failed` | The collector is crash-looping on the image or config just deployed; `kubectl --context kind-heartbeat -n heartbeat logs db-collector-0` says why. Fix it and rerun `make kind-deploy`: the StatefulSet replaces the broken pod (`podManagementPolicy: Parallel`) |
+| `make kind-deploy` prints `recreating StatefulSet db-collector with podManagementPolicy Parallel` | Once, on a cluster deployed before the chart moved to `Parallel`, which cannot change in place: it deletes the StatefulSet with `--cascade=orphan` and the deploy creates it again. The pod keeps running until the new StatefulSet replaces it, which it does only if the deploy changes the pod template (after a `kubectl rollout restart` it does) |
 | `helm upgrade` fails with a field-manager conflict | Something was edited by hand with `kubectl`. See [Kubernetes delivery](kubernetes-local.md#working-with-it) |
