@@ -288,8 +288,9 @@ Rules:
   `POST /admin/config/reload` returns 400 for invalid config and 500 for a
   failed apply. At startup there is no previous config: the collector exits,
   so a file left invalid stops the next pod from starting.
-- A rejected or failed reload does not make the pod unready. Monitoring shows
-  it: `heartbeat_collector_config_last_reload_successful` is 0 until the next
+- A rejected reload, or a failed one that was rolled back, does not make the
+  pod unready. Monitoring shows it:
+  `heartbeat_collector_config_last_reload_successful` is 0 until the next
   successful reload, and `HeartbeatCollectorConfigReloadFailed` fires after 2
   minutes ([config reload metrics](metrics-and-endpoints.md#config-reloads)).
 - Collectors are diffed by `id`; only changed, added or removed collectors are

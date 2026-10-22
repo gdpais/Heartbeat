@@ -212,7 +212,7 @@ reload, whatever triggered it (file polling, `SIGHUP` or
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
-| `heartbeat_collector_config_last_reload_successful` | gauge | none | 1 if the last load or reload succeeded; 0 if it was rejected (invalid file) or could not be applied, until the next successful one. The last good config keeps running meanwhile. It is 0 exactly while `GET /admin/config` shows a `last_reload_err` |
+| `heartbeat_collector_config_last_reload_successful` | gauge | none | 1 if the last load or reload succeeded; 0 if it was rejected (invalid file) or could not be applied, until the next successful one. The last good config keeps running meanwhile, unless the rollback of a failed apply failed too (`runtime_diverged`, and `/readyz` returns 503). It is 0 exactly while `GET /admin/config` shows a `last_reload_err` |
 | `heartbeat_collector_config_last_reload_success_timestamp_seconds` | gauge | none | Unix time of the last successful load or reload: when the active config was loaded |
 | `heartbeat_collector_config_reloads_total` | counter | `result` | Loads and reloads by result, the `result` of `POST /admin/config/reload`: `ok`, `invalid_candidate` (unreadable or invalid file, nothing applied), `apply_failed` (valid file, collectors not reconciled; rolled back or diverged), `busy` (gave up waiting for another reload; nothing read, the gauges unchanged). Created at 0 for every result |
 | `heartbeat_collector_config_info` | gauge | `version` | Always 1. `version` is the active config's SHA-256, as in `GET /admin/config`. One series, which changes only when a reload activates a different file |
