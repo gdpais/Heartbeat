@@ -315,10 +315,11 @@ func TestRunPassesAndWritesTheJournal(t *testing.T) {
 	if rec["result"] != ResultPass || rec["kind"] != "promql" || rec["from"] != "end" || rec["condition"] != "< 0.1" {
 		t.Errorf("ratio-recovers check %v", rec)
 	}
-	// Its window opened at the end of hurt: 180ms after the start.
+	// Its window opened at the end of hurt, 180ms after the start, once the
+	// fault was off: never before its fault_end.
 	ws, _ := time.Parse(time.RFC3339Nano, rec["window_start"].(string))
-	if d := ws.Sub(lines[0].Time); d < 170*time.Millisecond || d > 200*time.Millisecond {
-		t.Errorf("ratio-recovers window opened %s after the start, want 180ms", d)
+	if d := ws.Sub(lines[0].Time); d < 180*time.Millisecond || d > 2*time.Second || ws.Before(fe[0].Time) {
+		t.Errorf("ratio-recovers window opened %s after the start (fault_end at %s), want from 180ms and after the fault ended", d, fe[0].Time.Sub(lines[0].Time))
 	}
 	if byName["alert-fires"]["kind"] != "alert" || byName["alert-fires"]["state"] != "firing" {
 		t.Errorf("alert-fires check %v", byName["alert-fires"])

@@ -139,6 +139,17 @@ func (r *Runner) execute(ctx context.Context, u *run, j *journal.Journal, faults
 		}
 	}()
 
+	// Each step's start (its fault on) and end (its fault off), as they
+	// happen: a window opens at its planned time, but never before the
+	// fault it watches has actually started or stopped.
+	began := make([]chan struct{}, len(s.Steps))
+	ended := make([]chan struct{}, len(s.Steps))
+	stepIndex := map[string]int{}
+	for i, st := range s.Steps {
+		began[i], ended[i] = make(chan struct{}), make(chan struct{})
+		stepIndex[st.Name] = i
+	}
+
 	// Checks, each in its own window.
 	var checks sync.WaitGroup
 	results := make([]string, len(s.Signals))
@@ -146,7 +157,11 @@ func (r *Runner) execute(ctx context.Context, u *run, j *journal.Journal, faults
 		checks.Add(1)
 		go func() {
 			defer checks.Done()
-			d := r.check(ctx, u, i, sig, start.Add(s.Anchor(sig)))
+			opened := began[stepIndex[sig.Step]]
+			if sig.From == scenario.FromEnd {
+				opened = ended[stepIndex[sig.Step]]
+			}
+			d := r.check(ctx, u, i, sig, start.Add(s.Anchor(sig)), opened)
 			results[i] = d.Result
 			write(r.cfg.Now(), journal.Check, d)
 		}()
@@ -175,6 +190,7 @@ func (r *Runner) execute(ctx context.Context, u *run, j *journal.Journal, faults
 				break
 			}
 			write(r.cfg.Now(), journal.FaultStart, fd)
+			close(began[i])
 			log.Info("fault started", "step", st.Name, "type", st.Fault.Type)
 			stopped := sleepUntil(ctx, r.cfg.Now, end)
 			stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), faultStopTimeout)
@@ -195,8 +211,11 @@ func (r *Runner) execute(ctx context.Context, u *run, j *journal.Journal, faults
 				u.cancel()
 				break
 			}
+			close(ended[i])
 		} else {
+			close(began[i])
 			sleepUntil(ctx, r.cfg.Now, end)
+			close(ended[i])
 		}
 		stepStart = end
 	}
@@ -262,14 +281,15 @@ func sleepUntil(ctx context.Context, now func() time.Time, t time.Time) bool {
 	}
 }
 
-// check evaluates one signal over its window: from anchor for sig.Within,
-// every poll interval and once more when the window closes.
-func (r *Runner) check(ctx context.Context, u *run, i int, sig scenario.Signal, anchor time.Time) checkData {
-	deadline := anchor.Add(sig.Within.D())
+// check evaluates one signal over its window, every poll interval and once
+// more when the window closes. The window opens at anchor, or when opened is
+// closed if that is later (the step's fault actually on or off), and stays
+// open for sig.Within.
+func (r *Runner) check(ctx context.Context, u *run, i int, sig scenario.Signal, anchor time.Time, opened <-chan struct{}) checkData {
 	d := checkData{
 		Signal: sig.Name, Kind: sig.Kind(), Query: sig.Query(), Condition: sig.Condition, State: sig.State,
 		Labels: sig.Labels, Step: sig.Step, From: sig.From, Mode: sig.Mode, Within: sig.Within.String(),
-		WindowStart: anchor.UTC(), WindowEnd: deadline.UTC(), Result: ResultSkipped, Values: []float64{},
+		WindowStart: anchor.UTC(), WindowEnd: anchor.Add(sig.Within.D()).UTC(), Result: ResultSkipped, Values: []float64{},
 	}
 	defer func() {
 		u.update(func(s *Status) {
@@ -279,6 +299,16 @@ func (r *Runner) check(ctx context.Context, u *run, i int, sig scenario.Signal, 
 	if sleepUntil(ctx, r.cfg.Now, anchor) {
 		return d
 	}
+	select {
+	case <-opened:
+	case <-ctx.Done():
+		return d
+	}
+	if now := r.cfg.Now(); now.After(anchor) {
+		anchor = now
+	}
+	deadline := anchor.Add(sig.Within.D())
+	d.WindowStart, d.WindowEnd = anchor.UTC(), deadline.UTC()
 	for {
 		at := r.cfg.Now()
 		evalCtx, cancel := context.WithTimeout(ctx, evalTimeout)

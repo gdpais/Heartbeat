@@ -78,8 +78,10 @@ every series the query returns, and never holds for none: write the query so
 it returns the series you mean (`sum(...)` for one). `state` (alert signals)
 is `firing` (at least one such alert active) or `resolved` (none).
 
-A signal is evaluated every 10 seconds from the moment its window opens, and
-once more when it closes. `eventually` passes at the first evaluation that
+A window opens at its planned time from the start of the run, but never
+before its step's fault has actually started (`from: start`) or stopped
+(`from: end`). A signal is evaluated every 10 seconds from the moment its
+window opens, and once more when it closes. `eventually` passes at the first evaluation that
 holds and fails if none did by the end of the window; `always` fails at the
 first evaluation that does not hold (a query error counts) and passes if every
 one held. A run ends when its last step has ended and every signal has a
@@ -205,7 +207,7 @@ interleave with the steps):
 | `fault_start` | A step's fault is on | `step`, `step_index`, `type`, `scope`, `params` |
 | `fault_end` | The fault is off | As `fault_start`, plus `reason` (`completed`, `stopped`, or `error` with `error`). A fault that failed to start has a `fault_end` with `error` and no `fault_start`, and ends the run |
 | `traffic` | Every 15 s, then once more at the end with `scope` `interval`; then one with `scope` `run` | `scope`, `from`, `to`, `requests`, `failed` (requests that wrote an error row, refused orders included), `injected` (failed by a fault), `users` and `sessions` (distinct, anonymous callers not counted as users), `users_capped` / `sessions_capped` when the 50,000-per-interval or 200,000-per-run cap was reached, and `entry_points`: per entry point `requests`, `failed`, `injected`, `anonymous`, `duration_ms_sum`, `duration_ms_max` |
-| `check` | A signal has its result | `signal`, `kind` (`promql`, `logql`, `alert`), `query` (the expression or alert name), `condition` or `state` and `labels`, `step`, `from`, `mode`, `within`, `window_start`, `window_end`, `result` (`pass`, `fail`, `skipped` when the run stopped before the window closed), `evaluated_at` (the deciding evaluation), `attempts`, `values` (that evaluation's values, sorted, at most 20), `series` (how many it returned), `error` (that evaluation's error, if any) |
+| `check` | A signal has its result | `signal`, `kind` (`promql`, `logql`, `alert`), `query` (the expression or alert name), `condition` or `state` and `labels`, `step`, `from`, `mode`, `within`, `window_start`, `window_end` (as the window actually opened), `result` (`pass`, `fail`, `skipped` when the run stopped before the window closed), `evaluated_at` (the deciding evaluation), `attempts`, `values` (that evaluation's values, sorted, at most 20), `series` (how many it returned), `error` (that evaluation's error, if any) |
 | `run_end` | Last line | `scenario`, `state` (`passed`, `failed` when a check failed, `stopped`, `error`), `error`, `seconds`, `checks` (`pass`, `fail`, `skipped` counts), `requests`, `failed`, `injected`, `users`, `sessions` (the whole run) |
 
 Traffic is counted as PatientZero serves it, from the request's start to
