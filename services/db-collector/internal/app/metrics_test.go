@@ -299,6 +299,17 @@ func TestRunExportsConfigMetrics(t *testing.T) {
 		}, "/metrics lacks %q:\n%s", line, lazy(func() any { return metrics }))
 	}
 
+	// The server answers before the initial reconcile ends, and a reload
+	// before it is refused; /readyz is 200 once it is done.
+	eventually(t, 2*time.Second, func() bool {
+		resp, err := client.Get(base + "/readyz")
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode == http.StatusOK
+	}, "collector never became ready")
 	if err := os.WriteFile(path, []byte("platform: unsupported\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
