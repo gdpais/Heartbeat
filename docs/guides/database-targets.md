@@ -161,9 +161,29 @@ pod within about a minute (kubelet sync) and the collector picks it up through
 file polling (5s). To apply it sooner, `POST /admin/config/reload` with the
 admin token. A change to the credentials Secret needs
 `kubectl -n heartbeat rollout restart statefulset/db-collector`. An invalid file
-is rejected and the previous config keeps running.
+is rejected and the previous config keeps running, so the change has not
+taken effect: step 5 shows how to tell.
 
 ## 5. Verify
+
+First check that the collector took the change. Helm accepting the values
+does not mean the collector did: it also checks host names, credential
+references, intervals and probe names.
+
+```bash
+curl -s http://localhost:8082/metrics | grep '^heartbeat_collector_config_'
+```
+
+`heartbeat_collector_config_last_reload_successful` should be `1`, and
+`heartbeat_collector_config_info` should show a new `version`. At `0` the
+change was rejected and the last good config still runs, and after 2
+minutes Prometheus fires `HeartbeatCollectorConfigReloadFailed`, so a
+rejection shows in alerting even when nobody runs this check
+([config reload metrics](../reference/metrics-and-endpoints.md#config-reloads)).
+The reason is `last_reload_err` in `GET /admin/config` and in the pod log; fix
+the values and apply them again.
+
+Then check the target:
 
 ```bash
 curl -s -H "Authorization: Bearer $HEARTBEAT_ADMIN_TOKEN" http://localhost:8082/admin/config |

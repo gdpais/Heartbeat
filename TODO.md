@@ -516,6 +516,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Compute `config_version` hash
 - [x] Support redacted rendering for diagnostics
 - [x] Fail closed on invalid candidate config
+- [x] Reject unknown SQL Server probe names and OutSystems log types at load and on reload, naming the valid ones (the runtime check stays)
 
 ### 8.3 Hot reload and reconciliation
 - [x] Implement immutable active config snapshots (`atomic.Value` / copy-on-write)
@@ -540,7 +541,8 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Support explicit `SIGHUP`
 - [x] Support authenticated `POST /admin/config/reload`
 - [ ] Optionally integrate reloader sidecar/controller
-- [x] Expose config version + reload status in health/admin endpoints and metrics
+- [x] Expose config version + reload status in `GET /admin/config` and in metrics (`heartbeat_collector_config_*`: last reload result and time, reloads by result, active version)
+- [x] Alert when a reload is rejected or fails to apply (`HeartbeatCollectorConfigReloadFailed`), on by default; `prometheusRules.configReloadAlert.enabled: false` turns it off
 
 ---
 

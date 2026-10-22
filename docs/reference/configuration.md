@@ -118,7 +118,10 @@ put the password into the driver's error.
 
 Built-in probe names: `waits`, `blocking`, `sessions`, `memory_pressure`,
 `storage`, `throughput`, `cpu`, `buffer_cache`, `file_io`. See the
-[metrics reference](metrics-and-endpoints.md#sql-server-probe-metrics).
+[metrics reference](metrics-and-endpoints.md#sql-server-probe-metrics). Any
+other name, in an enabled collector or not, is rejected when the file is
+loaded or reloaded, and the error lists the valid ones. A `query_template`
+replaces a built-in probe's query; it cannot add a probe.
 
 Probe timeout defaults to `min(scrape_interval / 2, 10s)`; `timeout_ms` overrides
 it and is capped at the interval. `timeout_ms` may not exceed 25000 (25s): a
@@ -283,7 +286,12 @@ Rules:
   then rejected as below.
 - An invalid candidate is rejected and the previous config keeps running.
   `POST /admin/config/reload` returns 400 for invalid config and 500 for a
-  failed apply.
+  failed apply. At startup there is no previous config: the collector exits,
+  so a file left invalid stops the next pod from starting.
+- A rejected or failed reload does not make the pod unready. Monitoring shows
+  it: `heartbeat_collector_config_last_reload_successful` is 0 until the next
+  successful reload, and `HeartbeatCollectorConfigReloadFailed` fires after 2
+  minutes ([config reload metrics](metrics-and-endpoints.md#config-reloads)).
 - Collectors are diffed by `id`; only changed, added or removed collectors are
   restarted. A failed apply is rolled back. If the rollback also fails,
   `runtime_diverged` is reported and `/readyz` returns 503.
