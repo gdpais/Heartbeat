@@ -130,12 +130,15 @@ The chart never creates Secrets. `scripts/kind.sh` creates kind-only values:
 
 ## Images
 
-`make kind-images` builds both service images for the node's CPU architecture
-(it refuses a mismatch), tags each `dev-<first 12 hex of the image ID>` and
-loads them with `kind load`. Pods use `imagePullPolicy: Never`, so the cluster
-can only run what was loaded. The tag changes whenever the binary changes, so a
-code change always produces a new pod. Production references ECR images by
-digest (`image.digest`).
+The chart's default image is the release's,
+`ghcr.io/gdpais/heartbeat/db-collector` at the chart's `appVersion`. On kind,
+`kind.yaml` points it at the local `heartbeat/db-collector` instead:
+`make kind-images` builds it for the node's CPU architecture (it refuses a
+mismatch), tags it `dev-<first 12 hex of the image ID>` and loads it with
+`kind load`. Pods use `imagePullPolicy: Never`, so the cluster can only run
+what was loaded. The tag changes whenever the binary changes, so a code change
+always produces a new pod. Production references ECR images by digest
+(`image.digest`).
 
 The tags are kept in `.tmp/kind/<cluster>/images.env`. `make kind-deploy`, and
 everything that deploys through it (`make sqlserver-dev-up`, PatientZero),
