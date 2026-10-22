@@ -72,6 +72,23 @@ Data path for self-managed OutSystems 11:
    (64 MiB of row data). A backlog drains at about the rate Loki takes it
    ([throughput](#export-throughput)).
 
+### Export throughput
+
+Measured on kind with one log type of 12,000 error rows of about 6 KB
+(72 MB) spanning three hours, polled every 10 s:
+
+| Queue | Backlog with Loki up | Backlog after a Loki outage |
+| --- | --- | --- |
+| One request (this chart) | 85 s, 87 s, 102 s, 105 s | 61 s after Loki was back; the target stayed up while it waited |
+| 64 MiB (earlier charts) | 108 s, 177 s | The queue filled, the target failed and backed off, and 15 minutes after Loki was back it held 12,339 lines for the 12,000 rows: batches sent again after 503s |
+
+Loki's ingestion rate limit sets the pace either way: the Collector pushes
+4 MiB at a time and waits at least 5 s after a throttled push. The 64 MiB
+queue only moved the wait from the collector into the Collector. Other
+OTLP sources of logs, none yet, wait the same way; one that gives up sooner
+(an OpenTelemetry SDK retries for about a minute) drops its batch, where a
+larger queue would have held it.
+
 ## OutSystems fields
 
 The extractor and the [request correlation](#request-traces) look these

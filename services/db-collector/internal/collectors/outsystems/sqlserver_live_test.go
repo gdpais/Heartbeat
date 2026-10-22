@@ -682,7 +682,7 @@ func (r *heldReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // nothing on SQL Server: no running request, no open transaction, and no
 // lock but the shared database lock every connection holds.  The rows were
 // read and the connection returned to the pool before the export started.
-func TestWaitingExportHoldsNothingOnSQLServer(t *testing.T) {
+func TestWaitingExportHoldsNothingAgainstSQLServer(t *testing.T) {
 	server := newLiveServer(t)
 	setupFixtures(t, server)
 	sa := server.sa(t, fixtureDatabase)
