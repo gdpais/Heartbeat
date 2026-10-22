@@ -172,6 +172,12 @@ integrations:
 # them (Grafana's dashboard sidecar finds them by the grafana_dashboard label).
 prometheusRules:
   enabled: true
+  # HeartbeatCollectorConfigReloadFailed (warning): the db-collector rejected
+  # or could not apply its last config change and still runs the last good
+  # config. false leaves the alert out of the rules ConfigMap; the
+  # heartbeat_collector_config_* metrics stay.
+  configReloadAlert:
+    enabled: true
 grafanaDashboards:
   enabled: true
 
