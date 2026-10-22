@@ -46,7 +46,7 @@ Reload can also be triggered with `SIGHUP` or file polling.
 | `version`, `loaded_at`, `last_reload_at` | Active config version (SHA-256 of the file) and timestamps |
 | `last_reload_err`, `runtime_diverged`, `rollback_err` | Why the last reload was rejected or failed; set until the next successful reload |
 | `warnings` | Insecure startup settings, e.g. `sqlserver_trust_server_certificate` |
-| `readiness` | What `/readyz` decided and why: `status`, `reasons`, and per collector its phase, cycle age, restarts and targets. Each target has its state, consecutive failures, last success and the raw driver `error` of its last failed cycle, kept while it backs off, which can name the host, port and login but never contains the password |
+| `readiness` | What `/readyz` decided and why: `status`, `reasons`, and per collector its phase, cycle age, restarts and targets. Each target has its state (`ok`, `failed`, `backoff`, or `blocked` for an `outsystems_logs` target waiting for the OTel Collector), consecutive failures, last success and the raw driver `error` of its last failed cycle, kept while it backs off, which can name the host, port and login but never contains the password. A `blocked` target's `error` says which log type waits, with how many rows, and for how long |
 | `config` | The active config, redacted ([configuration reference](configuration.md#validation-and-reload-behavior)) |
 
 ```bash
@@ -180,7 +180,7 @@ Requests panel does, so an unreachable target never reads as 0. The catalog live
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
-| `heartbeat_collector_target_up` | gauge | `collector`, `environment`, `target` | 1 if the last cycle for the target succeeded |
+| `heartbeat_collector_target_up` | gauge | `collector`, `environment`, `target` | 1 if the last cycle for the target succeeded, including an `outsystems_logs` target that waits for the OTel Collector (`blocked`) |
 | `heartbeat_collector_target_consecutive_failures` | gauge | `collector`, `environment`, `target` | Failed cycles in a row |
 | `heartbeat_collector_target_last_success_timestamp_seconds` | gauge | `collector`, `environment`, `target` | Unix time of the last successful cycle; use it for freshness alerts |
 | `heartbeat_collector_cycle_duration_seconds` | gauge | `collector` | Duration of the last collection cycle |
@@ -213,16 +213,28 @@ on the same `/metrics`, labelled `collector`, `environment`, `target` and
 the log type as the `probe` label: one probe execution reads, delivers and
 acknowledges up to 10 batches.
 
+A batch the OTel Collector has not accepted by the end of the probe
+execution is backpressure, not a failure. Its export carries on in the
+background and the log type reads nothing more until the Collector takes it
+(the chart's Collector takes the next batch only once Loki has the one
+before; see [application observability](../architecture/application-observability.md)).
+Meanwhile `heartbeat_outsystems_export_blocked` is 1, the target stays up
+(`heartbeat_collector_target_up` 1, no backoff, no probe error), and
+`GET /admin/config` shows it as `blocked`, counted in `targets_blocked`,
+with what it waits for. A database the collector cannot read still fails
+the target as before.
+
 | Metric | Type | Meaning |
 | --- | --- | --- |
 | `heartbeat_outsystems_extract_rows_total` | counter | Rows extracted and accepted by the OTel Collector |
 | `heartbeat_outsystems_extract_lag_seconds` | gauge | How far the watermark trails now, in real time: about the lag (the collector's, or the log type's own) plus the poll interval when extraction keeps up; it grows while extraction fails or falls behind |
-| `heartbeat_outsystems_export_failures_total` | counter | Batches the OTel Collector did not accept after retries (network errors, 429 and 5xx are retried with backoff, up to 4 attempts within the probe timeout). The watermark stays, so the rows are read again |
+| `heartbeat_outsystems_export_failures_total` | counter | Batches the OTel Collector rejected for good (a 4xx status other than 429). Network errors, timeouts, 429 and 5xx are retried with backoff (up to 5 s apart, 10 s per attempt) until the Collector accepts the batch. The watermark stays, so the rows are read again |
+| `heartbeat_outsystems_export_blocked` | gauge | 1 while the log type waits for the OTel Collector to accept a batch, past the probe execution that read it: its extraction is paused, but its target is up. 0 otherwise. While it is 1, the lag grows, and `OutSystemsLogExtractionBehind` fires once it has been above 30 minutes for 10 |
 | `heartbeat_outsystems_extract_stuck_batches_total` | counter | Cycles that failed because every row of a full batch had the same `Instant`. The log type does not move until `batch_limit` is raised |
 | `heartbeat_outsystems_log_delay_seconds` | gauge | Now minus the newest `Instant` extracted, set when rows arrive: how far behind OutSystems' own log service is. Absent until the first row |
 
-The counters are created at 0 when a collector starts and, like the probe
-series, deleted when it stops. Error text (contract violations, login and
+The counters and `heartbeat_outsystems_export_blocked` are created at 0 when
+a collector starts and, like the probe series, deleted when it stops. Error text (contract violations, login and
 query errors) is logged and reported per target in `GET /admin/config`.
 
 #### Derived OutSystems metrics

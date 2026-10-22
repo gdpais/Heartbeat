@@ -482,8 +482,8 @@ loki:
 # otel-collector-queue, mounted through otelCollector.extraVolumes. To run
 # without one (no StorageClass), set enabled: false and make the export-queue
 # volume an emptyDir; the queue then survives a container restart but not a
-# new pod. The queue holds at most 64 MiB, and its file does not shrink
-# below the largest backlog it held; 1Gi is also the smallest gp3 volume.
+# new pod. The queue holds one request, a few MiB; 1Gi is the smallest gp3
+# volume.
 otelCollectorQueue:
   persistence:
     enabled: true
@@ -593,32 +593,35 @@ otelCollector:
         # the db-collector had already counted delivered. So one consumer
         # exports the batches in order, and a throttled batch is retried
         # until Loki takes it. A push larger than Loki's
-        # ingestion_burst_size_mb (6) is never taken, so the queue cuts
-        # batches at 4 MiB. While a batch waits the queue fills (64 MiB), the
-        # receiver answers 503 (see the logs pipeline), and the db-collector
-        # keeps its watermark and retries.
+        # ingestion_burst_size_mb (6) is never taken, so batches are cut at
+        # 4 MiB.
         #
-        # The queue is on disk (file_storage/export-queue), so rows in it
-        # when the Collector restarts are sent after the restart. The order
-        # holds except for the batches being sent when it stopped (at most
-        # two): the persistent queue puts them back at its end, behind the
-        # rest. Loki takes their rows unless it already has rows of the same
-        # stream more than an hour newer, that is when the queue held more
-        # than an hour of that stream; LokiDiscardingLogs then fires. In the
-        # kind test a restart lost none of 6,000 rows spanning 45 minutes,
-        # and 1,297 of 6,000 spanning three hours. A queue of one request
-        # would keep the order, but the db-collector's export then waits for
-        # Loki, its probes time out and its targets back off: of a 12,000-row
-        # backlog Loki held 74% after 13 minutes, against all of it after
-        # 100 seconds with this queue.
+        # The queue holds one request, on disk (file_storage/export-queue).
+        # A queue that holds more loses the order across a restart: it
+        # sends the requests it was sending when it stopped after the rest,
+        # and Loki rejects their rows when it already has rows of the same
+        # stream more than an hour newer (with 64 MiB, 1,297 of 6,000 rows
+        # spanning three hours in the kind test). With one request nothing
+        # queues behind the one being sent, so after a restart it is sent
+        # first. The queue then buffers nothing: block_on_overflow keeps the
+        # next request waiting in the receiver until Loki has taken the one
+        # before, and the db-collector waits for it, its extraction paused
+        # but its target up (heartbeat_outsystems_export_blocked). The disk
+        # still matters: the request being sent survives a restart, and the
+        # db-collector has already moved its watermark past it.
         sending_queue:
           storage: file_storage/export-queue
           num_consumers: 1
-          sizer: bytes
-          queue_size: 67108864
+          sizer: requests
+          queue_size: 1
+          block_on_overflow: true
+          # The batcher only cuts requests at 4 MiB: with one request in
+          # the queue there is nothing to merge, and a min_size (8 KiB by
+          # default) would hold every small request for flush_timeout.
           batch:
             flush_timeout: 1s
             sizer: bytes
+            min_size: 0
             max_size: 4194304
         retry_on_failure:
           max_elapsed_time: 0s
@@ -631,9 +634,9 @@ otelCollector:
           exporters: [prometheus, debug]
         # No batch processor: it answers the receiver before the export, so a
         # full exporter queue dropped rows the db-collector had been told were
-        # delivered. Without it a full queue fails the request, the receiver
-        # answers 503 and the db-collector retries; the exporter's queue
-        # batches instead.
+        # delivered. Without it the receiver answers only once the request is
+        # in the exporter's queue (it waits while the queue is full), and the
+        # exporter's queue batches instead.
         logs:
           receivers: [otlp]
           processors: [memory_limiter, resource]

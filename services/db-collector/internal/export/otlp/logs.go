@@ -4,10 +4,20 @@
 // [Client.Export] posts to <endpoint>/v1/logs, gzip-compressed, splitting the
 // records into requests of at most [Client.MaxRequestBytes] of protobuf.  It
 // retries a request that failed with a network error, 429 or a 5xx status,
-// with exponential backoff and Retry-After, until the attempts or the context
-// run out; any other status fails at once.  Export returns nil only when every
-// request was accepted, so a caller that moves a watermark after it delivers
-// each record at least once.
+// with exponential backoff and Retry-After, until it is accepted or the
+// context ends ([Client.MaxAttempts] can bound the attempts); any other
+// status fails at once.  Export returns nil only when every request was
+// accepted, so a caller that moves a watermark after it delivers each record
+// at least once.
+//
+// A busy OTel Collector is waited for, not failed: the chart's Collector
+// holds one request in its logs export queue and keeps the next one waiting
+// in the receiver until the first is in Loki (block_on_overflow).  Each
+// attempt is bounded by [DefaultRequestTimeout], below the Collector
+// receiver's 30 s write timeout, so the client always gives up first: a
+// request the Collector queued after the client had gone would be answered
+// into a closed connection, and sent again.  An attempt that timed out is
+// retried at once, since it already waited.
 //
 // The request body is a LogsData message, which is wire-compatible with
 // ExportLogsServiceRequest: both are `repeated ResourceLogs resource_logs = 1`.
@@ -22,6 +32,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -40,14 +51,14 @@ const (
 	// DefaultMaxRequestBytes bounds the protobuf size of one request, well
 	// below the OTel Collector's default 20 MiB request body limit.
 	DefaultMaxRequestBytes = 4 << 20
-	// DefaultMaxAttempts is how many times one request is tried.
-	DefaultMaxAttempts = 4
 	// DefaultInitialBackoff is the wait before the first retry; it doubles up
 	// to DefaultMaxBackoff.
 	DefaultInitialBackoff = 250 * time.Millisecond
 	// DefaultMaxBackoff caps the wait between attempts, Retry-After included.
 	DefaultMaxBackoff = 5 * time.Second
-	// DefaultRequestTimeout bounds one HTTP request.
+	// DefaultRequestTimeout bounds one HTTP attempt.  It must stay below the
+	// OTel Collector receiver's write timeout (30 s by default; see the
+	// package documentation).
 	DefaultRequestTimeout = 10 * time.Second
 	// recordOverhead covers the tag and length prefix of a nested message.
 	recordOverhead = 8
@@ -63,7 +74,8 @@ type Client struct {
 	// MaxRequestBytes bounds the protobuf size of one request.  A single
 	// record larger than it is sent alone.
 	MaxRequestBytes int
-	// MaxAttempts is how many times one request is tried.
+	// MaxAttempts is how many times one request is tried; below 1, it is
+	// tried until it is accepted, rejected for good, or the context ends.
 	MaxAttempts int
 	// InitialBackoff and MaxBackoff shape the wait between attempts.
 	InitialBackoff time.Duration
@@ -80,7 +92,6 @@ func NewClient() *Client {
 	return &Client{
 		HTTP:            &http.Client{Timeout: DefaultRequestTimeout},
 		MaxRequestBytes: DefaultMaxRequestBytes,
-		MaxAttempts:     DefaultMaxAttempts,
 		InitialBackoff:  DefaultInitialBackoff,
 		MaxBackoff:      DefaultMaxBackoff,
 		sleep:           sleepContext,
@@ -108,7 +119,6 @@ func (c *Client) Export(ctx context.Context, endpoint string, resourceLogs []*lo
 // send posts one encoded request, retrying as the package documentation
 // describes.
 func (c *Client) send(ctx context.Context, url string, body []byte) error {
-	attempts := max(c.MaxAttempts, 1)
 	backoff := c.InitialBackoff
 	for attempt := 1; ; attempt++ {
 		retryAfter, err := c.post(ctx, url, body)
@@ -116,15 +126,48 @@ func (c *Client) send(ctx context.Context, url string, body []byte) error {
 			return nil
 		}
 		var permanent *permanentError
-		if errors.As(err, &permanent) || attempt >= attempts || ctx.Err() != nil {
-			return fmt.Errorf("export logs to %s (attempt %d of %d): %w", url, attempt, attempts, err)
+		if errors.As(err, &permanent) || (c.MaxAttempts > 0 && attempt >= c.MaxAttempts) || ctx.Err() != nil {
+			return fmt.Errorf("export logs to %s (%s): %w", url, c.attemptText(attempt), err)
+		}
+		if observe, ok := ctx.Value(retryObserverKey{}).(RetryObserver); ok && observe != nil {
+			observe(attempt, err)
 		}
 		wait := min(max(backoff, retryAfter), c.MaxBackoff)
+		if isTimeout(err) && retryAfter == 0 {
+			wait = 0
+		}
 		if !c.wait(ctx, wait) {
-			return fmt.Errorf("export logs to %s (attempt %d of %d): %w (%w)", url, attempt, attempts, err, ctx.Err())
+			return fmt.Errorf("export logs to %s (%s): %w (%w)", url, c.attemptText(attempt), err, ctx.Err())
 		}
 		backoff = min(2*backoff, c.MaxBackoff)
 	}
+}
+
+// RetryObserver is told about every failed attempt that will be retried.
+type RetryObserver func(attempt int, err error)
+
+type retryObserverKey struct{}
+
+// WithRetryObserver returns a context under which [Client.Export] calls
+// observe for every failed attempt it retries, so a caller that waits for an
+// export can tell why it waits.
+func WithRetryObserver(ctx context.Context, observe RetryObserver) context.Context {
+	return context.WithValue(ctx, retryObserverKey{}, observe)
+}
+
+// attemptText describes attempt for an error message.
+func (c *Client) attemptText(attempt int) string {
+	if c.MaxAttempts > 0 {
+		return fmt.Sprintf("attempt %d of %d", attempt, c.MaxAttempts)
+	}
+	return fmt.Sprintf("attempt %d", attempt)
+}
+
+// isTimeout reports whether err is, or wraps, a network timeout, such as the
+// HTTP client's per-attempt timeout.
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // permanentError is a response that retrying cannot fix.
@@ -163,6 +206,9 @@ func (c *Client) post(ctx context.Context, url string, body []byte) (time.Durati
 
 // wait sleeps for d unless ctx ends first.
 func (c *Client) wait(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
 	if c.sleep != nil {
 		return c.sleep(ctx, d)
 	}

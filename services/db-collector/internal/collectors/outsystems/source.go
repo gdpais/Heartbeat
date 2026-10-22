@@ -51,6 +51,8 @@ type Batch struct {
 	// rows left: the last row is the first of a new Instant, which the caller
 	// drops as it drops the last Instant of a full batch.
 	Partial bool
+	// Bytes estimates the memory the rows hold (see [rowBytes]).
+	Bytes int64
 }
 
 // Source runs log-type queries against a target.
@@ -133,10 +135,12 @@ func readRows(rows rowReader, batch *Batch, params QueryParams) error {
 		spent := params.MaxBytes > 0 && size >= params.MaxBytes
 		if spent && instant >= 0 && len(batch.Rows) < params.Limit && !sameInstant(values[instant], batch.Rows[len(batch.Rows)-1][instant]) {
 			batch.Rows, batch.Partial = append(batch.Rows, values), true
+			batch.Bytes = size + rowBytes(values)
 			return nil
 		}
 		batch.Rows = append(batch.Rows, values)
 		size += rowBytes(values)
+		batch.Bytes = size
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate rows: %w", err)

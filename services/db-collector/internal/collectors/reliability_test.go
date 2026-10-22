@@ -707,3 +707,55 @@ func TestNilLoggerIsSafe(t *testing.T) {
 		t.Fatalf("expected error")
 	}
 }
+
+// A probe that returns ErrBlocked waits for downstream: its target is up and
+// blocked, not failed, does not back off, and no probe error is counted.
+// Another probe of the target failing still fails it.
+func TestBlockedProbeIsNotAFailure(t *testing.T) {
+	exporter := collectorexport.NewInMemoryExporter()
+	metrics, reg := newTestProbeMetrics(t)
+	failing := false
+	executor := funcExecutor(func(_ context.Context, item collectormetadata.ScheduledProbe) ([]collectorexport.Sample, []collectormetadata.Evidence, error) {
+		switch {
+		case item.Definition.Name == "error":
+			return nil, nil, fmt.Errorf("log type error: 10 rows waiting for the OTel Collector: %w", ErrBlocked)
+		case failing:
+			return nil, nil, errDivideByZero
+		}
+		return sampleFor(item), nil, nil
+	})
+	runner := NewRunner(executor, exporter, nil).WithLogger(slog.New(slog.DiscardHandler)).WithProbeMetrics(metrics)
+	tracker := newTargetTracker()
+	clock := &fakeClock{}
+	tracker.now = clock.Now
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	collector := testCollector(10*time.Second, testTarget("logging-db", "error", "general"))
+	runner.initCollector(collector)
+
+	for cycle := range 3 {
+		clock.Set(t0.Add(time.Duration(cycle) * 10 * time.Second))
+		result := runner.runCycle(context.Background(), collector, tracker)
+		target := result.Targets[0]
+		if target.State != TargetBlocked || !errors.Is(target.Err, ErrBlocked) || target.ConsecutiveFailures != 0 || !target.NextAttempt.IsZero() {
+			t.Fatalf("cycle %d: target %+v, want blocked without failures or backoff", cycle, target)
+		}
+		if !result.Healthy() || cycleError(result) != nil {
+			t.Fatalf("cycle %d: a blocked target counts as a failure: %v", cycle, cycleError(result))
+		}
+		if got := exporter.LastValue(MetricTargetUp); got != 1 {
+			t.Fatalf("cycle %d: target_up = %v, want 1", cycle, got)
+		}
+	}
+	for _, series := range probeSeries(t, reg, MetricProbeErrors) {
+		if !strings.HasSuffix(series, "=0") {
+			t.Fatalf("probe error counted for a blocked probe: %s", series)
+		}
+	}
+
+	failing = true
+	clock.Set(t0.Add(30 * time.Second))
+	result := runner.runCycle(context.Background(), collector, tracker)
+	if target := result.Targets[0]; target.State != TargetFailed || !errors.Is(target.Err, errDivideByZero) || errors.Is(target.Err, ErrBlocked) {
+		t.Fatalf("target %+v, want failed by the general probe only", target)
+	}
+}

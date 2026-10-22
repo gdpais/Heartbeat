@@ -227,7 +227,7 @@ tests:
               log_type: screen
             exp_annotations:
               summary: "OutSystems screen logs of prod/logging-db are 33m 20s behind"
-              description: "The oslogs collector has not extracted screen rows for more than 30 minutes. Logs, derived metrics and the OutSystems SLO alerts for this target are stale. Check the collector's probe errors and OTLP export failures."
+              description: "The oslogs collector has not extracted screen rows for more than 30 minutes. Logs, derived metrics and the OutSystems SLO alerts for this target are stale. Check the collector's probe errors and OTLP export failures, and heartbeat_outsystems_export_blocked: at 1 the OTel Collector holds the rows back, usually because Loki is down or slow."
 
   - name: Loki discarding log rows fires for every reason but the rate limit
     interval: 1m
@@ -248,7 +248,7 @@ tests:
               reason: too_far_behind
             exp_annotations:
               summary: "Loki is discarding log rows (too_far_behind)"
-              description: "Loki discarded log rows in the last 10 minutes for too_far_behind; they are not in Loki and will not be sent again. too_far_behind means rows arrived more than an hour behind their stream: check that the OTel Collector's logs exporter keeps one consumer, and whether the Collector restarted during a backlog of more than an hour."
+              description: "Loki discarded log rows in the last 10 minutes for too_far_behind; they are not in Loki and will not be sent again. too_far_behind means rows arrived more than an hour behind their stream: check that the OTel Collector's logs exporter keeps one consumer and a queue of one request, which keep its batches in order, across restarts too."
       - alertname: LokiDiscardingLogs
         eval_time: 20m
         exp_alerts: []

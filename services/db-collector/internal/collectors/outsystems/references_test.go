@@ -49,6 +49,7 @@ func registeredMetrics(t *testing.T) map[string]bool {
 	metrics.exportFailed(item)
 	metrics.batchStuck(item)
 	metrics.setLogDelay(item, time.Second)
+	metrics.setExportBlocked(item, true)
 	observe := func(logType string, columns []string, row ...any) {
 		batch := Batch{Rows: [][]any{row}}
 		for _, name := range columns {
@@ -84,7 +85,7 @@ func registeredMetrics(t *testing.T) map[string]bool {
 func TestEveryDeclaredMetricIsExported(t *testing.T) {
 	names := registeredMetrics(t)
 	for _, name := range []string{
-		MetricRows, MetricLag, MetricExportFailures, MetricStuckBatches, MetricLogDelay,
+		MetricRows, MetricLag, MetricExportFailures, MetricStuckBatches, MetricLogDelay, MetricExportBlocked,
 		MetricOperationDuration, MetricOperations, MetricOperationSeconds, MetricIntegrationDuration,
 		MetricErrors, MetricSlowEvents, MetricTimerDelay, MetricScreenState, MetricFrontEndOperations,
 	} {

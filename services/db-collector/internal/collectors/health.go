@@ -21,6 +21,12 @@ const (
 	TargetOK      TargetState = "ok"
 	TargetFailed  TargetState = "failed"
 	TargetBackoff TargetState = "backoff"
+	// TargetBlocked is a target whose probes all ran without error, but at
+	// least one of them waits for its output to be accepted downstream (it
+	// returned [ErrBlocked]): an outsystems_logs log type whose batch the OTel
+	// Collector has not accepted yet.  It is backpressure, not a failure: the
+	// target does not back off and heartbeat_collector_target_up stays 1.
+	TargetBlocked TargetState = "blocked"
 )
 
 // TargetResult is the per-target outcome of one cycle.
@@ -29,7 +35,8 @@ type TargetResult struct {
 	State  TargetState
 	// Err joins every probe error for the target in this cycle when State is
 	// TargetFailed, and in its last failed cycle when State is TargetBackoff;
-	// nil when State is TargetOK. It is for logs and in-process decisions only
+	// when State is TargetBlocked it joins the [ErrBlocked] errors of the
+	// probes that wait; nil when State is TargetOK. It is for logs and in-process decisions only
 	// and must not be served on unauthenticated endpoints.
 	Err                 error
 	ConsecutiveFailures int
@@ -38,10 +45,11 @@ type TargetResult struct {
 	NextAttempt time.Time
 }
 
-// Healthy reports whether every target in the cycle succeeded.
+// Healthy reports whether every target in the cycle succeeded.  A blocked
+// target counts as healthy: its probes ran.
 func (c CycleResult) Healthy() bool {
 	for _, target := range c.Targets {
-		if target.State != TargetOK {
+		if target.State != TargetOK && target.State != TargetBlocked {
 			return false
 		}
 	}

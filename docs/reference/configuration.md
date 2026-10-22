@@ -254,10 +254,22 @@ Rules:
 - The watermark of each collector, target and log type is a file under
   `HEARTBEAT_STATE_DIR` (`outsystems_logs/<collector>.<target>.<log type>.json`).
   It moves only after the OTel Collector accepted the batch, so delivery is at
-  least once. The chart's Collector keeps accepted batches in a queue on disk
-  (the `otelCollectorQueue` volume), so a Collector restart does not lose
-  them, within one limit described in
-  [application observability](../architecture/application-observability.md).
+  least once. The chart's Collector keeps the batch it accepted on disk (the
+  `otelCollectorQueue` volume), so a Collector restart does not lose it, and
+  accepts the next one only once Loki has taken it
+  ([application observability](../architecture/application-observability.md)).
+- A batch the Collector has not accepted by the end of the probe execution
+  is not a failure: its export carries on in the background, retried until
+  the Collector accepts it, and the log type reads nothing more meanwhile.
+  `heartbeat_outsystems_export_blocked` is 1 and the target stays up
+  ([metrics](metrics-and-endpoints.md#outsystems-log-extraction)). At most
+  64 MiB of row data is held in such batches across all log types; near
+  that, a batch reads only what is left, and with less than 1 MiB left the
+  other log types wait too. In each cycle the calls of one target wait for
+  the Collector at most half the poll interval in all, so its other log
+  types still run. The error in `GET /admin/config` names the last failed
+  attempt, and an attempt that failed for another reason than waiting (a
+  wrong `opentelemetry.endpoint`, a 5xx) is also logged as a warning.
   Removing a collector leaves its files; a collector re-added with the same
   `id` resumes from them.
 - The login needs `SELECT` on the `oslog_*` views the queries read (the

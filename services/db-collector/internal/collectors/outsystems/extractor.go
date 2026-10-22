@@ -8,10 +8,15 @@
 // probes.  One call reads the log type's rows with Instant in (watermark,
 // now − lag], at most batch_limit of them, through the log type's query
 // (probes/outsystems), sends them to <opentelemetry.endpoint>/v1/logs, and
-// only then moves the watermark, which [Store] keeps in a file.  Delivery is
-// therefore at least once: a failed export or a crash before the watermark is
-// saved reads the same rows again.  The derived metrics (derived.go) count
-// a batch when it is delivered, so such a batch is counted twice.
+// only once the OTel Collector accepts them moves the watermark, which
+// [Store] keeps in a file.  Delivery is therefore at least once: a failed
+// export or a crash before the watermark is saved reads the same rows again.
+// The derived metrics (derived.go) count a batch when it is delivered, so
+// such a batch is counted twice.
+//
+// The export runs in the background and may outlast the call: a Collector
+// that holds back a batch is backpressure, not a failure of the target, and
+// the log type waits for it without reading more (export.go).
 //
 // The lag is the collector's, or the log type's own when its probe sets one:
 // a screen or cyclic_job row carries the start of the operation as Instant
@@ -20,18 +25,18 @@
 //
 // A full batch (batch_limit rows) drops its trailing rows that share the last
 // Instant, which the next batch reads with the rest of that Instant, and the
-// call reads the next batch at once, up to [DefaultMaxBatches] per call while
-// the probe's deadline leaves time.  When every row of a full batch shares
-// one Instant the call fails and counts [MetricStuckBatches]: no watermark can
-// separate those rows, and skipping them would lose logs.  Raising
-// batch_limit is the fix.
+// call reads the next batch once the Collector accepted it, up to
+// [DefaultMaxBatches] per call while the probe's deadline leaves time.  When
+// every row of a full batch shares one Instant the call fails and counts
+// [MetricStuckBatches]: no watermark can separate those rows, and skipping
+// them would lose logs.  Raising batch_limit is the fix.
 //
 // A batch also ends early once it holds about [DefaultMaxBatchBytes] of row
 // data, at the first row of a new Instant ([Batch.Partial]), and is handled
-// as a full one.  Up to [collectors.DefaultMaxConcurrentTargets] batches are
-// held at once, so this, not batch_limit, bounds the memory of a backlog of
-// error rows with long stacks.  The records keep at most maxValueBytes of
-// each value (records.go).
+// as a full one.  This, not batch_limit, bounds the memory of a backlog of
+// error rows with long stacks, and [DefaultMaxHeldBytes] bounds the batches
+// held at once, pending exports included: past it, a batch reads less.  The
+// records keep at most maxValueBytes of each value (records.go).
 //
 // The query contract (queries/README.md) is checked on every batch: a
 // datetime or datetime2 Instant column, at most @limit rows, ascending
@@ -50,6 +55,7 @@ import (
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 
 	collectorconfig "heartbeat/internal/config"
+	"heartbeat/services/db-collector/internal/collectors"
 	collectorexport "heartbeat/services/db-collector/internal/export"
 	collectormetadata "heartbeat/services/db-collector/internal/metadata"
 	catalogoutsystems "heartbeat/services/db-collector/internal/probes/outsystems"
@@ -76,9 +82,9 @@ type Exporter interface {
 	Export(ctx context.Context, endpoint string, resourceLogs []*logspb.ResourceLogs) error
 }
 
-// Executor runs outsystems_logs log types.  Use [NewExecutor].  It is safe
-// for concurrent use; the Runner never runs two calls for the same target of
-// a collector at once.
+// Executor runs outsystems_logs log types.  Use [NewExecutor], and
+// [Executor.Close] when done.  It is safe for concurrent use; the Runner
+// never runs two calls for the same target of a collector at once.
 type Executor struct {
 	// Source runs the queries.
 	Source Source
@@ -98,12 +104,20 @@ type Executor struct {
 	// MaxBatchBytes bounds the row data of one batch; below 1 means
 	// DefaultMaxBatchBytes.
 	MaxBatchBytes int64
+	// MaxHeldBytes bounds the row data of the batches held at once, pending
+	// exports included; below 1 means DefaultMaxHeldBytes.
+	MaxHeldBytes int64
 
 	// now is the clock; tests replace it.
 	now func() time.Time
+	// orphanAfter replaces orphanGrace when positive (tests).
+	orphanAfter time.Duration
 
 	locationsMu sync.Mutex
 	locations   map[string]*time.Location
+
+	// exports tracks the background exports (export.go).
+	exports exportState
 }
 
 // NewExecutor returns an Executor with the built-in queries.
@@ -137,12 +151,24 @@ func (e *Executor) RunProbe(ctx context.Context, item collectormetadata.Schedule
 		return nil, nil, err
 	}
 	key := WatermarkKey{Collector: item.CollectorID, Target: item.Target.Name, LogType: logType}
+	e.exports.startCall(item, time.Now())
+	// An export left by an earlier call is only checked: it already waited
+	// for a whole call, so the Collector is busy, and the target's other log
+	// types must still get their turn in this cycle.
+	if err := e.awaitExport(ctx, item, key, false); err != nil {
+		return nil, nil, e.blocked(item, key, location, err)
+	}
 	watermark := e.watermark(key, item, location)
 	for batch := 1; ; batch++ {
 		started := time.Now()
 		full, err := e.extractBatch(ctx, item, key, query, location, &watermark)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, e.blocked(item, key, location, err)
+		}
+		// Wait for the batch until the deadline: a Collector that keeps up
+		// accepts it well within it.
+		if err := e.awaitExport(ctx, item, key, true); err != nil {
+			return nil, nil, e.blocked(item, key, location, err)
 		}
 		if !full || batch >= e.maxBatches() || !timeLeft(ctx, time.Since(started)) {
 			return nil, nil, nil
@@ -150,9 +176,23 @@ func (e *Executor) RunProbe(ctx context.Context, item collectormetadata.Schedule
 	}
 }
 
-// extractBatch reads, delivers and acknowledges one batch, moving watermark.
-// full reports a batch of batch_limit rows or a partial one, after which more
-// rows may wait.
+// blocked returns err, and when it is [collectors.ErrBlocked] it updates the
+// log type's lag from its stored watermark first, which no batch moves while
+// the log type waits.
+func (e *Executor) blocked(item collectormetadata.ScheduledProbe, key WatermarkKey, location *time.Location, err error) error {
+	if errors.Is(err, collectors.ErrBlocked) {
+		if watermark, found, loadErr := e.Store.Load(key); loadErr == nil && found {
+			e.Metrics.setLag(item, e.clock().Sub(Real(watermark.Instant, location)))
+		}
+	}
+	return err
+}
+
+// extractBatch reads one batch and starts its export, after which the
+// watermark moves (startExport); watermark is set to where the next batch
+// starts.  full reports a batch of batch_limit rows or a partial one, after
+// which more rows may wait.  The query has returned, and its connection gone
+// back to the pool, before the export starts.
 func (e *Executor) extractBatch(ctx context.Context, item collectormetadata.ScheduledProbe, key WatermarkKey, query string, location *time.Location, watermark *Watermark) (full bool, err error) {
 	settings := item.OutSystemsLogs
 	now := e.clock()
@@ -167,10 +207,23 @@ func (e *Executor) extractBatch(ctx context.Context, item collectormetadata.Sche
 		e.Metrics.setLag(item, now.Sub(Real(watermark.Instant, location)))
 		return false, nil
 	}
+	granted := e.exports.reserve(e.maxBatchBytes(), e.maxHeldBytes())
+	if granted == 0 {
+		e.Metrics.setExportBlocked(item, true)
+		return false, fmt.Errorf("log type %s: waiting for the OTel Collector to accept the batches of other log types, which hold %d MiB of the %d MiB allowed: %w",
+			item.Definition.Name, e.exports.heldBytes()>>20, e.maxHeldBytes()>>20, collectors.ErrBlocked)
+	}
+	// Not waiting, for the budget or an export (none is pending here).
+	e.Metrics.setExportBlocked(item, false)
 	batch, err := e.Source.Query(ctx, item.Target, query, QueryParams{
-		From: watermark.Instant, To: to, Limit: settings.BatchLimit, MaxBytes: e.maxBatchBytes(),
+		From: watermark.Instant, To: to, Limit: settings.BatchLimit, MaxBytes: granted,
 		DateTime: watermark.InstantType == "DATETIME",
 	})
+	// Hold what the batch holds until its export ends, or nothing if no
+	// export starts.
+	held := batch.Bytes
+	defer func() { e.exports.release(held) }()
+	e.exports.release(granted - batch.Bytes)
 	if err != nil {
 		return false, fmt.Errorf("log type %s: %w", item.Definition.Name, err)
 	}
@@ -191,6 +244,7 @@ func (e *Executor) extractBatch(ctx context.Context, item collectormetadata.Sche
 		rows, instants = rows[:cut], instants[:cut]
 		next = instants[cut-1]
 	}
+	*watermark = Watermark{Instant: next, InstantType: instantType, Source: watermark.Source}
 	if len(rows) > 0 {
 		logs := buildLogs(batch, rows, instants, recordContext{
 			collector:   item.CollectorID,
@@ -200,18 +254,14 @@ func (e *Executor) extractBatch(ctx context.Context, item collectormetadata.Sche
 			location:    location,
 			observed:    now,
 		})
-		if err := e.Exporter.Export(ctx, settings.LogsEndpoint, logs); err != nil {
-			e.Metrics.exportFailed(item)
-			return false, fmt.Errorf("log type %s: %w", item.Definition.Name, err)
-		}
-		e.Metrics.addRows(item, len(rows))
-		e.Metrics.observeRows(item, batch, rows, instants)
-		e.Metrics.setLogDelay(item, now.Sub(Real(instants[len(instants)-1], location)))
+		// The export releases the batch's bytes when it ends.
+		held = 0
+		e.startExport(item, key, logs, batch, rows, instants, *watermark, location)
+		return full, nil
 	}
-	*watermark = Watermark{Instant: next, InstantType: instantType, Source: watermark.Source}
 	e.Metrics.setLag(item, now.Sub(Real(next, location)))
 	if err := e.Store.Save(key, *watermark, now); err != nil {
-		return false, fmt.Errorf("log type %s: rows delivered, but the watermark is only kept in memory: %w", item.Definition.Name, err)
+		return false, fmt.Errorf("log type %s: the watermark is only kept in memory: %w", item.Definition.Name, err)
 	}
 	return full, nil
 }
@@ -278,15 +328,24 @@ func checkContract(batch Batch, from, to time.Time, limit int) ([]time.Time, str
 }
 
 // InitCollector implements collectors.CollectorObserver: it creates the
-// collector's counters at 0.
+// collector's counters at 0, and keeps the exports of a collector that was
+// stopped less than a minute ago going.
 func (e *Executor) InitCollector(collector collectorconfig.CollectorRuntimeConfig) {
+	e.exports.adopt(collector)
 	e.Metrics.initCollector(collector)
 }
 
 // ForgetCollector implements collectors.CollectorObserver: it deletes the
-// collector's series.  Its watermarks stay, so a collector that is changed or
-// re-added resumes where it stopped.
+// collector's series, and cancels its exports after a minute unless it
+// starts again (a reload restarts a changed collector at once).  Its
+// watermarks stay, so a collector that is changed or re-added resumes where
+// it stopped.
 func (e *Executor) ForgetCollector(collectorID string) {
+	grace := orphanGrace
+	if e.orphanAfter > 0 {
+		grace = e.orphanAfter
+	}
+	e.exports.orphan(collectorID, grace)
 	e.Metrics.forgetCollector(collectorID)
 }
 
@@ -340,6 +399,13 @@ func (e *Executor) maxBatchBytes() int64 {
 		return DefaultMaxBatchBytes
 	}
 	return e.MaxBatchBytes
+}
+
+func (e *Executor) maxHeldBytes() int64 {
+	if e.MaxHeldBytes < 1 {
+		return DefaultMaxHeldBytes
+	}
+	return e.MaxHeldBytes
 }
 
 func (e *Executor) logger() *slog.Logger {

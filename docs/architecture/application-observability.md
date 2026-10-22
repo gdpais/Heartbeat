@@ -47,20 +47,47 @@ Data path for self-managed OutSystems 11:
    Loki one at a time, in order, and retries a throttled one until Loki
    takes it (a push above Loki's 6 MB burst is never taken). Loki rejects
    for good a row more than an hour behind the newest row of its stream, so
-   batches exported in parallel lost rows during a backlog. While a batch
-   waits, the Collector's queue fills and it answers 503: the batch is not
-   delivered and the collector reads it again. The logs pipeline has no
-   batch processor, which would accept rows before they are queued. The
-   queue is on disk (the `otel-collector-queue` volume), so rows queued when
-   the Collector restarts are sent after the restart. One limit remains: the
-   queue sends the batches it was sending when it stopped (at most two)
-   after the rest, and Loki rejects their rows if it already has rows of the
-   same stream more than an hour newer, that is when the queue held more
-   than an hour of that stream. `LokiDiscardingLogs` then fires. In the kind
-   test a restart with Loki down lost none of 6,000 rows spanning 45
-   minutes, and 1,297 of 6,000 spanning three hours. A queue of one request
-   would keep the order, but the collector's export would then wait for
-   Loki, past its probe deadline.
+   batches sent out of order lose rows. The logs pipeline has no batch
+   processor, which would accept rows before they are queued.
+
+   The exporter's queue holds one request, on disk (the
+   `otel-collector-queue` volume), and the receiver waits for room in it.
+   A larger queue does not keep its order across a Collector restart: it
+   sends the requests it was sending when it stopped after the rest, and
+   with 64 MiB a restart during a three-hour backlog lost 1,297 of 6,000
+   rows in the kind test. With one request nothing queues behind the request
+   being sent, and the disk keeps that request across the restart: the kind
+   test restarts the Collector during backlogs of 45 minutes and three
+   hours, with Loki down, and Loki ends with every row of both, once.
+
+   So the Collector takes the next batch only once Loki has the one before,
+   and while Loki is down it takes none. The collector waits for it without
+   treating it as a failure: the export runs in the background, outside the
+   probe deadline, and is retried until the Collector accepts it; meanwhile
+   the log type reads nothing more, and `heartbeat_outsystems_export_blocked`
+   is 1. The target stays up and does not back off, so it resumes as soon
+   as the Collector accepts the batch. The rows were read and the query
+   closed before the export started, so nothing is held on the logging
+   database while it waits, and the batches held in memory are bounded
+   (64 MiB of row data). A backlog drains at about the rate Loki takes it
+   ([throughput](#export-throughput)).
+
+### Export throughput
+
+Measured on kind with one log type of 12,000 error rows of about 6 KB
+(72 MB) spanning three hours, polled every 10 s:
+
+| Queue | Backlog with Loki up | Backlog after a Loki outage |
+| --- | --- | --- |
+| One request (this chart) | 85 s, 87 s, 102 s, 105 s | 61 s after Loki was back; the target stayed up while it waited |
+| 64 MiB (earlier charts) | 108 s, 177 s | The queue filled, the target failed and backed off, and 15 minutes after Loki was back it held 12,339 lines for the 12,000 rows: batches sent again after 503s |
+
+Loki's ingestion rate limit sets the pace either way: the Collector pushes
+4 MiB at a time and waits at least 5 s after a throttled push. The 64 MiB
+queue only moved the wait from the collector into the Collector. Other
+OTLP sources of logs, none yet, wait the same way; one that gives up sooner
+(an OpenTelemetry SDK retries for about a minute) drops its batch, where a
+larger queue would have held it.
 
 ## OutSystems fields
 
