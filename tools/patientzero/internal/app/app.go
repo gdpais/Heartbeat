@@ -17,8 +17,10 @@ import (
 	"strings"
 	"time"
 
+	"heartbeat/tools/patientzero/internal/inject"
 	"heartbeat/tools/patientzero/internal/oslog"
 	"heartbeat/tools/patientzero/internal/shop"
+	"heartbeat/tools/patientzero/internal/traffic"
 )
 
 // The caller's identity. A load generator sets these to give each virtual
@@ -35,6 +37,18 @@ const (
 	PathPlaceOrder = "/PatientZero_App/screenservices/PatientZero_App/MainFlow/Checkout/ServiceAPIPlaceOrder"
 	PathAPIOrders  = "/PatientZero_API/rest/Orders/orders"
 )
+
+// Entry point names, as Heartbeat's operation label names them: the screen
+// of a screen row, the endpoint of a mobile request, the action of an
+// exposed API. Scenario faults target entry points by these names.
+const (
+	EntryOrderList  = "OrderList"
+	EntryPlaceOrder = "PlaceOrder"
+	EntryGetOrders  = "GetOrders"
+)
+
+// EntryPoints lists the entry point names.
+var EntryPoints = []string{EntryOrderList, EntryPlaceOrder, EntryGetOrders}
 
 // The application and its modules (eSpaces), as the log rows name them.
 const (
@@ -68,6 +82,12 @@ type Server struct {
 	Ready func(context.Context) error
 	Now   func() time.Time
 	Log   *slog.Logger
+	// Faults are the scenario faults switched on; nil injects nothing.
+	Faults *inject.Injector
+	// Traffic counts the requests of a scenario run; nil counts nothing.
+	Traffic *traffic.Counter
+	// Admin serves /admin/ (the scenario runner); nil serves nothing there.
+	Admin http.Handler
 }
 
 // Handler routes the health endpoints and the entry points.
@@ -80,6 +100,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+PathOrderList, s.orderList)
 	mux.HandleFunc("POST "+PathPlaceOrder, s.placeOrder)
 	mux.HandleFunc("GET "+PathAPIOrders, s.apiOrders)
+	if s.Admin != nil {
+		mux.Handle("/admin/", s.Admin)
+	}
 	return mux
 }
 
@@ -106,9 +129,11 @@ type call struct {
 	module     module
 	entryPoint string
 	action     string
+	// name is the entry point's name in EntryPoints.
+	name string
 }
 
-func (s *Server) begin(r *http.Request, m module, entryPoint, action string) *call {
+func (s *Server) begin(r *http.Request, m module, entryPoint, action, name string) *call {
 	c := &call{
 		RequestKey: newGUID(),
 		Session:    r.Header.Get(HeaderSession),
@@ -118,6 +143,7 @@ func (s *Server) begin(r *http.Request, m module, entryPoint, action string) *ca
 		module:     m,
 		entryPoint: entryPoint,
 		action:     action,
+		name:       name,
 	}
 	if c.Session == "" {
 		c.Session = newSessionID()
@@ -134,6 +160,20 @@ func (s *Server) identify(ctx context.Context, c *call) error {
 	id, err := s.Store.Customer(ctx, c.Username)
 	c.UserID = id
 	return err
+}
+
+// injectFaults applies the scenario faults switched on for the call's
+// entry point: a delay, or an injected failure.
+func (s *Server) injectFaults(ctx context.Context, c *call) error {
+	return s.Faults.Apply(ctx, c.name)
+}
+
+// observe counts the call for the scenario run, if one is active.
+func (s *Server) observe(c *call, end time.Time, err error) {
+	s.Traffic.Observe(traffic.Request{
+		EntryPoint: c.name, User: c.Username, Session: c.Session, Duration: end.Sub(c.Start),
+		Failed: err != nil, Injected: errors.Is(err, inject.ErrInjected),
+	})
 }
 
 // common are the columns every log row of the call carries.
@@ -202,10 +242,11 @@ var dataProviderFrames = []string{
 
 // stack is the error's stack trace: the module's action and entry point,
 // under the data provider's frames when the database failed. A refused
-// order (shop.ErrInvalid) is the action's own.
+// order (shop.ErrInvalid) and a scenario's injected failure are the
+// action's own.
 func stack(c *call, err error) string {
 	var frames []string
-	if !errors.Is(err, shop.ErrInvalid) {
+	if !errors.Is(err, shop.ErrInvalid) && !errors.Is(err, inject.ErrInjected) {
 		frames = append(frames, dataProviderFrames...)
 	}
 	frames = append(frames,
@@ -224,9 +265,12 @@ func (s *Server) finish(ctx context.Context, c *call, rows []oslog.Row) {
 
 // Traditional web screen: OrderList, the user's newest orders.
 func (s *Server) orderList(w http.ResponseWriter, r *http.Request) {
-	c := s.begin(r, webModule, "OrderList", "Preparation")
+	c := s.begin(r, webModule, "OrderList", "Preparation", EntryOrderList)
 	var orders []shop.Order
 	err := s.identify(r.Context(), c)
+	if err == nil {
+		err = s.injectFaults(r.Context(), c)
+	}
 	if err == nil {
 		orders, err = s.Store.Orders(r.Context(), c.UserID, ordersShown)
 	}
@@ -257,6 +301,7 @@ func (s *Server) orderList(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, row)
 	}
 	s.finish(r.Context(), c, rows)
+	s.observe(c, end, err)
 
 	if err != nil {
 		http.Error(w, "An error occurred processing your request.", http.StatusInternalServerError)
@@ -284,7 +329,7 @@ type placeOrderInput struct {
 
 // Reactive server action: Checkout's PlaceOrder.
 func (s *Server) placeOrder(w http.ResponseWriter, r *http.Request) {
-	c := s.begin(r, appModule, "Checkout", "PlaceOrder")
+	c := s.begin(r, appModule, "Checkout", "PlaceOrder", EntryPlaceOrder)
 	var in placeOrderInput
 	var order shop.Order
 	err := s.identify(r.Context(), c)
@@ -292,6 +337,9 @@ func (s *Server) placeOrder(w http.ResponseWriter, r *http.Request) {
 		if derr := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); derr != nil {
 			err = fmt.Errorf("%w: %v", shop.ErrInvalid, derr)
 		}
+	}
+	if err == nil {
+		err = s.injectFaults(r.Context(), c)
 	}
 	if err == nil {
 		order, err = s.Store.PlaceOrder(r.Context(), c.UserID, in.ProductID, in.Quantity)
@@ -319,6 +367,7 @@ func (s *Server) placeOrder(w http.ResponseWriter, r *http.Request) {
 	req["Error_Id"] = errID
 	rows = append([]oslog.Row{{Type: "mobile_request", Columns: c.user(req)}}, rows...)
 	s.finish(r.Context(), c, rows)
+	s.observe(c, end, err)
 
 	if err != nil {
 		writeServerActionError(w, err)
@@ -329,9 +378,12 @@ func (s *Server) placeOrder(w http.ResponseWriter, r *http.Request) {
 
 // Exposed REST API: GET orders of the calling user.
 func (s *Server) apiOrders(w http.ResponseWriter, r *http.Request) {
-	c := s.begin(r, apiModule, "Orders", "GetOrders")
+	c := s.begin(r, apiModule, "Orders", "GetOrders", EntryGetOrders)
 	var orders []shop.Order
 	err := s.identify(r.Context(), c)
+	if err == nil {
+		err = s.injectFaults(r.Context(), c)
+	}
 	if err == nil {
 		orders, err = s.Store.Orders(r.Context(), c.UserID, ordersShown)
 	}
@@ -374,6 +426,7 @@ func (s *Server) apiOrders(w http.ResponseWriter, r *http.Request) {
 		{Type: "integration", Columns: integration},
 	}, rows...)
 	s.finish(r.Context(), c, rows)
+	s.observe(c, end, err)
 
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"Errors": "Internal Server Error"})

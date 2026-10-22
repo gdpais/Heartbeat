@@ -357,6 +357,25 @@ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer wrong' localh
 hb_admin '.config.CredentialRefs'                                                                     # every value <redacted>
 ```
 
+### An application fails, on purpose
+
+With [PatientZero](../../tools/patientzero/README.md) running
+(`make patientzero-up`), a scenario breaks the application instead of the
+database and checks that Heartbeat sees it:
+
+```bash
+make patientzero-scenario NAME=checkout-errors   # about 6 minutes
+```
+
+Half of the checkout's `PlaceOrder` calls fail for three minutes, each with
+an error row in PatientZero's logging database. The command prints each
+check as it settles: the `PlaceOrder` error ratio from the collector's
+derived metrics rises above 0.3, the injected errors appear in Loki, and
+the ratio falls back once the fault ends. Watch it in Grafana's *OutSystems
+Errors* dashboard meanwhile. The run's journal, what PatientZero injected
+and served every 15 seconds, is in `.tmp/patientzero-scenarios/`
+([format](../../tools/patientzero/scenarios/README.md#run-journal)).
+
 ## 6. Alert delivery
 
 Alertmanager routes Watchdog to `deadmans-switch` and every other alert to

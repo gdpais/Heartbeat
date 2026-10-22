@@ -25,6 +25,28 @@ sql:
 # views; the setup script adds the Heartbeat collector's login to it.
 logReaderRole: heartbeat_oslog_reader
 
+# Bearer token for the scenario admin endpoints (/admin/, see
+# scenarios/README.md): a Secret, never a value here. The setup script
+# creates patientzero-admin with a random token. Without a Secret the admin
+# endpoints answer 401.
+admin:
+  existingSecret: patientzero-admin
+  key: admin-token
+
+# Where scenario signals are read: Heartbeat's Prometheus, Loki and
+# Alertmanager. The setup script points them at the Heartbeat namespace;
+# an empty URL makes the scenarios that need it not runnable.
+signals:
+  prometheusURL: ""
+  lokiURL: ""
+  alertmanagerURL: ""
+
+# Run journals (JSONL, one per scenario run) go to an emptyDir: they survive
+# container restarts, not the pod. The admin endpoint serves them, and
+# make patientzero-scenario saves a copy under .tmp/patientzero-scenarios/.
+journal:
+  sizeLimit: 128Mi
+
 service:
   port: 8080
 

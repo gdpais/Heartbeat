@@ -40,7 +40,8 @@ which is not committed.
   and releases; [changelog](../CHANGELOG.md)
 - Service internals: [DB collector](../services/db-collector/README.md)
 - Test application: [PatientZero](../tools/patientzero/README.md), the
-  synthetic OutSystems application Heartbeat is tested against
+  synthetic OutSystems application Heartbeat is tested against, and its
+  [fault scenarios and run journal](../tools/patientzero/scenarios/README.md)
 - [TODO.md](../TODO.md): implementation task list
 
 **Operators and SREs**

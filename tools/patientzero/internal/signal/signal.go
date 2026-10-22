@@ -1,0 +1,280 @@
+// Package signal evaluates a scenario's expected signals: PromQL against
+// Prometheus, LogQL against Loki, and alerts against Alertmanager, at the
+// base URLs it is given. One evaluation is one query; the runner repeats it
+// over the signal's window.
+package signal
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"heartbeat/tools/patientzero/internal/scenario"
+)
+
+// maxBody caps a response read from a source.
+const maxBody = 4 << 20
+
+// Sources are the base URLs signals are read from; an empty URL means that
+// source is not available.
+type Sources struct {
+	Prometheus   string
+	Loki         string
+	Alertmanager string
+	// Client makes the requests; one with a 10s timeout when nil.
+	Client *http.Client
+}
+
+// URLFor is the base URL of the source a signal kind reads.
+func (s Sources) URLFor(kind string) string {
+	switch kind {
+	case scenario.KindPromQL:
+		return s.Prometheus
+	case scenario.KindLogQL:
+		return s.Loki
+	case scenario.KindAlert:
+		return s.Alertmanager
+	}
+	return ""
+}
+
+// Result is one evaluation of a signal.
+type Result struct {
+	// Pass is whether the condition (or the alert state) held.
+	Pass bool `json:"pass"`
+	// Values are the query's values: one per series of a PromQL or LogQL
+	// metric query, the number of matching active alerts for an alert.
+	// Sorted, at most maxValues.
+	Values []float64 `json:"values"`
+	// Series is how many values the query returned before the cut.
+	Series int `json:"series"`
+}
+
+const maxValues = 20
+
+// Evaluate runs sig once, at time at.
+func (s Sources) Evaluate(ctx context.Context, sig scenario.Signal, at time.Time) (Result, error) {
+	base := s.URLFor(sig.Kind())
+	if base == "" {
+		return Result{}, fmt.Errorf("no %s URL is configured", sourceName(sig.Kind()))
+	}
+	switch sig.Kind() {
+	case scenario.KindAlert:
+		n, err := s.activeAlerts(ctx, base, sig)
+		if err != nil {
+			return Result{}, err
+		}
+		pass := n > 0
+		if sig.State == scenario.StateResolved {
+			pass = n == 0
+		}
+		return Result{Pass: pass, Values: []float64{float64(n)}, Series: 1}, nil
+	default:
+		cond, err := scenario.ParseCondition(sig.Condition)
+		if err != nil {
+			return Result{}, err
+		}
+		var values []float64
+		if sig.Kind() == scenario.KindPromQL {
+			values, err = s.promQuery(ctx, base, sig.PromQL, at)
+		} else {
+			values, err = s.lokiQuery(ctx, base, sig.LogQL, at)
+		}
+		if err != nil {
+			return Result{}, err
+		}
+		r := Result{Pass: cond.Holds(values), Series: len(values)}
+		sort.Float64s(values)
+		if len(values) > maxValues {
+			values = values[:maxValues]
+		}
+		r.Values = values
+		return r, nil
+	}
+}
+
+func sourceName(kind string) string {
+	switch kind {
+	case scenario.KindPromQL:
+		return "Prometheus"
+	case scenario.KindLogQL:
+		return "Loki"
+	default:
+		return "Alertmanager"
+	}
+}
+
+func (s Sources) client() *http.Client {
+	if s.Client != nil {
+		return s.Client
+	}
+	return &http.Client{Timeout: 10 * time.Second}
+}
+
+func (s Sources) get(ctx context.Context, base, path string, q url.Values, v any) error {
+	u, err := url.Parse(strings.TrimRight(base, "/") + path)
+	if err != nil {
+		return err
+	}
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := s.client().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+	if err != nil {
+		return err
+	}
+	if len(body) > maxBody {
+		return fmt.Errorf("GET %s: response larger than %d bytes", path, maxBody)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s: HTTP %d: %s", path, resp.StatusCode, snippet(body))
+	}
+	if err := json.Unmarshal(body, v); err != nil {
+		return fmt.Errorf("GET %s: %w", path, err)
+	}
+	return nil
+}
+
+func snippet(b []byte) string {
+	s := strings.TrimSpace(string(b))
+	if len(s) > 300 {
+		s = s[:300] + "..."
+	}
+	return s
+}
+
+// queryResponse is the Prometheus HTTP API's instant query response, which
+// Loki's /loki/api/v1/query also uses.
+type queryResponse struct {
+	Status string `json:"status"`
+	Error  string `json:"error"`
+	Data   struct {
+		ResultType string          `json:"resultType"`
+		Result     json.RawMessage `json:"result"`
+	} `json:"data"`
+}
+
+func (s Sources) promQuery(ctx context.Context, base, query string, at time.Time) ([]float64, error) {
+	q := url.Values{"query": {query}, "time": {strconv.FormatFloat(float64(at.UnixMilli())/1000, 'f', 3, 64)}}
+	var r queryResponse
+	if err := s.get(ctx, base, "/api/v1/query", q, &r); err != nil {
+		return nil, err
+	}
+	return values(r)
+}
+
+func (s Sources) lokiQuery(ctx context.Context, base, query string, at time.Time) ([]float64, error) {
+	q := url.Values{"query": {query}, "time": {strconv.FormatInt(at.UnixNano(), 10)}}
+	var r queryResponse
+	if err := s.get(ctx, base, "/loki/api/v1/query", q, &r); err != nil {
+		return nil, err
+	}
+	return values(r)
+}
+
+// values reads an instant query's result: the value of every series of a
+// vector, or a scalar. Loki answers a log query (no metric) on its instant
+// endpoint with an error; a signal counts lines with count_over_time.
+func values(r queryResponse) ([]float64, error) {
+	if r.Status != "success" {
+		return nil, fmt.Errorf("query failed: %s", r.Error)
+	}
+	switch r.Data.ResultType {
+	case "vector":
+		var vec []struct {
+			Value [2]json.RawMessage `json:"value"`
+		}
+		if err := json.Unmarshal(r.Data.Result, &vec); err != nil {
+			return nil, err
+		}
+		out := make([]float64, 0, len(vec))
+		for _, v := range vec {
+			f, err := sampleValue(v.Value[1])
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, f)
+		}
+		return out, nil
+	case "scalar":
+		var sc [2]json.RawMessage
+		if err := json.Unmarshal(r.Data.Result, &sc); err != nil {
+			return nil, err
+		}
+		f, err := sampleValue(sc[1])
+		if err != nil {
+			return nil, err
+		}
+		return []float64{f}, nil
+	case "streams":
+		return nil, errors.New("the query returns log lines; a signal needs a metric query such as sum(count_over_time(...))")
+	case "matrix":
+		return nil, errors.New("the query returns a range vector; a signal needs an instant vector or scalar")
+	}
+	return nil, fmt.Errorf("unknown result type %q", r.Data.ResultType)
+}
+
+func sampleValue(raw json.RawMessage) (float64, error) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return 0, fmt.Errorf("sample value %s is not a string", raw)
+	}
+	return strconv.ParseFloat(s, 64)
+}
+
+// activeAlerts counts the alerts Alertmanager holds active (not silenced or
+// inhibited) with the signal's alert name and labels.
+func (s Sources) activeAlerts(ctx context.Context, base string, sig scenario.Signal) (int, error) {
+	filters := []string{matcher("alertname", sig.Alert)}
+	keys := make([]string, 0, len(sig.Labels))
+	for k := range sig.Labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		filters = append(filters, matcher(k, sig.Labels[k]))
+	}
+	q := url.Values{
+		"active":      {"true"},
+		"silenced":    {"false"},
+		"inhibited":   {"false"},
+		"unprocessed": {"false"},
+		"filter":      filters,
+	}
+	var alerts []struct {
+		Status struct {
+			State string `json:"state"`
+		} `json:"status"`
+	}
+	if err := s.get(ctx, base, "/api/v2/alerts", q, &alerts); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, a := range alerts {
+		if a.Status.State == "active" {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// matcher is an Alertmanager equality matcher, the value quoted.
+func matcher(name, value string) string {
+	return name + "=" + strconv.Quote(value)
+}

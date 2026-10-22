@@ -123,6 +123,7 @@ database.
 
 ```bash
 make patientzero-up         # needs make sqlserver-dev-up; adds PatientZero's login to .env.sqlserver-dev
+make patientzero-scenario NAME=checkout-errors   # a fault scenario with its load; checks the signals
 make patientzero-down       # remove it, its databases and its login
 ```
 

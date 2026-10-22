@@ -7,6 +7,7 @@ go 1.27.3
 require (
 	github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9
 	github.com/microsoft/go-mssqldb v1.8.2
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
