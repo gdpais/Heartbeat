@@ -16,7 +16,7 @@ import (
 // registry is the registry PatientZero's main builds.
 func registry() *scenario.Registry {
 	reg := scenario.NewRegistry()
-	inject.Register(reg, &inject.Injector{}, app.EntryPoints)
+	inject.Register(reg, &inject.Injector{}, app.Modules)
 	return reg
 }
 
@@ -103,6 +103,14 @@ func TestSchemaMatchesValidation(t *testing.T) {
 	if got := strings(t, path(t, s, "$defs", "entryPoints", "items", "enum")); !slices.Equal(got, entryPoints) {
 		t.Errorf("schema entry points %v, app.EntryPoints %v", got, entryPoints)
 	}
+	var modules []string
+	for m := range app.Modules {
+		modules = append(modules, m)
+	}
+	sort.Strings(modules)
+	if got := strings(t, path(t, s, "$defs", "module", "enum")); !slices.Equal(got, modules) {
+		t.Errorf("schema modules %v, app.Modules %v", got, modules)
+	}
 	loads := slices.Sorted(slices.Values(scenario.LoadProfiles))
 	if got := strings(t, path(t, s, "properties", "load", "enum")); !slices.Equal(got, loads) {
 		t.Errorf("schema load profiles %v, scenario.LoadProfiles %v", got, loads)
@@ -118,10 +126,13 @@ func TestSchemaMatchesValidation(t *testing.T) {
 	var described []string
 	for _, a := range allOf {
 		described = append(described, path(t, a.(map[string]any), "if", "properties", "type", "const").(string))
-		if path(t, a.(map[string]any), "if", "properties", "type", "const") == "errors" {
-			max := number(t, path(t, a.(map[string]any), "then", "properties", "params", "properties", "message", "maxLength"))
+		for typ, field := range map[string]string{"errors": "message", "deploy": "exception"} {
+			if path(t, a.(map[string]any), "if", "properties", "type", "const") != typ {
+				continue
+			}
+			max := number(t, path(t, a.(map[string]any), "then", "properties", "params", "properties", field, "maxLength"))
 			if max != inject.MaxMessageLen {
-				t.Errorf("schema errors message maxLength %d, inject.MaxMessageLen %d", max, inject.MaxMessageLen)
+				t.Errorf("schema %s %s maxLength %d, inject.MaxMessageLen %d", typ, field, max, inject.MaxMessageLen)
 			}
 		}
 	}

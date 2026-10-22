@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -95,13 +96,17 @@ SELECT Id FROM dbo.Customer WHERE Username = @username;`,
 	return id, err
 }
 
-func (s *SQLStore) Orders(ctx context.Context, customerID, limit int) ([]Order, error) {
-	rows, err := s.DB.QueryContext(ctx, `
-SELECT TOP (@limit) o.Id, p.Name, o.Quantity, o.Total, o.CreatedOn
+// ordersSQL is the customer's newest orders, the query behind the order
+// list screen and the orders API.
+const ordersSQL = `SELECT TOP (@limit) o.Id, p.Name, o.Quantity, o.Total, o.CreatedOn
 FROM dbo.SalesOrder AS o
 JOIN dbo.Product AS p ON p.Id = o.ProductId
 WHERE o.CustomerId = @customer
-ORDER BY o.Id DESC;`, sql.Named("limit", limit), sql.Named("customer", customerID))
+ORDER BY o.Id DESC;`
+
+func (s *SQLStore) Orders(ctx context.Context, customerID, limit int) ([]Order, error) {
+	query, args := withDelay(ctx, ordersSQL, sql.Named("limit", limit), sql.Named("customer", customerID))
+	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -117,6 +122,18 @@ ORDER BY o.Id DESC;`, sql.Named("limit", limit), sql.Named("customer", customerI
 	return orders, rows.Err()
 }
 
+// placeOrderSQL takes the quantity from stock and records the order. Its
+// first statement, the stock update, is what a slow-query row names.
+const placeOrderSQL = `SET NOCOUNT ON;
+DECLARE @ordered TABLE (Id bigint, Total decimal(12, 2), CreatedOn datetime2(3));
+UPDATE dbo.Product SET Stock = Stock - @quantity
+WHERE Id = @product AND Stock >= @quantity;
+IF @@ROWCOUNT = 1
+    INSERT INTO dbo.SalesOrder (CustomerId, ProductId, Quantity, Total)
+    OUTPUT inserted.Id, inserted.Total, inserted.CreatedOn INTO @ordered
+    SELECT @customer, Id, @quantity, Price * @quantity FROM dbo.Product WHERE Id = @product;
+SELECT o.Id, p.Name, o.Total, o.CreatedOn FROM @ordered AS o CROSS JOIN dbo.Product AS p WHERE p.Id = @product;`
+
 func (s *SQLStore) PlaceOrder(ctx context.Context, customerID, productID, quantity int) (Order, error) {
 	if quantity < 1 {
 		return Order{}, fmt.Errorf("%w: quantity %d is below 1", ErrInvalid, quantity)
@@ -127,18 +144,9 @@ func (s *SQLStore) PlaceOrder(ctx context.Context, customerID, productID, quanti
 	}
 	defer tx.Rollback() //nolint:errcheck // a no-op after Commit
 	var o Order
-	err = tx.QueryRowContext(ctx, `
-SET NOCOUNT ON;
-DECLARE @ordered TABLE (Id bigint, Total decimal(12, 2), CreatedOn datetime2(3));
-UPDATE dbo.Product SET Stock = Stock - @quantity
-WHERE Id = @product AND Stock >= @quantity;
-IF @@ROWCOUNT = 1
-    INSERT INTO dbo.SalesOrder (CustomerId, ProductId, Quantity, Total)
-    OUTPUT inserted.Id, inserted.Total, inserted.CreatedOn INTO @ordered
-    SELECT @customer, Id, @quantity, Price * @quantity FROM dbo.Product WHERE Id = @product;
-SELECT o.Id, p.Name, o.Total, o.CreatedOn FROM @ordered AS o CROSS JOIN dbo.Product AS p WHERE p.Id = @product;`,
-		sql.Named("customer", customerID), sql.Named("product", productID), sql.Named("quantity", quantity),
-	).Scan(&o.ID, &o.Product, &o.Total, &o.CreatedOn)
+	query, args := withDelay(ctx, placeOrderSQL,
+		sql.Named("customer", customerID), sql.Named("product", productID), sql.Named("quantity", quantity))
+	err = tx.QueryRowContext(ctx, query, args...).Scan(&o.ID, &o.Product, &o.Total, &o.CreatedOn)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Order{}, fmt.Errorf("%w: product %d does not exist or has fewer than %d in stock", ErrInvalid, productID, quantity)
 	}
@@ -147,4 +155,54 @@ SELECT o.Id, p.Name, o.Total, o.CreatedOn FROM @ordered AS o CROSS JOIN dbo.Prod
 	}
 	o.Quantity = quantity
 	return o, tx.Commit()
+}
+
+// Statements are the business statements as a slow-query row names them,
+// by the Store method that runs them: one line, as the platform logs the
+// SQL it ran.
+var Statements = map[string]string{
+	"Orders":     oneLine(ordersSQL),
+	"PlaceOrder": oneLine(placeOrderSQL[strings.Index(placeOrderSQL, "UPDATE"):strings.Index(placeOrderSQL, "IF @@ROWCOUNT")]),
+}
+
+func oneLine(sql string) string {
+	return strings.TrimSuffix(strings.Join(strings.Fields(sql), " "), ";")
+}
+
+type delayKey struct{}
+
+// WithDelay returns a context under which the Store's statements take d
+// longer in SQL Server: the batch waits d (WAITFOR DELAY) before its first
+// statement, before any lock is taken, so the session is busy in SQL Server
+// for that long, as for a query that has to read far more than it should.
+// The sql-latency scenario fault sets it.
+func WithDelay(ctx context.Context, d time.Duration) context.Context {
+	if d <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, delayKey{}, d)
+}
+
+// Delay is the delay WithDelay set, or 0.
+func Delay(ctx context.Context) time.Duration {
+	d, _ := ctx.Value(delayKey{}).(time.Duration)
+	return d
+}
+
+// withDelay puts the context's delay in front of query.
+func withDelay(ctx context.Context, query string, args ...any) (string, []any) {
+	d := Delay(ctx)
+	if d <= 0 {
+		return query, args
+	}
+	return "WAITFOR DELAY @pz_delay;\n" + query, append(args, sql.Named("pz_delay", waitforTime(d)))
+}
+
+// waitforTime is d as WAITFOR DELAY reads it, hh:mm:ss.mmm; at most 23:59:59.999.
+func waitforTime(d time.Duration) string {
+	if d >= 24*time.Hour {
+		d = 24*time.Hour - time.Millisecond
+	}
+	ms := d.Milliseconds()
+	return fmt.Sprintf("%02d:%02d:%02d.%03d", ms/3_600_000, ms/60_000%60, ms/1000%60, ms%1000)
 }

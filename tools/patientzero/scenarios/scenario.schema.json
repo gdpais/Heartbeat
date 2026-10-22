@@ -42,6 +42,10 @@
       "uniqueItems": true,
       "description": "Entry points by Heartbeat's operation label; empty or absent for all."
     },
+    "module": {
+      "enum": ["PatientZero_API", "PatientZero_App", "PatientZero_Web"],
+      "description": "A PatientZero module (eSpace): PatientZero_Web serves OrderList, PatientZero_App PlaceOrder, PatientZero_API GetOrders."
+    },
     "ratio": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
     "step": {
       "type": "object",
@@ -58,7 +62,7 @@
       "additionalProperties": false,
       "required": ["type"],
       "properties": {
-        "type": { "enum": ["latency", "errors"], "description": "A type from the fault registry (README.md, \"Fault registry\")." },
+        "type": { "enum": ["latency", "errors", "deploy", "sql-latency"], "description": "A type from the fault registry (README.md, \"Fault registry\")." },
         "params": { "type": "object" }
       },
       "allOf": [
@@ -93,6 +97,45 @@
                   "entry_points": { "$ref": "#/$defs/entryPoints" },
                   "ratio": { "$ref": "#/$defs/ratio", "description": "Share of the requests failed." },
                   "message": { "type": "string", "maxLength": 200, "description": "Ends the error row's Message, after \"injected by scenario: \"." }
+                }
+              }
+            },
+            "required": ["params"]
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "deploy" } } },
+          "then": {
+            "properties": {
+              "params": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["module"],
+                "anyOf": [{ "required": ["error_ratio"] }, { "required": ["delay"] }],
+                "properties": {
+                  "module": { "$ref": "#/$defs/module" },
+                  "error_ratio": { "$ref": "#/$defs/ratio", "description": "Share of the module's requests the new version fails." },
+                  "exception": { "type": "string", "maxLength": 200, "description": "The error row's Message; .NET's NullReferenceException message by default." },
+                  "delay": { "$ref": "#/$defs/duration", "description": "Added to every request of the module; at most 1m." }
+                }
+              }
+            },
+            "required": ["params"]
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "sql-latency" } } },
+          "then": {
+            "properties": {
+              "params": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["delay"],
+                "properties": {
+                  "entry_points": { "$ref": "#/$defs/entryPoints" },
+                  "delay": { "$ref": "#/$defs/duration", "description": "How much longer the business statement runs in SQL Server; delay plus jitter at most 1m." },
+                  "jitter": { "$ref": "#/$defs/duration", "description": "A random extra delay up to this." },
+                  "ratio": { "$ref": "#/$defs/ratio", "default": 1, "description": "Share of the requests slowed." }
                 }
               }
             },

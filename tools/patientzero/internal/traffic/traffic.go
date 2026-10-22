@@ -26,6 +26,7 @@ type Request struct {
 	Duration   time.Duration
 	Failed     bool // the request wrote an error row
 	Injected   bool // a scenario fault failed it
+	SlowSQL    int  // slow-query rows (SLOWSQL) the request wrote
 }
 
 // EntryPoint is the summary of one entry point.
@@ -36,6 +37,7 @@ type EntryPoint struct {
 	DurationMsSum  int64 `json:"duration_ms_sum"`
 	DurationMsMax  int64 `json:"duration_ms_max"`
 	AnonymousCalls int64 `json:"anonymous"`
+	SlowSQL        int64 `json:"slow_sql"`
 }
 
 // Summary is the traffic between From and To.
@@ -45,6 +47,7 @@ type Summary struct {
 	Requests       int64                 `json:"requests"`
 	Failed         int64                 `json:"failed"`
 	Injected       int64                 `json:"injected"`
+	SlowSQL        int64                 `json:"slow_sql"`
 	Users          int                   `json:"users"`
 	Sessions       int                   `json:"sessions"`
 	UsersCapped    bool                  `json:"users_capped,omitempty"`
@@ -82,6 +85,8 @@ func (w *window) add(r Request) {
 		s.Injected++
 		ep.Injected++
 	}
+	s.SlowSQL += int64(r.SlowSQL)
+	ep.SlowSQL += int64(r.SlowSQL)
 	ms := r.Duration.Milliseconds()
 	ep.DurationMsSum += ms
 	if ms > ep.DurationMsMax {

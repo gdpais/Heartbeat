@@ -201,7 +201,7 @@ func run(log *slog.Logger) error {
 	faults := &inject.Injector{}
 	counter := &traffic.Counter{}
 	registry := scenario.NewRegistry()
-	inject.Register(registry, faults, app.EntryPoints)
+	inject.Register(registry, faults, app.Modules)
 	list, err := scenario.LoadDir(scenarios.FS, ".", registry)
 	if err != nil {
 		return fmt.Errorf("scenarios: %w", err)
@@ -225,6 +225,7 @@ func run(log *slog.Logger) error {
 		Logs:     &oslog.SQLWriter{DB: logging, Schema: oslog.NewSchema(types)},
 		Schema:   oslog.NewSchema(types),
 		FrontEnd: cfg.frontEnd,
+		SlowSQL:  app.DefaultSlowSQL,
 		Log:      log,
 		Ready: func(ctx context.Context) error {
 			if !migrated.Load() {
