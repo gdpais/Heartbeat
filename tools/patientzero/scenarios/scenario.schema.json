@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gdpais/Heartbeat/tools/patientzero/scenarios/scenario.schema.json",
+  "title": "PatientZero scenario",
+  "description": "One fault scenario: the steps it runs, the fault of each step, and the signals it must produce. PatientZero validates every file at startup (internal/scenario); this schema is for editors and reviews. Format: tools/patientzero/scenarios/README.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "name", "description", "steps"],
+  "properties": {
+    "version": { "const": 1, "description": "Format version." },
+    "name": { "$ref": "#/$defs/name", "description": "The scenario's name; the file is <name>.yaml." },
+    "description": { "type": "string", "minLength": 1, "description": "What the scenario injects and what it must show." },
+    "load": {
+      "enum": ["none", "smoke", "steady", "peak", "soak", "day"],
+      "default": "steady",
+      "description": "The k6 profile (load/patientzero.js) the driver runs during the scenario; none for no load."
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/step" },
+      "description": "Stretches of the run, one after another, each with or without a fault."
+    },
+    "signals": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "$ref": "#/$defs/signal" },
+      "description": "Expected signals, each checked within its window and recorded in the run journal."
+    }
+  },
+  "$defs": {
+    "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
+    "duration": {
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+      "description": "A Go duration such as 90s or 2m30s."
+    },
+    "entryPoints": {
+      "type": "array",
+      "items": { "enum": ["OrderList", "PlaceOrder", "GetOrders"] },
+      "uniqueItems": true,
+      "description": "Entry points by Heartbeat's operation label; empty or absent for all."
+    },
+    "ratio": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "duration"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "duration": { "$ref": "#/$defs/duration", "description": "More than 0, at most 24h." },
+        "fault": { "$ref": "#/$defs/fault" }
+      }
+    },
+    "fault": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["latency", "errors"], "description": "A type from the fault registry (README.md, \"Fault registry\")." },
+        "params": { "type": "object" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "latency" } } },
+          "then": {
+            "properties": {
+              "params": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["delay"],
+                "properties": {
+                  "entry_points": { "$ref": "#/$defs/entryPoints" },
+                  "delay": { "$ref": "#/$defs/duration", "description": "Added to every request hit; delay plus jitter at most 1m." },
+                  "jitter": { "$ref": "#/$defs/duration", "description": "A random extra delay up to this." },
+                  "ratio": { "$ref": "#/$defs/ratio", "default": 1, "description": "Share of the requests delayed." }
+                }
+              }
+            },
+            "required": ["params"]
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "errors" } } },
+          "then": {
+            "properties": {
+              "params": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["ratio"],
+                "properties": {
+                  "entry_points": { "$ref": "#/$defs/entryPoints" },
+                  "ratio": { "$ref": "#/$defs/ratio", "description": "Share of the requests failed." },
+                  "message": { "type": "string", "maxLength": 200, "description": "Ends the error row's Message, after \"injected by scenario: \"." }
+                }
+              }
+            },
+            "required": ["params"]
+          }
+        }
+      ]
+    },
+    "signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "within"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "promql": { "type": "string", "minLength": 1, "description": "An instant PromQL query, run against Prometheus." },
+        "logql": { "type": "string", "minLength": 1, "description": "An instant LogQL metric query, run against Loki, such as sum(count_over_time({...} |= \"x\" [2m])). A log query (lines, no metric) fails the evaluation." },
+        "alert": { "type": "string", "minLength": 1, "description": "An alert name in Alertmanager." },
+        "labels": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$" },
+          "additionalProperties": { "type": "string" },
+          "description": "Alert signals only: labels the alert must carry."
+        },
+        "state": { "enum": ["firing", "resolved"], "description": "Alert signals only." },
+        "condition": {
+          "type": "string",
+          "pattern": "^\\s*(present|absent|(>=|<=|==|!=|>|<)\\s*[-+]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][-+]?[0-9]+)?)\\s*$",
+          "description": "Query signals only: present, absent, or a comparison such as > 0.25. A comparison must hold for every series returned, and fails on none."
+        },
+        "step": { "$ref": "#/$defs/name", "description": "The step the window is anchored on; the first step with a fault by default." },
+        "from": { "enum": ["start", "end"], "default": "start", "description": "The window opens at the start or the end of the step." },
+        "within": { "$ref": "#/$defs/duration", "description": "How long the window stays open; at most 6h." },
+        "mode": {
+          "enum": ["eventually", "always"],
+          "default": "eventually",
+          "description": "eventually: passes the first time the condition holds in the window. always: must hold at every evaluation until the window closes."
+        }
+      },
+      "oneOf": [
+        { "required": ["promql"], "not": { "anyOf": [{ "required": ["logql"] }, { "required": ["alert"] }] } },
+        { "required": ["logql"], "not": { "anyOf": [{ "required": ["promql"] }, { "required": ["alert"] }] } },
+        { "required": ["alert"], "not": { "anyOf": [{ "required": ["promql"] }, { "required": ["logql"] }] } }
+      ],
+      "allOf": [
+        {
+          "if": { "required": ["alert"] },
+          "then": { "required": ["state"], "not": { "required": ["condition"] } },
+          "else": { "required": ["condition"], "not": { "anyOf": [{ "required": ["state"] }, { "required": ["labels"] }] } }
+        }
+      ]
+    }
+  }
+}

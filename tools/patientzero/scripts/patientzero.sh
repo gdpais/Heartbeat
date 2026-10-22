@@ -22,6 +22,12 @@
 # PatientZero, follows its output and exits with k6's result. Interrupting it
 # stops following, not the load.
 # load-stop: deletes the load Job.
+# scenario: runs the scenario SCENARIO (tools/patientzero/scenarios) through
+#   PatientZero's admin endpoint, with the k6 load profile the scenario names
+#   running next to it, follows it to its end, saves its run journal to
+#   .tmp/patientzero-scenarios/<run>.jsonl and exits 0 only if every signal
+#   check passed. Without SCENARIO it lists the scenarios. Interrupting it
+#   stops the run (its fault is removed) and the load it started.
 # scale: a production-sized test logging database, patientzero_scale on the
 # sandbox SQL Server: two weeks of the surveyed installation's log, written
 # straight into the cycle tables (tools/patientzero/cmd/oslog-scale), then
@@ -55,6 +61,8 @@
 #   SCALE_SEED             seed of the generated log [1]
 #   SCALE_END              last instant generated, RFC 3339 [now]
 #   SCALE_LOOKBACK         how far back the patientzero-scale collector starts [48h]
+#   SCENARIO               scenario to run; empty to list them []
+#   SCENARIO_LOAD          0 to run a scenario without starting its load [1]
 set -eu
 cd "$(dirname "$0")/../../.."
 
@@ -79,6 +87,8 @@ SCALE_STATE=$STATE_DIR/patientzero-scale
 SCALE_DIR=.tmp/patientzero-scale
 LOAD_DIR=tools/patientzero/load
 LOAD_JOB=patientzero-load
+ADMIN_SECRET=patientzero-admin
+SCENARIO_DIR=.tmp/patientzero-scenarios
 # Renovate keeps this pin current (renovate.json).
 K6_IMAGE=grafana/k6:1.7.1@sha256:4fd3a694926b064d3491d9b02b01cde886583c4931f1223816e3d9a7bdfa7e0f
 
@@ -255,6 +265,12 @@ install_chart() {
 	printf '%s=%s\n' "$CREDENTIAL_KEY" "$credential" >"$secret_env"
 	kubectl_ -n "$NAMESPACE" create secret generic patientzero-sql --from-env-file="$secret_env" \
 		--dry-run=client -o yaml | kubectl_ apply -f - >/dev/null
+	# The admin token: random, created once, kept across reinstalls. Only the
+	# Secret holds it; make patientzero-scenario reads it from there.
+	if ! kubectl_ -n "$NAMESPACE" get secret "$ADMIN_SECRET" >/dev/null 2>&1; then
+		printf 'admin-token=%s\n' "$(openssl rand -hex 32)" >"$secret_env"
+		kubectl_ -n "$NAMESPACE" create secret generic "$ADMIN_SECRET" --from-env-file="$secret_env" >/dev/null
+	fi
 	rm -f "$secret_env"
 	log "installing release $RELEASE to $CONTEXT/$NAMESPACE"
 	helm upgrade --install "$RELEASE" "$CHART" \
@@ -264,6 +280,9 @@ install_chart() {
 		--set sql.trustServerCertificate=true \
 		--set "sql.database=$DATABASE" --set "sql.logDatabase=$LOG_DATABASE" \
 		--set "logReaderRole=$READER_ROLE" \
+		--set "signals.prometheusURL=http://prometheus.$HEARTBEAT_NAMESPACE.svc:9090" \
+		--set "signals.lokiURL=http://loki.$HEARTBEAT_NAMESPACE.svc:3100" \
+		--set "signals.alertmanagerURL=http://alertmanager.$HEARTBEAT_NAMESPACE.svc:9093" \
 		--wait --timeout 5m
 }
 
@@ -272,7 +291,8 @@ install_chart() {
 # patientzero_scale after make patientzero-scale-collect. With neither, there
 # is no values file. A values file replaces a list instead of merging it, so
 # this copies the sandbox's values file, whose last entry is
-# integrations.collectors, and appends to that list.
+# integrations.collectors, and appends to that list. The sandbox target's host
+# is SQLSERVER_CONTAINER, so a throwaway cluster reads its own container.
 heartbeat_values() {
 	with_patientzero=
 	if helm status "$RELEASE" --kube-context "$CONTEXT" --namespace "$NAMESPACE" >/dev/null 2>&1; then
@@ -291,7 +311,8 @@ heartbeat_values() {
 		die "$src no longer ends with integrations.collectors; update heartbeat_values in $0"
 	mkdir -p "$STATE_DIR"
 	{
-		cat "$src"
+		# The sandbox target is this run's container, as kind-e2e points it.
+		sed "s/^\( *host: \)heartbeat-sqlserver-dev\$/\1$SQLSERVER_CONTAINER/" "$src"
 		[ -z "$with_patientzero" ] || log_collector patientzero local-dev "" patientzero-log "$LOG_DATABASE"
 		[ -z "$scale_label" ] ||
 			log_collector patientzero-scale "$scale_label" "$scale_lookback" "$scale_label" "$SCALE_DATABASE"
@@ -390,6 +411,14 @@ cmd_load() {
 	cluster_exists || die "kind cluster $CLUSTER does not exist; run make sqlserver-dev-up and make patientzero-up"
 	helm status "$RELEASE" --kube-context "$CONTEXT" --namespace "$NAMESPACE" >/dev/null 2>&1 ||
 		die "PatientZero is not installed on $CLUSTER; run make patientzero-up"
+	start_load "$profile"
+	follow_load
+}
+
+# start_load <profile>: replaces the load Job with a new run of profile and
+# waits for its pod to leave Pending (the image pull). Sets run_id.
+start_load() {
+	profile=$1
 	run_id=$profile-$(date -u +%Y%m%dT%H%M%SZ)
 	kubectl_ -n "$NAMESPACE" create configmap "$LOAD_JOB" --from-file="$LOAD_DIR" \
 		--dry-run=client -o yaml | kubectl_ apply -f - >/dev/null
@@ -471,6 +500,10 @@ EOF
 		[ "$i" -le 150 ] || die "the load pod did not start; kubectl --context $CONTEXT -n $NAMESPACE describe job $LOAD_JOB"
 		sleep 2
 	done
+}
+
+# follow_load: follows the load Job's output and exits with k6's result.
+follow_load() {
 	kubectl_ -n "$NAMESPACE" logs -f "job/$LOAD_JOB" || true
 	i=0
 	while :; do
@@ -483,6 +516,148 @@ EOF
 		[ "$i" -le 30 ] || die "load run $run_id has not finished; make patientzero-load-stop stops it"
 		sleep 2
 	done
+}
+
+# The admin endpoint through a port-forward, with the token in a 0600 header
+# file, never on a command line. kubectl runs directly, so $! is kubectl and
+# kill stops it.
+#
+# open_forward replaces the port-forward. A port-forward does not last: kubectl
+# exits when a stream to the pod fails, and on the terminal's Ctrl-C, which
+# reaches it too. Every admin call that fails opens a new one and retries.
+open_forward() {
+	[ -z "$forward" ] || kill "$forward" 2>/dev/null || true
+	: >"$work/port-forward.log"
+	kubectl --context "$CONTEXT" -n "$NAMESPACE" port-forward svc/patientzero :8080 >"$work/port-forward.log" 2>&1 &
+	forward=$!
+	i=0
+	until grep -q '^Forwarding from 127.0.0.1:' "$work/port-forward.log"; do
+		i=$((i + 1))
+		[ "$i" -le 30 ] || return 1
+		sleep 1
+	done
+	admin_port=$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9]*\) .*/\1/p' "$work/port-forward.log" | head -n 1)
+}
+
+scenario_forward() {
+	work=$(mktemp -d "${TMPDIR:-/tmp}/patientzero-scenario.XXXXXX")
+	open_forward || die "the port-forward to PatientZero did not start: $(cat "$work/port-forward.log")"
+	(
+		umask 077
+		kubectl_ -n "$NAMESPACE" get secret "$ADMIN_SECRET" -o json |
+			jq -r '"Authorization: Bearer " + (.data["admin-token"] | @base64d)' >"$work/admin-header"
+	) || die "cannot read the $ADMIN_SECRET Secret; run make patientzero-up"
+}
+# admin <path> <curl arguments...>: an admin request through the port-forward.
+admin() {
+	path=$1
+	shift
+	curl -sS --max-time 40 -H "@$work/admin-header" "$@" "http://127.0.0.1:$admin_port$path"
+}
+
+# admin_retry <variable> <path> <curl arguments...>: admin, up to three times,
+# with a new port-forward after each failure; the response goes into
+# <variable>. Runs in this shell, so the new port-forward is kept.
+admin_retry() {
+	var=$1
+	shift
+	attempt=0
+	while :; do
+		if response_=$(admin "$@"); then
+			eval "$var=\$response_"
+			return 0
+		fi
+		attempt=$((attempt + 1))
+		[ "$attempt" -lt 3 ] || return 1
+		log "the port-forward to PatientZero failed; opening a new one"
+		open_forward || true
+	done
+}
+
+scenario_cleanup() {
+	status=$?
+	if [ -n "$run" ]; then
+		log "stopping run $run"
+		admin_retry stopped_ /admin/run/stop -X POST --fail -o /dev/null ||
+			log "could not stop run $run; it ends on its own, or: POST /admin/run/stop"
+	fi
+	if [ -n "$started_load" ]; then
+		kubectl_ -n "$NAMESPACE" delete job "$LOAD_JOB" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+	fi
+	[ -z "$forward" ] || kill "$forward" 2>/dev/null || true
+	rm -rf "$work"
+	exit "$status"
+}
+
+cmd_scenario() {
+	cluster_exists || die "kind cluster $CLUSTER does not exist; run make sqlserver-dev-up and make patientzero-up"
+	helm status "$RELEASE" --kube-context "$CONTEXT" --namespace "$NAMESPACE" >/dev/null 2>&1 ||
+		die "PatientZero is not installed on $CLUSTER; run make patientzero-up"
+	command -v jq >/dev/null || die "jq is required"
+	work= forward= run= started_load=
+	trap scenario_cleanup EXIT
+	trap 'exit 130' INT TERM
+	scenario_forward
+	admin_retry listing /admin/scenarios --fail || die "GET /admin/scenarios failed"
+	if [ -z "${SCENARIO:-}" ]; then
+		printf '%s' "$listing" | jq -r '.scenarios[] |
+			"\(.name)  (\(.faults | join(", ")); load \(.load); at most \(.max_duration_seconds | ceil)s)\(if .runnable then "" else "  NOT RUNNABLE HERE: " + .reason end)\n  \(.description)\n"'
+		log "run one with: make patientzero-scenario NAME=<name>"
+		return 0
+	fi
+	info=$(printf '%s' "$listing" | jq -c --arg n "$SCENARIO" '.scenarios[] | select(.name == $n)')
+	[ -n "$info" ] || die "no scenario $SCENARIO; make patientzero-scenario lists them"
+	[ "$(printf '%s' "$info" | jq -r .runnable)" = true ] ||
+		die "$SCENARIO cannot run in PatientZero: $(printf '%s' "$info" | jq -r .reason)"
+	profile=$(printf '%s' "$info" | jq -r .load)
+	max=$(printf '%s' "$info" | jq -r '.max_duration_seconds | ceil')
+	if [ "$profile" != none ] && [ "${SCENARIO_LOAD:-1}" != 0 ]; then
+		# The load outlasts the scenario; it is stopped when the scenario ends.
+		LOAD_DURATION=$((max + 120))s
+		log "starting the $profile load for the scenario"
+		start_load "$profile"
+		started_load=1
+	fi
+	response=$(admin "/admin/scenarios/$SCENARIO/start" -X POST -w '\n%{http_code}') || die "starting $SCENARIO failed"
+	code=$(printf '%s\n' "$response" | tail -n 1)
+	body=$(printf '%s\n' "$response" | sed '$d')
+	[ "$code" = 202 ] || die "starting $SCENARIO failed (HTTP $code): $body"
+	run=$(printf '%s' "$body" | jq -r .run)
+	log "run $run of $SCENARIO started; it takes at most ${max}s"
+	deadline=$(($(date +%s) + max + 120))
+	seen=
+	while :; do
+		admin_retry status /admin/run --fail || die "GET /admin/run failed"
+		[ "$(printf '%s' "$status" | jq -r .run)" = "$run" ] || die "PatientZero reports another run; was it restarted?"
+		state=$(printf '%s' "$status" | jq -r .state)
+		# Each step once, then each check as it settles.
+		for line in $(printf '%s' "$status" | jq -r '(if .step then "step:" + .step else empty end),
+			(.checks[] | select(.result != "pending") | "check:" + .signal + ":" + .result)'); do
+			case " $seen " in *" $line "*) continue ;; esac
+			seen="$seen $line"
+			case $line in
+			step:*) log "step ${line#step:}" ;;
+			check:*) log "check $(printf '%s' "${line#check:}" | sed 's/:/: /')" ;;
+			esac
+		done
+		[ "$state" = running ] || break
+		[ "$(date +%s)" -lt "$deadline" ] || die "run $run has not ended after ${max}s; stopping it"
+		sleep 5
+	done
+	ended=$run
+	run=
+	mkdir -p "$SCENARIO_DIR"
+	admin_retry saved_ "/admin/runs/$ended/journal" --fail -o "$SCENARIO_DIR/$ended.jsonl" ||
+		die "fetching the journal of $ended failed"
+	jq -r 'select(.event == "check") | .data |
+		"  \(.result | ascii_upcase)  \(.signal): \(.kind) \(.condition // .state) within \(.within) of the \(.from) of \(.step); \(.attempts) evaluations, last \(.values)\(if .error then "; " + .error else "" end)"' \
+		"$SCENARIO_DIR/$ended.jsonl"
+	jq -r 'select(.event == "run_end") | .data |
+		"  \(.requests) requests (\(.failed) failed, \(.injected) injected) from \(.users) users in \(.sessions) sessions over \(.seconds | floor)s"' \
+		"$SCENARIO_DIR/$ended.jsonl"
+	log "journal: $SCENARIO_DIR/$ended.jsonl"
+	[ "$state" = passed ] || die "run $ended ended $state$(printf '%s' "$status" | jq -r 'if .error then ": " + .error else "" end')"
+	log "run $ended passed"
 }
 
 cmd_load_stop() {
@@ -581,6 +756,7 @@ up) cmd_up ;;
 down) cmd_down ;;
 load) cmd_load ;;
 load-stop) cmd_load_stop ;;
+scenario) cmd_scenario ;;
 scale) cmd_scale ;;
 scale-measure) cmd_scale_measure ;;
 scale-collect) cmd_scale_collect ;;

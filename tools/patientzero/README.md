@@ -12,10 +12,11 @@ It is test tooling: its own Go module, image and Helm chart, never part of
 the Heartbeat module, chart, images or releases.
 
 > **Status:** first slice [16.5]: the service, its two databases on the
-> sandbox SQL Server, three entry points and k6 load. Timers, extension
-> calls, the fake REST partner, scenarios, the compressed calendar and the
-> run journal come later. The logging schema is the collector fixtures', the
-> DDL of a surveyed OutSystems 11 logging database.
+> sandbox SQL Server, three entry points, k6 load, and the scenario runner
+> with its run journal and two in-process faults. The ingest and SLO
+> scenarios, timers, extension calls, the fake REST partner and the
+> compressed calendar come later. The logging schema is the collector
+> fixtures', the DDL of a surveyed OutSystems 11 logging database.
 
 ## Run it on kind
 
@@ -133,6 +134,24 @@ Against PatientZero running anywhere else, for example a port-forward:
 ```bash
 k6 run -e BASE_URL=http://localhost:8080 -e PROFILE=smoke tools/patientzero/load/patientzero.js
 ```
+
+## Scenarios
+
+A scenario injects a fault for a while and names the signals Heartbeat must
+show for it: PromQL, LogQL and Alertmanager alerts, each within a window.
+PatientZero runs it behind an admin endpoint, checks the signals and writes
+a JSONL run journal: each fault's start and end, the users, sessions and
+requests it served, and each check's result
+([format, fault registry, journal](scenarios/README.md)).
+
+```bash
+make patientzero-scenario                        # list them
+make patientzero-scenario NAME=checkout-errors   # run one with its load; exits 0 if every signal showed
+```
+
+The journal is saved to `.tmp/patientzero-scenarios/<run>.jsonl`. Faults
+that act on other workloads (restarts, outages) run in a host-side runner
+that comes with the ingest scenarios.
 
 ## Production-sized logging database
 
@@ -327,6 +346,9 @@ Environment variables (the chart sets them):
 | `PATIENTZERO_LOG_READER_ROLE` | `heartbeat_oslog_reader` | Role granted `SELECT` on the log views; empty for none |
 | `PATIENTZERO_FRONT_END` | the host name (the pod name on kind) | Front-end server in `Executed_By` and `Server` |
 | `PATIENTZERO_LISTEN` | `:8080` | Listen address |
+| `PATIENTZERO_ADMIN_TOKEN` | none | Bearer token for the scenario admin endpoints; without it they answer 401. The chart reads it from the `patientzero-admin` Secret (`admin.existingSecret`) |
+| `PATIENTZERO_JOURNAL_DIR` | `/var/lib/patientzero/journal` | Where run journals are written; the chart mounts an `emptyDir` (`journal.sizeLimit`) |
+| `PATIENTZERO_PROMETHEUS_URL`, `PATIENTZERO_LOKI_URL`, `PATIENTZERO_ALERTMANAGER_URL` | none | Where scenario signals are read (chart `signals.*`); a scenario whose signals need a missing one is not runnable |
 
 ## Tests
 

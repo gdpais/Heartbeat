@@ -15,12 +15,18 @@
 //	PATIENTZERO_SCHEMA_DIR                     the oslog fixtures the logging schema is built from [/app/oslog]
 //	PATIENTZERO_LOG_READER_ROLE                role granted SELECT on the log views; empty for none [heartbeat_oslog_reader]
 //	PATIENTZERO_FRONT_END                      front-end server name in the log rows [the host name]
+//	PATIENTZERO_ADMIN_TOKEN                    bearer token for the scenario admin endpoints; without it they answer 401
+//	PATIENTZERO_JOURNAL_DIR                    where run journals are written [/var/lib/patientzero/journal]
+//	PATIENTZERO_PROMETHEUS_URL                 Prometheus base URL for scenario signals; empty for none
+//	PATIENTZERO_LOKI_URL                       Loki base URL for scenario signals; empty for none
+//	PATIENTZERO_ALERTMANAGER_URL               Alertmanager base URL for scenario signals; empty for none
 package main
 
 import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -36,9 +42,15 @@ import (
 	_ "github.com/microsoft/go-mssqldb"
 
 	"heartbeat/tools/patientzero/internal/app"
+	"heartbeat/tools/patientzero/internal/inject"
 	"heartbeat/tools/patientzero/internal/logschema"
 	"heartbeat/tools/patientzero/internal/oslog"
+	"heartbeat/tools/patientzero/internal/runner"
+	"heartbeat/tools/patientzero/internal/scenario"
 	"heartbeat/tools/patientzero/internal/shop"
+	signals "heartbeat/tools/patientzero/internal/signal"
+	"heartbeat/tools/patientzero/internal/traffic"
+	"heartbeat/tools/patientzero/scenarios"
 )
 
 func main() {
@@ -55,6 +67,8 @@ type config struct {
 	trust                           bool
 	database, logDatabase           string
 	schemaDir, readerRole, frontEnd string
+	adminToken, journalDir          string
+	sources                         signals.Sources
 }
 
 func env(name, def string) string {
@@ -73,6 +87,13 @@ func loadConfig() (config, error) {
 		schemaDir:   env("PATIENTZERO_SCHEMA_DIR", "/app/oslog"),
 		readerRole:  env("PATIENTZERO_LOG_READER_ROLE", "heartbeat_oslog_reader"),
 		frontEnd:    os.Getenv("PATIENTZERO_FRONT_END"),
+		adminToken:  os.Getenv("PATIENTZERO_ADMIN_TOKEN"),
+		journalDir:  env("PATIENTZERO_JOURNAL_DIR", "/var/lib/patientzero/journal"),
+		sources: signals.Sources{
+			Prometheus:   os.Getenv("PATIENTZERO_PROMETHEUS_URL"),
+			Loki:         os.Getenv("PATIENTZERO_LOKI_URL"),
+			Alertmanager: os.Getenv("PATIENTZERO_ALERTMANAGER_URL"),
+		},
 	}
 	if c.host == "" {
 		return c, errors.New("PATIENTZERO_SQL_HOST is required")
@@ -98,6 +119,21 @@ func loadConfig() (config, error) {
 	}
 	if c.frontEnd == "" {
 		c.frontEnd, _ = os.Hostname()
+	}
+	if c.journalDir == "" {
+		return c, errors.New("PATIENTZERO_JOURNAL_DIR must not be empty")
+	}
+	for name, v := range map[string]string{
+		"PATIENTZERO_PROMETHEUS_URL":   c.sources.Prometheus,
+		"PATIENTZERO_LOKI_URL":         c.sources.Loki,
+		"PATIENTZERO_ALERTMANAGER_URL": c.sources.Alertmanager,
+	} {
+		if v == "" {
+			continue
+		}
+		if u, err := url.Parse(v); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+			return c, fmt.Errorf("%s must be an http(s) URL without credentials", name)
+		}
 	}
 	return c, nil
 }
@@ -160,7 +196,31 @@ func run(log *slog.Logger) error {
 		}
 	}()
 
+	// The scenario runner: the scenarios built into the binary, the
+	// in-process faults, and the admin endpoints that start them.
+	faults := &inject.Injector{}
+	counter := &traffic.Counter{}
+	registry := scenario.NewRegistry()
+	inject.Register(registry, faults, app.EntryPoints)
+	list, err := scenario.LoadDir(scenarios.FS, ".", registry)
+	if err != nil {
+		return fmt.Errorf("scenarios: %w", err)
+	}
+	scenarioRunner := runner.New(ctx, runner.Config{
+		Scenarios:  list,
+		Registry:   registry,
+		Scopes:     []scenario.Scope{scenario.ScopeInProcess},
+		Sources:    cfg.sources,
+		Traffic:    counter,
+		JournalDir: cfg.journalDir,
+		Host:       cfg.frontEnd,
+		Log:        log,
+	})
+
 	srv := &app.Server{
+		Faults:   faults,
+		Traffic:  counter,
+		Admin:    scenarioRunner.Handler(cfg.adminToken),
 		Store:    &shop.SQLStore{DB: business},
 		Logs:     &oslog.SQLWriter{DB: logging, Schema: oslog.NewSchema(types)},
 		Schema:   oslog.NewSchema(types),
@@ -191,5 +251,9 @@ func run(log *slog.Logger) error {
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return httpServer.Shutdown(shutdown)
+	err = httpServer.Shutdown(shutdown)
+	// ctx has ended, so an active run is stopping: its fault removed and its
+	// journal closed with run_end.
+	scenarioRunner.Wait()
+	return err
 }

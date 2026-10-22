@@ -1,4 +1,4 @@
-.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down patientzero-up patientzero-down patientzero-load patientzero-load-stop patientzero-scale patientzero-scale-measure patientzero-scale-collect patientzero-scale-check patientzero-scale-down chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet vulncheck docs-site
+.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down patientzero-up patientzero-down patientzero-load patientzero-load-stop patientzero-scenario patientzero-scale patientzero-scale-measure patientzero-scale-collect patientzero-scale-check patientzero-scale-down chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet vulncheck docs-site
 
 SQLSERVER_DEV_ENV_FILE := .env.sqlserver-dev
 # Health checks fail fast on HTTP errors (keeping the body) and never hang.
@@ -53,6 +53,7 @@ help:
 		'  make patientzero-down    Remove PatientZero, its databases and login; redeploy Heartbeat without its collector' \
 		'  make patientzero-load    Run k6 load against PatientZero on kind and follow it (LOAD=smoke|steady|peak|soak|day, LOAD_DURATION)' \
 		'  make patientzero-load-stop  Stop the PatientZero load' \
+		'  make patientzero-scenario  Run a PatientZero scenario with its load and check its signals (NAME=<scenario>; no NAME lists them)' \
 		'  make patientzero-scale   Fill patientzero_scale with a production-sized log and measure the log queries (SCALE, SCALE_SEED, SCALE_END)' \
 		'  make patientzero-scale-measure  Measure the log queries on patientzero_scale again' \
 		'  make patientzero-scale-collect  Redeploy Heartbeat with a collector that reads patientzero_scale (SCALE_LOOKBACK)' \
@@ -148,6 +149,11 @@ patientzero-load:
 
 patientzero-load-stop:
 	@$(PATIENTZERO_MODULE)/scripts/patientzero.sh load-stop
+
+# Fault scenarios (tools/patientzero/scenarios): the run journal is saved to
+# .tmp/patientzero-scenarios/<run>.jsonl.
+patientzero-scenario:
+	@SCENARIO='$(NAME)' SCENARIO_LOAD='$(SCENARIO_LOAD)' $(PATIENTZERO_MODULE)/scripts/patientzero.sh scenario
 
 # SCALE, not PROFILE or LOAD: the volume relative to the surveyed installation.
 patientzero-scale:
