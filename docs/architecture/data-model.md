@@ -23,7 +23,7 @@ See [ADR 0001](decisions/0001-postgresql-metadata-only.md) for the reasoning.
 | Raw or derived metrics, live alert evaluation | Prometheus |
 | Raw or normalized logs, session evidence | Loki |
 | Alert grouping, deduplication, silencing, delivery | Alertmanager |
-| Queues, locks, retries, idempotency keys, short-lived caches | Redis |
+| Queues, locks, retries, idempotency keys, short-lived caches, login sessions | Redis ([ADR 0013](decisions/0013-api-design-and-subsystem-boundaries.md)) |
 | Integration endpoints, Grafana URL templates, credential references, collector desired state | `config/integrations.yaml` / Kubernetes ConfigMaps |
 | Audit events | Append-only JSONL files (planned), shipped to Loki/SIEM |
 | Report binaries | Object storage or filesystem (planned); PostgreSQL keeps only `artifact_uri` |

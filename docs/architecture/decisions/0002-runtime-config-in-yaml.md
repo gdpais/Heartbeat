@@ -42,7 +42,8 @@ not stored in PostgreSQL.
 - The `database_targets`, `probe_definitions` and `probe_assignments` tables
   exist for a future UI workflow but are not read by the collector. Reintroduce
   API-driven assignments only once that workflow exists, and keep desired state
-  and observed state separate.
+  and observed state separate. How they will reach the collector:
+  [ADR 0014](0014-probe-assignments-to-runtime-config.md).
 - Onboarding a database is a config change today; see the
   [database targets guide](../../guides/database-targets.md).
 - Credential rotation currently needs a restart because credentials come from
