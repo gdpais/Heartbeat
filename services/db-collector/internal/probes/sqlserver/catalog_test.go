@@ -21,6 +21,47 @@ func TestCatalogQueriesAreOneReadOnlySelect(t *testing.T) {
 	}
 }
 
+// A misspelled probe name is a rejected config, not a target that fails
+// every cycle (usability test finding F4).
+func TestValidateRejectsUnknownProbes(t *testing.T) {
+	catalog := DefaultCatalog()
+	collector := func(kind string, enabled bool, collectorProbe, targetProbe string) heartbeatconfig.CollectorRuntimeConfig {
+		c := heartbeatconfig.CollectorRuntimeConfig{ID: "c", Kind: kind, Enabled: enabled}
+		if collectorProbe != "" {
+			c.Probes = []heartbeatconfig.ProbeRuntimeConfig{{Name: collectorProbe}}
+		}
+		c.Targets = []heartbeatconfig.TargetRuntimeConfig{{Name: "t", Probes: []heartbeatconfig.ProbeRuntimeConfig{{Name: targetProbe}}}}
+		return c
+	}
+	const probes = "probes: blocking, buffer_cache, cpu, file_io, memory_pressure, sessions, storage, throughput, waits"
+	tests := []struct {
+		name      string
+		collector heartbeatconfig.CollectorRuntimeConfig
+		wantErr   string
+	}{
+		{"known probes", collector(heartbeatconfig.KindSQLServer, true, "waits", "file_io"), ""},
+		{"unknown on the target", collector(heartbeatconfig.KindSQLServer, true, "", "wiats"), `collector c target t: unknown SQL Server probe "wiats"; ` + probes},
+		{"unknown on the collector", collector(heartbeatconfig.KindSQLServer, true, "wiats", "waits"), `collector c: unknown SQL Server probe "wiats"; ` + probes},
+		{"disabled collectors too", collector(heartbeatconfig.KindSQLServer, false, "", "wiats"), `unknown SQL Server probe "wiats"`},
+		{"log types are not SQL Server probes", collector(heartbeatconfig.KindSQLServer, true, "", "error"), `unknown SQL Server probe "error"`},
+		{"outsystems_logs collectors are not checked here", collector(heartbeatconfig.KindOutSystemsLogs, true, "error", "error"), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := catalog.Validate(heartbeatconfig.RuntimeConfig{Collectors: []heartbeatconfig.CollectorRuntimeConfig{tt.collector}})
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestCatalogContainsRequiredProbes(t *testing.T) {
 	catalog := DefaultCatalog()
 	required := []string{"waits", "blocking", "sessions", "memory_pressure", "storage", "throughput", "cpu", "buffer_cache", "file_io"}
