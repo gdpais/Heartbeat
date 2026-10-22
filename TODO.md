@@ -576,7 +576,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Prefer collector processors/config before custom service code
 
 ### 9.6 Network access to the bundled backends
-- [ ] NetworkPolicies for the OTel Collector, Prometheus, Alertmanager and Loki: only the components that use each one reach it (any pod can today, and Loki holds user IDs and client IPs)
+- [x] NetworkPolicies for the OTel Collector, Prometheus, Alertmanager and Loki: only the components that use each one reach it (`backendNetworkPolicies`; Grafana stays open to whatever serves its UI, behind its login)
 
 ---
 

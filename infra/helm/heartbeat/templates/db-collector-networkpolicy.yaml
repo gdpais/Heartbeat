@@ -3,12 +3,8 @@
 {{- $sel := dict "root" $ "component" "db-collector" }}
 {{- $peers := list }}
 {{- if .Values.prometheus.enabled }}
-{{- /* The bundled Prometheus server, by its Deployment's selector labels
-(the subchart's prometheus.server.matchLabels helper). */}}
-{{- $promName := .Values.prometheus.nameOverride | default "prometheus" | trunc 63 | trimSuffix "-" }}
-{{- $promComponent := .Values.prometheus.server.name | default "server" }}
-{{- $bundled := dict "app.kubernetes.io/name" $promName "app.kubernetes.io/component" $promComponent "app.kubernetes.io/instance" .Release.Name }}
-{{- $peers = append $peers (dict "podSelector" (dict "matchLabels" $bundled)) }}
+{{- /* The bundled Prometheus server, by its Deployment's selector labels. */}}
+{{- $peers = append $peers (include "heartbeat.enginePeer" (dict "root" $ "engine" "prometheus") | fromYaml) }}
 {{- end }}
 {{- $peers = concat $peers $np.scrapers $np.operators }}
 # Only Prometheus, the configured scrapers and the operator peers may reach the collector's

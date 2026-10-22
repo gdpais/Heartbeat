@@ -54,6 +54,10 @@ What each option costs:
 
 - Investigations and dashboards keep working on the values support and the
   SRE team already use.
+- Access is restricted in the chart: Loki admits only the OTel Collector,
+  Grafana and Prometheus, and the other bundled engines only their own
+  clients [9.6]. Operators reach Loki through Grafana or `kubectl
+  port-forward` ([network access](../../guides/kubernetes-local.md#network-access)).
 - Loki is a store of personal data: its retention, backups and access are
   part of the production review, and the ELK review [18] must carry the same
   access rules if logs move there.

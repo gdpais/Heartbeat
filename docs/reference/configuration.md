@@ -50,7 +50,7 @@ later, the API's queries.
 | `dashboards.deep_link_templates` | no | Map of name → path with `${variables}`, e.g. `/d/sqlserver-overview?var-target=${target}` |
 | `logs.base_url` | no | The platform's log query API (Loki) |
 | `alerting.base_url` | no | The platform's alert API (Alertmanager) |
-| `opentelemetry.endpoint` | for `outsystems_logs` | Absolute base URL of the OTel Collector's OTLP/HTTP receiver, e.g. `http://otel-collector:4318`; logs go to `<endpoint>/v1/logs` |
+| `opentelemetry.endpoint` | for `outsystems_logs` | Absolute base URL of the OTel Collector's OTLP/HTTP receiver, e.g. `http://otel-collector:4318`; logs go to `<endpoint>/v1/logs`. The chart's NetworkPolicy admits the collector to the bundled Collector's port 4318 only ([network access](../guides/kubernetes-local.md#network-access)) |
 
 No URL may embed credentials (`https://user:password@host`): the loader rejects
 userinfo in every `base_url`, `endpoint`, dashboard and deep-link template, and

@@ -42,6 +42,11 @@ type chartProfile struct {
 	// admit to port 8082, in peerString form; none means it denies all
 	// ingress. Checked whenever the profile renders the policy.
 	collectorPeers []string
+	// backendPolicies are the bundled engines' NetworkPolicies the profile
+	// must render, by name, each as the port and peer pairs it admits in
+	// "TCP/3100 <- peerString" form; no pairs means it denies all ingress.
+	// Any other engine policy must be absent. nil skips the check.
+	backendPolicies map[string][]string
 	// collectorReceivers are the OTel Collector's receivers; none means only
 	// otlp.
 	collectorReceivers []string
@@ -64,25 +69,84 @@ type chartProfile struct {
 // peer of the release "heartbeat".
 const bundledPrometheusPeer = "pods{app.kubernetes.io/component=server,app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=prometheus}"
 
+// The other bundled components as NetworkPolicy peers, and the kind values'
+// operator range (the host through a loopback NodePort).
+const (
+	dbCollectorPeer   = "pods{app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=db-collector}"
+	grafanaPeer       = "pods{app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=grafana}"
+	otelCollectorPeer = "pods{app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=otelCollector}"
+	lokiPeer          = "pods{app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=loki}"
+	alertmanagerPeer  = "pods{app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=alertmanager}"
+	kindHostPeer      = "ip 0.0.0.0/0 except 10.244.0.0/16"
+)
+
+// defaultBackendPolicies are the engine policies with every component on:
+// each engine admits only the components that use it, on their ports.
+var defaultBackendPolicies = map[string][]string{
+	"otel-collector": {"TCP/4318 <- " + dbCollectorPeer, "TCP/8889 <- " + bundledPrometheusPeer},
+	"prometheus":     {"TCP/9090 <- " + grafanaPeer},
+	"alertmanager":   {"TCP/9093 <- " + bundledPrometheusPeer},
+	"loki": {
+		"TCP/3100 <- " + otelCollectorPeer, "TCP/3100 <- " + grafanaPeer, "TCP/3100 <- " + bundledPrometheusPeer,
+		"TCP/9095 <- " + lokiPeer, "TCP/7946 <- " + lokiPeer,
+	},
+}
+
+// kindBackendPolicies adds the kind values' operator access to the engines
+// with a loopback NodePort; Loki has none.
+var kindBackendPolicies = withPairs(defaultBackendPolicies, map[string][]string{
+	"otel-collector": {"TCP/4317 <- " + kindHostPeer, "TCP/4318 <- " + kindHostPeer, "TCP/8889 <- " + kindHostPeer},
+	"prometheus":     {"TCP/9090 <- " + kindHostPeer},
+	"alertmanager":   {"TCP/9093 <- " + kindHostPeer},
+})
+
+// withPairs returns policies with more pairs added to some of them, and the
+// policies named in drop removed.
+func withPairs(policies map[string][]string, add map[string][]string, drop ...string) map[string][]string {
+	out := map[string][]string{}
+	for name, pairs := range policies {
+		if !slices.Contains(drop, name) {
+			out[name] = slices.Concat(pairs, add[name])
+		}
+	}
+	return out
+}
+
+// withoutPeers returns policies without the pairs that admit one of peers.
+func withoutPeers(policies map[string][]string, peers ...string) map[string][]string {
+	out := map[string][]string{}
+	for name, pairs := range policies {
+		out[name] = slices.DeleteFunc(slices.Clone(pairs), func(pair string) bool {
+			_, peer, _ := strings.Cut(pair, " <- ")
+			return slices.Contains(peers, peer)
+		})
+	}
+	return out
+}
+
 var chartProfiles = []chartProfile{
 	{
-		name:           "defaults",
-		present:        []string{"StatefulSet/db-collector", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "StatefulSet/loki", "StatefulSet/otel-collector", "PersistentVolumeClaim/otel-collector-queue", "NetworkPolicy/db-collector"},
-		collectorPeers: []string{bundledPrometheusPeer},
+		name:            "defaults",
+		present:         []string{"StatefulSet/db-collector", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "StatefulSet/loki", "StatefulSet/otel-collector", "PersistentVolumeClaim/otel-collector-queue", "NetworkPolicy/db-collector"},
+		collectorPeers:  []string{bundledPrometheusPeer},
+		backendPolicies: defaultBackendPolicies,
 	},
 	{
 		name:    "kind",
 		values:  []string{"kind.yaml"},
 		present: []string{"StatefulSet/db-collector", "StatefulSet/loki", "StatefulSet/otel-collector", "PersistentVolumeClaim/otel-collector-queue", "NetworkPolicy/db-collector"},
 		// The host through the loopback NodePort; pods stay limited to Prometheus.
-		collectorPeers: []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
+		collectorPeers:  []string{bundledPrometheusPeer, kindHostPeer},
+		backendPolicies: kindBackendPolicies,
 	},
 	{
 		name:           "kind-minimal",
 		values:         []string{"kind.yaml", "minimal.yaml"},
 		present:        []string{"StatefulSet/db-collector", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "NetworkPolicy/db-collector"},
 		absent:         []string{"StatefulSet/loki", "StatefulSet/otel-collector", "PersistentVolumeClaim/otel-collector-queue"},
-		collectorPeers: []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
+		collectorPeers: []string{bundledPrometheusPeer, kindHostPeer},
+		// No policy for the engines that are off.
+		backendPolicies: withPairs(kindBackendPolicies, nil, "otel-collector", "loki"),
 	},
 	{
 		name:           "kind-sqlserver-dev",
@@ -91,10 +155,11 @@ var chartProfiles = []chartProfile{
 		collectorPeers: []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
 	},
 	{
-		name:           "production-example",
-		values:         []string{"production.example.yaml"},
-		present:        []string{"StatefulSet/db-collector", "Ingress/grafana", "NetworkPolicy/db-collector"},
-		collectorPeers: []string{bundledPrometheusPeer, "ip 10.100.0.0/16"},
+		name:            "production-example",
+		values:          []string{"production.example.yaml"},
+		present:         []string{"StatefulSet/db-collector", "Ingress/grafana", "NetworkPolicy/db-collector"},
+		collectorPeers:  []string{bundledPrometheusPeer, "ip 10.100.0.0/16"},
+		backendPolicies: defaultBackendPolicies,
 	},
 	{
 		// A shared Prometheus in another namespace replaces the bundled one.
@@ -107,6 +172,8 @@ var chartProfiles = []chartProfile{
 		present:        []string{"StatefulSet/db-collector", "NetworkPolicy/db-collector"},
 		absent:         []string{"Deployment/prometheus", "Deployment/grafana"},
 		collectorPeers: []string{"ns{kubernetes.io/metadata.name=monitoring} pods{app.kubernetes.io/name=prometheus}"},
+		backendPolicies: withPairs(withoutPeers(defaultBackendPolicies, bundledPrometheusPeer, grafanaPeer), nil,
+			"prometheus", "alertmanager"),
 	},
 	{
 		// Another observability platform (ADR 0011): no bundled engines or
@@ -118,6 +185,8 @@ var chartProfiles = []chartProfile{
 		absent:             []string{"Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "StatefulSet/loki", "ConfigMap/heartbeat-prometheus-rules", "ConfigMap/heartbeat-dashboards"},
 		collectorPeers:     []string{"pods{app.kubernetes.io/name=otelCollector,component=statefulset-collector}"},
 		collectorReceivers: []string{"otlp", "prometheus"},
+		// Only the db-collector sends to the Collector; nothing scrapes it.
+		backendPolicies: map[string][]string{"otel-collector": {"TCP/4318 <- " + dbCollectorPeer}},
 	},
 	{
 		// No peer at all must deny all ingress, never render an empty `from`
@@ -125,6 +194,8 @@ var chartProfiles = []chartProfile{
 		name:    "collector-policy-without-peers",
 		set:     []string{"prometheus.enabled=false", "grafana.enabled=false"},
 		present: []string{"StatefulSet/db-collector", "NetworkPolicy/db-collector"},
+		backendPolicies: withPairs(withoutPeers(defaultBackendPolicies, bundledPrometheusPeer, grafanaPeer), nil,
+			"prometheus", "alertmanager"),
 	},
 	{
 		// The bundled peer follows the subchart's name, like its selector.
@@ -132,6 +203,16 @@ var chartProfiles = []chartProfile{
 		set:            []string{"prometheus.nameOverride=prom"},
 		present:        []string{"Deployment/prometheus", "NetworkPolicy/db-collector"},
 		collectorPeers: []string{"pods{app.kubernetes.io/component=server,app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=prom}"},
+		backendPolicies: map[string][]string{
+			"otel-collector": {"TCP/4318 <- " + dbCollectorPeer, "TCP/8889 <- pods{app.kubernetes.io/component=server,app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=prom}"},
+			"prometheus":     {"TCP/9090 <- " + grafanaPeer},
+			"alertmanager":   {"TCP/9093 <- pods{app.kubernetes.io/component=server,app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=prom}"},
+			"loki": {
+				"TCP/3100 <- " + otelCollectorPeer, "TCP/3100 <- " + grafanaPeer,
+				"TCP/3100 <- pods{app.kubernetes.io/component=server,app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=prom}",
+				"TCP/9095 <- " + lokiPeer, "TCP/7946 <- " + lokiPeer,
+			},
+		},
 	},
 	{
 		// Only an empty podSelector admits every pod in the namespace.
@@ -142,6 +223,76 @@ var chartProfiles = []chartProfile{
 	{
 		name:      "collector-peer-empty-match-labels",
 		inline:    "dbCollector: {networkPolicy: {scrapers: [{namespaceSelector: {matchLabels: {}}}]}}",
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		name:            "backend-policies-disabled",
+		set:             []string{"backendNetworkPolicies.enabled=false"},
+		present:         []string{"StatefulSet/loki", "NetworkPolicy/db-collector"},
+		collectorPeers:  []string{bundledPrometheusPeer},
+		backendPolicies: map[string][]string{},
+	},
+	{
+		// Extra peers are admitted to each engine's ports, the Collector's
+		// OTLP ports and exporter included.
+		name: "backend-extra-peers",
+		inline: "backendNetworkPolicies:\n" +
+			"  otelCollector: {extraPeers: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: apps}}, podSelector: {matchLabels: {app: sender}}}]}\n" +
+			"  prometheus: {extraPeers: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}, podSelector: {matchLabels: {app.kubernetes.io/name: grafana}}}]}\n" +
+			"  alertmanager: {extraPeers: [{ipBlock: {cidr: 10.100.0.0/16}}]}\n" +
+			"  loki: {extraPeers: [{podSelector: {matchLabels: {app: log-reader}}}]}\n",
+		collectorPeers: []string{bundledPrometheusPeer},
+		backendPolicies: withPairs(defaultBackendPolicies, map[string][]string{
+			"otel-collector": {
+				"TCP/4317 <- ns{kubernetes.io/metadata.name=apps} pods{app=sender}",
+				"TCP/4318 <- ns{kubernetes.io/metadata.name=apps} pods{app=sender}",
+				"TCP/8889 <- ns{kubernetes.io/metadata.name=apps} pods{app=sender}",
+			},
+			"prometheus":   {"TCP/9090 <- ns{kubernetes.io/metadata.name=monitoring} pods{app.kubernetes.io/name=grafana}"},
+			"alertmanager": {"TCP/9093 <- ip 10.100.0.0/16"},
+			"loki":         {"TCP/3100 <- pods{app=log-reader}"},
+		}),
+	},
+	{
+		// An engine nothing uses denies all ingress, never an empty from.
+		name:            "prometheus-without-grafana",
+		set:             []string{"grafana.enabled=false"},
+		collectorPeers:  []string{bundledPrometheusPeer},
+		backendPolicies: withoutPeers(defaultBackendPolicies, grafanaPeer),
+	},
+	{
+		// A disabled scrape job admits no Prometheus, and the Collector's
+		// exporter port is closed with the exporter.
+		name: "backend-scrapes-disabled",
+		set: []string{
+			"prometheus.scrapeConfigs.loki.enabled=false", "prometheus.scrapeConfigs.otel-collector.enabled=false",
+			"otelCollector.ports.prom-exporter.enabled=false",
+		},
+		collectorPeers: []string{bundledPrometheusPeer},
+		backendPolicies: map[string][]string{
+			"otel-collector": {"TCP/4318 <- " + dbCollectorPeer},
+			"prometheus":     defaultBackendPolicies["prometheus"],
+			"alertmanager":   defaultBackendPolicies["alertmanager"],
+			"loki":           withoutPeers(defaultBackendPolicies, bundledPrometheusPeer)["loki"],
+		},
+	},
+	{
+		// Alertmanager replicas gossip on the cluster port.
+		name:           "alertmanager-replicas",
+		set:            []string{"prometheus.alertmanager.replicaCount=3"},
+		collectorPeers: []string{bundledPrometheusPeer},
+		backendPolicies: withPairs(defaultBackendPolicies, map[string][]string{
+			"alertmanager": {"TCP/9094 <- " + alertmanagerPeer, "UDP/9094 <- " + alertmanagerPeer},
+		}),
+	},
+	{
+		name:      "backend-peer-empty-pod-selector",
+		inline:    "backendNetworkPolicies: {loki: {extraPeers: [{podSelector: {}}]}}",
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		name:      "backend-policy-unknown-engine",
+		inline:    "backendNetworkPolicies: {grafana: {extraPeers: []}}",
 		wantError: "values don't meet the specifications of the schema",
 	},
 	{
@@ -353,6 +504,7 @@ func TestChartProfiles(t *testing.T) {
 			checkCollectorGoMemLimit(t, objects, profile.goMemLimit)
 			checkInClusterEndpoints(t, objects)
 			checkCollectorNetworkPolicy(t, objects, profile.collectorPeers)
+			checkBackendNetworkPolicies(t, objects, profile.backendPolicies)
 			checkCollectorState(t, objects, profile.stateEmptyDir)
 			checkCollectorPipelines(t, objects, profile.collectorReceivers)
 			checkLogDelivery(t, objects)
@@ -1057,6 +1209,137 @@ func checkCollectorNetworkPolicy(t *testing.T, objects map[string]object, wantPe
 		}
 	}
 	checkCollectorSourceAddresses(t, objects, gotPeers)
+}
+
+// backendWorkloads are the workloads each engine NetworkPolicy protects.
+var backendWorkloads = map[string]string{
+	"otel-collector": "StatefulSet/otel-collector",
+	"prometheus":     "Deployment/prometheus",
+	"alertmanager":   "StatefulSet/alertmanager",
+	"loki":           "StatefulSet/loki",
+}
+
+// podTemplateLabels returns the pod labels of every rendered Deployment and
+// StatefulSet, by object ID.
+func podTemplateLabels(t *testing.T, objects map[string]object) map[string]map[string]string {
+	t.Helper()
+	labels := map[string]map[string]string{}
+	for id, obj := range objects {
+		if obj.Kind != "Deployment" && obj.Kind != "StatefulSet" {
+			continue
+		}
+		var spec struct {
+			Template struct {
+				Metadata struct {
+					Labels map[string]string `yaml:"labels"`
+				} `yaml:"metadata"`
+			} `yaml:"template"`
+		}
+		if err := obj.Spec.Decode(&spec); err != nil {
+			t.Fatal(err)
+		}
+		labels[id] = spec.Template.Metadata.Labels
+	}
+	return labels
+}
+
+// selects reports whether matchLabels selects a pod with the given labels.
+func selects(matchLabels, labels map[string]string) bool {
+	if len(matchLabels) == 0 {
+		return false
+	}
+	for key, value := range matchLabels {
+		if got, ok := labels[key]; !ok || got != value {
+			return false
+		}
+	}
+	return true
+}
+
+// The engine NetworkPolicies must be exactly the expected ones, each select
+// only its engine's pods, admit exactly the expected port and peer pairs and
+// never render an empty from (which admits every source) or an empty ports
+// list (every port). A peer for a pod of this release must select a rendered
+// workload, so a subchart label change cannot silently cut a flow off.
+func checkBackendNetworkPolicies(t *testing.T, objects map[string]object, want map[string][]string) {
+	t.Helper()
+	if want == nil {
+		return
+	}
+	for id, obj := range objects {
+		if obj.Kind != "NetworkPolicy" || obj.Metadata.Name == "db-collector" {
+			continue
+		}
+		if _, ok := want[obj.Metadata.Name]; !ok {
+			t.Errorf("unexpected %s", id)
+		}
+	}
+	workloads := podTemplateLabels(t, objects)
+	for name, wantPairs := range want {
+		policy, ok := objects["NetworkPolicy/"+name]
+		if !ok {
+			t.Errorf("missing NetworkPolicy/%s", name)
+			continue
+		}
+		var spec struct {
+			PodSelector labelSelector `yaml:"podSelector"`
+			PolicyTypes []string      `yaml:"policyTypes"`
+			Ingress     *[]struct {
+				Ports []struct {
+					Protocol string `yaml:"protocol"`
+					Port     int    `yaml:"port"`
+				} `yaml:"ports"`
+				From *[]networkPolicyPeer `yaml:"from"`
+			} `yaml:"ingress"`
+		}
+		if err := policy.Spec.Decode(&spec); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(spec.PolicyTypes, ",") != "Ingress" {
+			t.Errorf("%s NetworkPolicy policyTypes = %v, want [Ingress]", name, spec.PolicyTypes)
+		}
+		target := backendWorkloads[name]
+		if labels, ok := workloads[target]; !ok {
+			t.Errorf("%s NetworkPolicy is rendered without %s", name, target)
+		} else if !selects(spec.PodSelector.MatchLabels, labels) || len(spec.PodSelector.MatchExpressions) > 0 {
+			t.Errorf("%s NetworkPolicy selects %s, which does not select %s's pods %v", name, spec.PodSelector, target, labels)
+		}
+		for id, labels := range workloads {
+			if id != target && selects(spec.PodSelector.MatchLabels, labels) {
+				t.Errorf("%s NetworkPolicy also selects %s's pods", name, id)
+			}
+		}
+		if spec.Ingress == nil {
+			t.Errorf("%s NetworkPolicy has no ingress field; render ingress: [] to deny all", name)
+			continue
+		}
+		var gotPairs []string
+		for _, rule := range *spec.Ingress {
+			if rule.From == nil || len(*rule.From) == 0 {
+				t.Errorf("%s NetworkPolicy has a rule with an empty from, which admits every source", name)
+				continue
+			}
+			if len(rule.Ports) == 0 {
+				t.Errorf("%s NetworkPolicy has a rule without ports, which admits every port", name)
+			}
+			for _, peer := range *rule.From {
+				if peer.PodSelector != nil && peer.NamespaceSelector == nil && peer.PodSelector.MatchLabels["app.kubernetes.io/instance"] == "heartbeat" &&
+					!slices.ContainsFunc(slices.Collect(maps.Values(workloads)), func(labels map[string]string) bool {
+						return selects(peer.PodSelector.MatchLabels, labels)
+					}) {
+					t.Errorf("%s NetworkPolicy peer %s selects no rendered workload", name, peerString(peer))
+				}
+				for _, port := range rule.Ports {
+					gotPairs = append(gotPairs, fmt.Sprintf("%s/%d <- %s", port.Protocol, port.Port, peerString(peer)))
+				}
+			}
+		}
+		sort.Strings(gotPairs)
+		wantSorted := slices.Sorted(slices.Values(wantPairs))
+		if !reflect.DeepEqual(gotPairs, wantSorted) && (len(gotPairs) > 0 || len(wantSorted) > 0) {
+			t.Errorf("%s NetworkPolicy admits\n  %s\nwant\n  %s", name, strings.Join(gotPairs, "\n  "), strings.Join(wantSorted, "\n  "))
+		}
+	}
 }
 
 // An ipBlock only sees external clients' addresses when the collector
