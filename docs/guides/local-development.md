@@ -150,8 +150,10 @@ minimal, SQL Server sandbox, production example) and fails if rendering is not
 deterministic, an object is cluster-scoped or a Helm hook, the rendered
 `integrations.yaml` fails the Go loader, the collector is not a single replica
 with a writable state volume at `HEARTBEAT_STATE_DIR` and a read-only root
-filesystem, or Prometheus, Alertmanager or Grafana points at a Service the
-profile does not deploy.
+filesystem, a one-replica StatefulSet is not `Parallel`, a misspelt top-level
+value renders, the notes `helm install` prints miss a required Secret, or
+Prometheus, Alertmanager or Grafana points at a Service the profile does not
+deploy.
 
 `make kind-e2e` creates its own cluster (`heartbeat-e2e-<id>`, private
 kubeconfig, no host ports) and SQL Server container, so it runs next to your
