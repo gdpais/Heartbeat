@@ -1,10 +1,12 @@
 // Package inject holds PatientZero's in-process faults, switched on and off
 // by the scenario runner: latency and errors on its entry points, a bad
-// deploy of one of its modules, and slow business SQL. The entry points ask
-// the Injector before their business SQL, so an injected delay shows in the
-// log rows' Duration and an injected failure writes an error row under the
-// request's Request_Key, as a real failure would. Slow SQL is spent in SQL
-// Server itself, inside the business statement's batch.
+// deploy of one of its modules, and slow business SQL; and on its logging
+// database: the weekly rotation, a log service that commits late, and
+// verbose logging. The entry points ask the Injector before their business
+// SQL, so an injected delay shows in the log rows' Duration and an injected
+// failure writes an error row under the request's Request_Key, as a real
+// failure would. Slow SQL is spent in SQL Server itself, inside the business
+// statement's batch.
 package inject
 
 import (
@@ -36,9 +38,22 @@ func (f *Failure) Is(target error) bool { return target == ErrInjected }
 
 // Limits on the parameters, repeated in scenarios/scenario.schema.json.
 const (
-	MaxDelay      = time.Minute
-	MaxMessageLen = 200
+	MaxDelay       = time.Minute
+	MaxMessageLen  = 200
+	MaxCommitDelay = 10 * time.Minute
+	MaxFloodRows   = 200
+	MaxFloodBytes  = 2000
 )
+
+// DefaultFloodBytes is the length of a log-flood row's Message when its
+// scenario names none.
+const DefaultFloodBytes = 1000
+
+// Rotator moves the logging database's views one cycle on, as the
+// platform's weekly rotation does (oslog.SQLWriter).
+type Rotator interface {
+	Rotate(ctx context.Context) (map[string]int, error)
+}
 
 // DefaultException is the message of a bad deploy's failures when its
 // scenario names none: .NET's NullReferenceException, the commonest
@@ -52,10 +67,12 @@ const FirstVersion = 1
 type kind int
 
 const (
-	kindLatency kind = iota // delays the request before its business SQL
-	kindErrors              // fails the request before its business SQL
-	kindDeploy              // a new module version: delays and fails
-	kindSlowSQL             // delays the business SQL in SQL Server
+	kindLatency     kind = iota // delays the request before its business SQL
+	kindErrors                  // fails the request before its business SQL
+	kindDeploy                  // a new module version: delays and fails
+	kindSlowSQL                 // delays the business SQL in SQL Server
+	kindCommitDelay             // commits the log rows late
+	kindFlood                   // writes extra general rows per request
 )
 
 type rule struct {
@@ -66,6 +83,7 @@ type rule struct {
 	jitter      time.Duration
 	message     string  // the failure's message (errors, deploy)
 	errorRatio  float64 // share of the requests a deploy fails
+	rows, bytes int     // a flood's extra rows per request and their size
 }
 
 func (r *rule) applies(entryPoint string) bool {
@@ -85,6 +103,9 @@ type Injector struct {
 	Float func() float64
 	// Sleep waits d or until ctx ends; a timer when nil.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// Rotator rotates the logging database for the rotation fault; without
+	// one that fault fails to start.
+	Rotator Rotator
 }
 
 func (i *Injector) add(r *rule) {
@@ -219,6 +240,42 @@ func (i *Injector) SQLDelay(entryPoint string) time.Duration {
 	return delay
 }
 
+// CommitDelay is how long the log rows of a request that ends now wait
+// before they are committed: the longest active commit-delay fault, as one
+// log service queue holds every row.
+func (i *Injector) CommitDelay() time.Duration {
+	if i == nil {
+		return 0
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	var delay time.Duration
+	for r := range i.rules {
+		if r.kind == kindCommitDelay && r.delay > delay {
+			delay = r.delay
+		}
+	}
+	return delay
+}
+
+// Flood is how many extra general rows a request to entryPoint logs, and
+// the length of their Message: the sum of the active log-flood faults that
+// hit it, the longest Message.
+func (i *Injector) Flood(entryPoint string) (rows, bytes int) {
+	if i == nil {
+		return 0, 0
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	for r := range i.rules {
+		if r.kind == kindFlood && r.applies(entryPoint) {
+			rows += r.rows
+			bytes = max(bytes, r.bytes)
+		}
+	}
+	return rows, bytes
+}
+
 func (i *Injector) jittered(r *rule) time.Duration {
 	d := r.delay
 	if r.jitter > 0 {
@@ -276,6 +333,20 @@ func (d *deploy) Stop(ctx context.Context) error {
 	return err
 }
 
+// rotation rotates the logging database when it starts; its end changes
+// nothing, as the platform's weekly switch is not undone.
+type rotation struct{ inj *Injector }
+
+func (r *rotation) Start(ctx context.Context) error {
+	if r.inj.Rotator == nil {
+		return errors.New("no logging database to rotate")
+	}
+	_, err := r.inj.Rotator.Rotate(ctx)
+	return err
+}
+
+func (r *rotation) Stop(context.Context) error { return nil }
+
 // delayParams are the parameters of the faults that delay requests.
 type delayParams struct {
 	EntryPoints []string `json:"entry_points"`
@@ -307,8 +378,8 @@ func (p delayParams) rule(k kind, known []string) (*rule, error) {
 	return r, nil
 }
 
-// Register adds the latency, errors, deploy and sql-latency fault types,
-// acting on inj, to reg. modules maps each PatientZero module (eSpace) to
+// Register adds the latency, errors, deploy, sql-latency, rotation,
+// commit-delay and log-flood fault types, acting on inj, to reg. modules maps each PatientZero module (eSpace) to
 // its entry points, named as Heartbeat's operation label names them: the
 // names a fault may target.
 func Register(reg *scenario.Registry, inj *Injector, modules map[string][]string) {
@@ -428,6 +499,69 @@ func Register(reg *scenario.Registry, inj *Injector, modules map[string][]string
 			r, err := p.rule(kindSlowSQL, entryPoints)
 			if err != nil {
 				return nil, err
+			}
+			return &fault{inj: inj, rule: r}, nil
+		},
+	})
+	reg.Register(scenario.FaultType{
+		Name:        "rotation",
+		Scope:       scenario.ScopeInProcess,
+		Description: "Rotates PatientZero's logging database as the platform does every Friday at 23:45: every log type's views move one cycle table on",
+		New: func(params map[string]any) (scenario.Fault, error) {
+			var p struct{}
+			if err := scenario.DecodeParams(params, &p); err != nil {
+				return nil, err
+			}
+			return &rotation{inj: inj}, nil
+		},
+	})
+	reg.Register(scenario.FaultType{
+		Name:        "commit-delay",
+		Scope:       scenario.ScopeInProcess,
+		Description: "Holds every request's log rows back for a while before they are committed, as a log service that falls behind does",
+		New: func(params map[string]any) (scenario.Fault, error) {
+			var p struct {
+				Delay string `json:"delay"`
+			}
+			if err := scenario.DecodeParams(params, &p); err != nil {
+				return nil, err
+			}
+			d, err := duration("delay", p.Delay, true)
+			if err != nil {
+				return nil, err
+			}
+			if d > MaxCommitDelay {
+				return nil, fmt.Errorf("delay must be at most %s", MaxCommitDelay)
+			}
+			return &fault{inj: inj, rule: &rule{kind: kindCommitDelay, delay: d}}, nil
+		},
+	})
+	reg.Register(scenario.FaultType{
+		Name:        "log-flood",
+		Scope:       scenario.ScopeInProcess,
+		Description: "Makes PatientZero's entry points log extra general rows per request, as verbose logging left on does",
+		New: func(params map[string]any) (scenario.Fault, error) {
+			var p struct {
+				EntryPoints []string `json:"entry_points"`
+				Rows        int      `json:"rows"`
+				Bytes       *int     `json:"bytes"`
+			}
+			if err := scenario.DecodeParams(params, &p); err != nil {
+				return nil, err
+			}
+			r := &rule{kind: kindFlood, rows: p.Rows, bytes: DefaultFloodBytes}
+			var err error
+			if r.entryPoints, err = checkEntryPoints(p.EntryPoints, entryPoints); err != nil {
+				return nil, err
+			}
+			if r.rows < 1 || r.rows > MaxFloodRows {
+				return nil, fmt.Errorf("rows must be 1 to %d", MaxFloodRows)
+			}
+			if p.Bytes != nil {
+				if *p.Bytes < 1 || *p.Bytes > MaxFloodBytes {
+					return nil, fmt.Errorf("bytes must be 1 to %d", MaxFloodBytes)
+				}
+				r.bytes = *p.Bytes
 			}
 			return &fault{inj: inj, rule: r}, nil
 		},

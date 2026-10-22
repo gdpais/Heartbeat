@@ -2,12 +2,15 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"heartbeat/tools/patientzero/internal/inject"
+	"heartbeat/tools/patientzero/internal/oslog"
 	"heartbeat/tools/patientzero/internal/scenario"
 	"heartbeat/tools/patientzero/internal/shop"
 	"heartbeat/tools/patientzero/internal/traffic"
@@ -220,4 +223,96 @@ func TestSlowSQLIsSpentInTheStoreAndLogged(t *testing.T) {
 	if run.SlowSQL != 2 || run.EntryPoints[EntryOrderList].SlowSQL != 1 || run.EntryPoints[EntryOrderList].DurationMsMax != 3000 {
 		t.Errorf("run summary %+v, want 2 slow-query rows and a 3 s OrderList", run)
 	}
+}
+
+// Committed rows are counted in the Ledger by their Instant, and in the
+// run's traffic per log type; a log-flood fault adds general rows of its
+// module to each request, under the request's Request_Key.
+func TestCommittedRowsAreCountedAndFloodRowsAdded(t *testing.T) {
+	s, rec := newServer(t, &fakeStore{})
+	s.Ledger = &oslog.Ledger{Now: func() time.Time { return t0 }}
+	s.Traffic = &traffic.Counter{}
+	s.Traffic.Begin(t0)
+	switchOn(t, s, "log-flood", map[string]any{"entry_points": []any{EntryOrderList}, "rows": 3, "bytes": 50})
+	do(t, s, http.MethodGet, PathOrderList, "", maria)
+	sameRequest(t, rec, "screen general general general")
+	flood := rec.byType()["general"]
+	if msg := flood[2]["Message"].(string); len(msg) != 50 || !strings.HasPrefix(msg, "Preparation: step 3 of 3 ") {
+		t.Errorf("flood Message %q, want 50 characters naming the step", msg)
+	}
+	if flood[0]["Module_Name"] != "PatientZero_Web" || flood[0]["Message_Type"] != "Trace" {
+		t.Errorf("flood row %v", flood[0])
+	}
+	do(t, s, http.MethodPost, PathPlaceOrder, `{"productId":1,"quantity":1}`, maria)
+	window := func(typ string) int64 { return s.Ledger.Count(typ, t0.Add(-time.Minute), t0.Add(time.Minute), 0).Rows }
+	if window("screen") != 1 || window("general") != 3 || window("mobile_request") != 1 {
+		t.Errorf("ledger screen %d, general %d, mobile_request %d; want 1, 3, 1", window("screen"), window("general"), window("mobile_request"))
+	}
+	_, run := s.Traffic.End(t0.Add(time.Minute))
+	if run.Rows["screen"] != 1 || run.Rows["general"] != 3 || run.Rows["mobile_request"] != 1 {
+		t.Errorf("run rows %v", run.Rows)
+	}
+}
+
+// A commit-delay fault answers the request at once and commits its rows
+// later; the Ledger counts them as held for that long once they are
+// committed, and a failed write is not counted.
+func TestHeldRowsAreCommittedLater(t *testing.T) {
+	s, _ := newServer(t, &fakeStore{})
+	logs := &lockedLogs{}
+	s.Logs = logs
+	s.Ledger = &oslog.Ledger{Now: func() time.Time { return t0 }}
+	switchOn(t, s, "commit-delay", map[string]any{"delay": "50ms"})
+	if w := do(t, s, http.MethodGet, PathOrderList, "", maria); w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	count := func(heldOver time.Duration) oslog.Counted {
+		return s.Ledger.Count("screen", t0.Add(-time.Minute), t0.Add(time.Minute), heldOver)
+	}
+	if got := count(0); got.Rows != 0 || logs.written() != 0 {
+		t.Fatalf("rows committed at once: ledger %+v, %d written", got, logs.written())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for count(0).Rows == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := count(0); got.Rows != 1 || got.Held != 1 || count(50*time.Millisecond).Held != 0 {
+		t.Fatalf("ledger %+v, want the row committed and held for 50ms", got)
+	}
+	logs.failWith(errors.New("log database down"))
+	do(t, s, http.MethodGet, PathOrderList, "", maria)
+	time.Sleep(200 * time.Millisecond)
+	if got := count(0); got.Rows != 1 {
+		t.Fatalf("a failed write was counted: %+v", got)
+	}
+}
+
+// lockedLogs is a log writer that rows can be written to from the held
+// commits' goroutines.
+type lockedLogs struct {
+	mu   sync.Mutex
+	rows int
+	fail error
+}
+
+func (l *lockedLogs) Write(_ context.Context, rows []oslog.Row) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.fail != nil {
+		return l.fail
+	}
+	l.rows += len(rows)
+	return nil
+}
+
+func (l *lockedLogs) written() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.rows
+}
+
+func (l *lockedLogs) failWith(err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.fail = err
 }

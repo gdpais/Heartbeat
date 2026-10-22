@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=scenario.schema.json
+version: 1
+name: log-backlog
+description: >-
+  The platform's log service falls behind, but not past the collector's lag:
+  for 4 minutes every request's log rows are committed 10 seconds after the
+  request instead of at once. The collector reads each log type up to now
+  minus its lag (15 seconds; 1 minute for screens), so a row committed late
+  but within the lag is still read: extraction keeps up and Loki ends with
+  every row, once.
+load: steady
+steps:
+  - name: before
+    duration: 1m
+  - name: behind
+    duration: 4m
+    fault:
+      type: commit-delay
+      params:
+        delay: 10s
+  - name: after
+    duration: 1m
+signals:
+  - name: extraction-keeps-up
+    promql: max(heartbeat_outsystems_extract_lag_seconds{collector="patientzero"})
+    condition: "< 120"
+    step: behind
+    mode: always
+    within: 4m
+  - name: every-row-once
+    delivery:
+      log_types: [screen, mobile_request, integration, general, error]
+    step: after
+    from: end
+    within: 4m

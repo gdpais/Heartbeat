@@ -257,3 +257,91 @@ func TestNewFaultParamsAreValidated(t *testing.T) {
 		}
 	}
 }
+
+type fakeRotator struct{ rotations int }
+
+func (f *fakeRotator) Rotate(context.Context) (map[string]int, error) {
+	f.rotations++
+	return map[string]int{"screen": 2}, nil
+}
+
+// A rotation happens when its step starts and is not undone when it ends.
+func TestRotationRotatesOnceAndStays(t *testing.T) {
+	inj, reg, _ := setup(0)
+	f, err := reg.New(scenario.FaultSpec{Type: "rotation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "no logging database") {
+		t.Fatalf("Start without a rotator: %v", err)
+	}
+	rot := &fakeRotator{}
+	inj.Rotator = rot
+	if err := f.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Stop(context.Background()); err != nil || rot.rotations != 1 || inj.Active() != 0 {
+		t.Fatalf("after Stop: %v, %d rotations, %d active; want one rotation and nothing left on", err, rot.rotations, inj.Active())
+	}
+	if _, err := reg.New(scenario.FaultSpec{Type: "rotation", Params: map[string]any{"week": 2}}); err == nil {
+		t.Error("rotation takes no parameters")
+	}
+}
+
+func TestCommitDelayHoldsEveryRequestsRows(t *testing.T) {
+	inj, reg, _ := setup(0)
+	if inj.CommitDelay() != 0 {
+		t.Fatal("no fault, no delay")
+	}
+	short := start(t, reg, "commit-delay", map[string]any{"delay": "10s"})
+	long := start(t, reg, "commit-delay", map[string]any{"delay": "90s"})
+	if d := inj.CommitDelay(); d != 90*time.Second {
+		t.Fatalf("delay %s, want the longest, 90s: one log service queue", d)
+	}
+	_ = long.Stop(context.Background())
+	if d := inj.CommitDelay(); d != 10*time.Second {
+		t.Fatalf("delay %s after the long one stopped, want 10s", d)
+	}
+	_ = short.Stop(context.Background())
+	var none *Injector
+	if inj.CommitDelay() != 0 || none.CommitDelay() != 0 {
+		t.Fatal("stopped faults still delay commits")
+	}
+}
+
+func TestLogFloodAddsRowsToItsEntryPoints(t *testing.T) {
+	inj, reg, _ := setup(0)
+	start(t, reg, "log-flood", map[string]any{"entry_points": []any{"OrderList"}, "rows": 20, "bytes": 1500})
+	start(t, reg, "log-flood", map[string]any{"rows": 5})
+	if n, size := inj.Flood("OrderList"); n != 25 || size != 1500 {
+		t.Fatalf("OrderList: %d rows of %d bytes, want 25 of 1500", n, size)
+	}
+	if n, size := inj.Flood("GetOrders"); n != 5 || size != DefaultFloodBytes {
+		t.Fatalf("GetOrders: %d rows of %d bytes, want 5 of %d", n, size, DefaultFloodBytes)
+	}
+	var none *Injector
+	if n, _ := none.Flood("OrderList"); n != 0 {
+		t.Fatal("a nil injector floods")
+	}
+}
+
+func TestLogFaultParamsAreValidated(t *testing.T) {
+	_, reg, _ := setup(0)
+	for _, c := range []struct {
+		typ    string
+		params map[string]any
+		want   string
+	}{
+		{"commit-delay", map[string]any{}, "delay is required"},
+		{"commit-delay", map[string]any{"delay": "11m"}, "delay must be at most 10m0s"},
+		{"log-flood", map[string]any{}, "rows must be 1 to 200"},
+		{"log-flood", map[string]any{"rows": 201}, "rows must be 1 to 200"},
+		{"log-flood", map[string]any{"rows": 1, "bytes": 2001}, "bytes must be 1 to 2000"},
+		{"log-flood", map[string]any{"rows": 1, "entry_points": []any{"Home"}}, "entry point \"Home\""},
+	} {
+		_, err := reg.New(scenario.FaultSpec{Type: c.typ, Params: c.params})
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s %v: error %v, want %q", c.typ, c.params, err, c.want)
+		}
+	}
+}

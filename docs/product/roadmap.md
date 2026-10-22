@@ -10,7 +10,7 @@ shared validation inventory [16] throughout rather than as a final stage.
 | --- | --- | --- |
 | 0 | Foundations, including kind + Helm delivery | Done |
 | 1 | DB collector (SQL Server) | Done |
-| 2 | OutSystems ingest (OutSystems 11 log extraction) | In progress: extraction to Loki, derived metrics, SLO alerts and dashboards built ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)); real-database survey, query review and production-sized measurement done; persistent export queue done; PatientZero has k6 load, a scenario runner and the SLO scenarios; its ingest scenarios pending |
+| 2 | OutSystems ingest (OutSystems 11 log extraction) | In progress: extraction to Loki, derived metrics, SLO alerts and dashboards built ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)); real-database survey, query review and production-sized measurement done; persistent export queue done; PatientZero has k6 load, a scenario runner, the SLO scenarios and the in-process ingest scenarios; its restart and outage scenarios pending |
 | 3 | API / control plane | Not started; decisions recorded in ADRs [0013](../architecture/decisions/0013-api-design-and-subsystem-boundaries.md)–[0015](../architecture/decisions/0015-postgresql-and-redis-delivery.md) |
 | 4 | Web UI | Not started |
 | 5 | Production delivery (EKS + Argo CD) | Not started; decisions recorded |

@@ -111,6 +111,10 @@ func TestSchemaMatchesValidation(t *testing.T) {
 	if got := strings(t, path(t, s, "$defs", "module", "enum")); !slices.Equal(got, modules) {
 		t.Errorf("schema modules %v, app.Modules %v", got, modules)
 	}
+	logTypes := slices.Sorted(slices.Values(scenario.LogTypes))
+	if got := strings(t, path(t, s, "$defs", "signal", "properties", "delivery", "properties", "log_types", "items", "enum")); !slices.Equal(got, logTypes) {
+		t.Errorf("schema delivery log types %v, scenario.LogTypes %v", got, logTypes)
+	}
 	loads := slices.Sorted(slices.Values(scenario.LoadProfiles))
 	if got := strings(t, path(t, s, "properties", "load", "enum")); !slices.Equal(got, loads) {
 		t.Errorf("schema load profiles %v, scenario.LoadProfiles %v", got, loads)
@@ -126,6 +130,15 @@ func TestSchemaMatchesValidation(t *testing.T) {
 	var described []string
 	for _, a := range allOf {
 		described = append(described, path(t, a.(map[string]any), "if", "properties", "type", "const").(string))
+		if path(t, a.(map[string]any), "if", "properties", "type", "const") == "log-flood" {
+			params := path(t, a.(map[string]any), "then", "properties", "params", "properties").(map[string]any)
+			if rows := number(t, path(t, params, "rows", "maximum")); rows != inject.MaxFloodRows {
+				t.Errorf("schema log-flood rows maximum %d, inject.MaxFloodRows %d", rows, inject.MaxFloodRows)
+			}
+			if bytes := number(t, path(t, params, "bytes", "maximum")); bytes != inject.MaxFloodBytes {
+				t.Errorf("schema log-flood bytes maximum %d, inject.MaxFloodBytes %d", bytes, inject.MaxFloodBytes)
+			}
+		}
 		for typ, field := range map[string]string{"errors": "message", "deploy": "exception"} {
 			if path(t, a.(map[string]any), "if", "properties", "type", "const") != typ {
 				continue

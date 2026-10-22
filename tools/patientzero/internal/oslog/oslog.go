@@ -194,10 +194,47 @@ func insertInto(object string, values map[string]any) insert {
 }
 
 // value binds times in UTC, the zone the logging database stores Instant
-// in (the collector's default log_timezone).
+// in (the collector's default log_timezone), cut to the millisecond its
+// datetime2(3) columns keep (Stored), so the Ledger counts each row in the
+// second the database has it in.
 func value(v any) any {
 	if t, ok := v.(time.Time); ok {
-		return t.UTC()
+		return Stored(t)
 	}
 	return v
+}
+
+// Rotate moves every log type's views one cycle on, as the platform's
+// weekly rotation does every Friday at 23:45: the previous view to the cycle
+// the current view read, the current view to the next cycle table. Only the
+// views move, all in one transaction; the rows stay where they are, and new
+// rows follow the current view. It returns the cycle each log type's
+// current view reads now.
+func (w *SQLWriter) Rotate(ctx context.Context) (map[string]int, error) {
+	tx, err := w.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck // a no-op after Commit
+	names := make([]string, 0, len(w.Schema))
+	for name := range w.Schema {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	now := map[string]int{}
+	for _, name := range names {
+		t := w.Schema[name]
+		c, err := currentCycle(ctx, tx, t)
+		if err != nil {
+			return nil, err
+		}
+		next := (c + 1) % logschema.Cycles
+		for _, stmt := range t.RotateStatements(next, c) {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				return nil, fmt.Errorf("rotating %s: %w", name, err)
+			}
+		}
+		now[name] = next
+	}
+	return now, tx.Commit()
 }

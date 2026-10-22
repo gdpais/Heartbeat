@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=scenario.schema.json
+version: 1
+name: log-growth
+description: >-
+  Verbose logging left on after a deploy: for 5 minutes every request logs 20
+  more general rows of 2,000 characters, about 100 MB in all. PatientZero's
+  logging database grows fast, and the SQL Server storage probe sees its data
+  file grow; the collector keeps up, and Loki takes every row, once, and
+  discards none.
+load: steady
+steps:
+  - name: before
+    duration: 1m
+  - name: verbose
+    duration: 5m
+    fault:
+      type: log-flood
+      params:
+        rows: 20
+        bytes: 2000
+  - name: after
+    duration: 1m
+signals:
+  # Loki discards nothing (LokiDiscardingLogs counts the last 10 minutes, so
+  # it also needs no discards from before the run).
+  - name: loki-discards-nothing
+    alert: LokiDiscardingLogs
+    state: resolved
+    step: before
+    mode: always
+    within: 7m
+  # A database grows its data file when the rows no longer fit (64 MB at a
+  # time by default); about 100 MB of rows always makes it grow at least once.
+  - name: log-database-grows
+    promql: >-
+      sum(delta(heartbeat_sqlserver_database_file_size_bytes{database_name="patientzero_log",file_type="ROWS"}[5m]))
+    condition: "> 0"
+    step: verbose
+    within: 6m
+  - name: extraction-keeps-up
+    promql: max(heartbeat_outsystems_extract_lag_seconds{collector="patientzero"})
+    condition: "< 120"
+    step: verbose
+    mode: always
+    within: 5m
+  - name: every-row-once
+    delivery:
+      log_types: [screen, mobile_request, integration, general, error]
+    step: after
+    from: end
+    within: 5m

@@ -349,3 +349,67 @@ func TestLiveSlowSQL(t *testing.T) {
 		t.Fatalf("screen rows %v, want one under the slow query's Request_Key", screen)
 	}
 }
+
+// TestLiveRotation rotates a logging database as the rotation fault does,
+// between two requests: every log type's views move one cycle on, the
+// second request's rows go into the new current week, and the collector's
+// queries, which read both weeks, return both requests' rows once. Same
+// requirements as TestLiveSQLServer.
+func TestLiveRotation(t *testing.T) {
+	admin := os.Getenv("PATIENTZERO_TEST_SQLSERVER")
+	if admin == "" {
+		t.Skip("PATIENTZERO_TEST_SQLSERVER is not set")
+	}
+	ctx := context.Background()
+	business := openTestDatabase(t, admin, "pz_test")
+	logging := openTestDatabase(t, admin, "pz_test_log")
+	types, err := logschema.Load(fixtureDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, business, logging, types, "heartbeat_oslog_reader"); err != nil {
+		t.Fatal(err)
+	}
+	schema := oslog.NewSchema(types)
+	writer := &oslog.SQLWriter{DB: logging, Schema: schema}
+	s := &Server{
+		Store: &shop.SQLStore{DB: business}, Logs: writer, Schema: schema, FrontEnd: "FE-PZ-1",
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	from := time.Now().UTC().Add(-time.Minute)
+	// A refused order writes an error row too, so the error log, whose rows
+	// go into the cycle table its view reads, rotates with the others.
+	do(t, s, http.MethodPost, PathPlaceOrder, `{"productId":99,"quantity":1}`, maria)
+	cycles, err := writer.Rotate(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, lt := range types {
+		if cycles[lt.Name] != logschema.InitialCurrent+1 {
+			t.Errorf("%s: current view reads cycle %d, want %d", lt.Name, cycles[lt.Name], logschema.InitialCurrent+1)
+		}
+		var previous string
+		if err := logging.QueryRow(`SELECT TOP (1) referenced_entity_name FROM sys.sql_expression_dependencies
+			WHERE referencing_id = OBJECT_ID(@p1) AND referenced_entity_name NOT LIKE '%Detail%'`, "dbo."+lt.PreviousView()).Scan(&previous); err != nil {
+			t.Fatal(err)
+		}
+		if previous != lt.Table(logschema.InitialCurrent) {
+			t.Errorf("%s: previous view reads %s, want %s", lt.Name, previous, lt.Table(logschema.InitialCurrent))
+		}
+	}
+	do(t, s, http.MethodPost, PathPlaceOrder, `{"productId":99,"quantity":1}`, maria)
+	to := time.Now().UTC().Add(time.Minute)
+	for _, logType := range []string{"mobile_request", "error"} {
+		rows := collect(t, logging, logType, from, to)
+		if len(rows) != 2 || rows[0]["Request_Key"] == rows[1]["Request_Key"] {
+			t.Errorf("%s: the collector's query returned %d rows across the rotation, want both requests' once: %v", logType, len(rows), rows)
+		}
+	}
+	var after int
+	if err := logging.QueryRow("SELECT COUNT(*) FROM dbo." + schema["error"].Table(logschema.InitialCurrent+1)).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != 1 {
+		t.Errorf("%d error rows in the new current cycle table, want the second request's", after)
+	}
+}
