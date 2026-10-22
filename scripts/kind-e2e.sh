@@ -38,9 +38,14 @@ if $own_cluster; then
 fi
 
 port_forward_pid=
+# The NetworkPolicy step's second namespace.
+other_ns=kind-e2e-netpol
 cleanup() {
 	status=$?
 	[ -z "$port_forward_pid" ] || kill "$port_forward_pid" 2>/dev/null || true
+	if ! $own_cluster; then
+		kubectl --context "$CONTEXT" delete namespace "$other_ns" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+	fi
 	if [ "$status" -ne 0 ] && kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
 		echo "--- diagnostics"
 		kubectl --context "$CONTEXT" -n "$NAMESPACE" get pods -o wide || true
@@ -443,15 +448,21 @@ pass "Loki answers through kubectl port-forward"
 # other failure (DNS, refused) is not the policy. Grafana, which has no
 # policy, is the control: it shows that the pod's DNS and network work. sh
 # stays PID 1: busybox timeout execs wget in its own process, and PID 1
-# ignores the SIGTERM it would send.
+# ignores the SIGTERM it would send. The pod in this namespace also tries
+# Prometheus's and Alertmanager's NodePorts on the node, which kind.yaml opens
+# to every source outside the pod subnet: the policy must still see the pod.
 blocked="db-collector-headless:8082/healthz loki:3100/ready prometheus:9090/-/ready alertmanager:9093/-/ready otel-collector:4318/v1/logs"
 probe_script='for url in "$@"; do timeout 10 wget -q -T 30 -O /dev/null "$url"; echo "$url $?"; done'
-other_ns=kind-e2e-netpol
+node_ip=$(k get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
 k create namespace "$other_ns" --dry-run=client -o yaml | k apply -f - >/dev/null
+# A pod is rejected until the namespace's default ServiceAccount exists.
+wait_for 60 "default ServiceAccount in $other_ns" k -n "$other_ns" get serviceaccount default
 k -n "$NAMESPACE" delete pod np-probe --ignore-not-found --wait=true >/dev/null
+k -n "$other_ns" delete pod np-probe --ignore-not-found --wait=true >/dev/null
 # shellcheck disable=SC2086 # $blocked is a list of words
 k -n "$NAMESPACE" run np-probe --image="$prom_image" --restart=Never --labels=app.kubernetes.io/name=np-probe \
-	--command -- sh -c "$probe_script" sh $(printf 'http://%s ' $blocked) http://grafana:3000/api/health >/dev/null
+	--command -- sh -c "$probe_script" sh $(printf 'http://%s ' $blocked) "http://$node_ip:30090/-/ready" "http://$node_ip:30093/-/ready" \
+	http://grafana:3000/api/health >/dev/null
 # shellcheck disable=SC2086
 k -n "$other_ns" run np-probe --image="$prom_image" --restart=Never \
 	--labels=app.kubernetes.io/name=grafana,app.kubernetes.io/instance=heartbeat \
@@ -466,7 +477,7 @@ results=$({
 k delete namespace "$other_ns" --wait=false >/dev/null
 k -n "$NAMESPACE" delete pod np-probe --wait=false >/dev/null
 printf '%s\n' "$results" | sed 's/^/      /'
-[ "$(printf '%s\n' "$results" | grep -c .)" = 12 ] || fail "expected 12 probe results"
+[ "$(printf '%s\n' "$results" | grep -c .)" = 14 ] || fail "expected 14 probe results"
 printf '%s\n' "$results" | while read -r url code; do
 	case "$url:$code" in
 	*grafana*:0) ;;
@@ -475,7 +486,7 @@ printf '%s\n' "$results" | while read -r url code; do
 	*) fail "$url from a pod the policies do not list: exit $code, not a connection timeout" ;;
 	esac
 done
-pass "unlisted pods time out on the collector, Loki, Prometheus, Alertmanager and the OTel Collector"
+pass "unlisted pods time out on the collector, Loki, Prometheus, Alertmanager and the OTel Collector, NodePorts included"
 
 # ----------------------------------------------------------------------------
 step "a valid ConfigMap update is hot-reloaded without a restart"

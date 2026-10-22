@@ -83,8 +83,10 @@ them: RBAC on the namespace is part of the access control.
 Not covered, by design:
 
 - **Grafana** has no policy. Whatever serves its UI (an ingress, a load
-  balancer, the operator) must reach port 3000, and its login is the control;
-  anonymous viewing is on only in the kind values. Grafana has no
+  balancer, the operator) must reach port 3000, and its login is the control.
+  Anonymous viewing is on only in the kind values, so on kind any pod, and
+  any container on the Docker `kind` network, can query Loki through
+  Grafana's datasource; that is why kind holds only synthetic data. Grafana has no
   Alertmanager datasource and Prometheus does not scrape Grafana, so neither
   flow is admitted anywhere.
 - **Kubelet probes** come from the pod's node, which NetworkPolicy does not

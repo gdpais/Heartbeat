@@ -42,8 +42,10 @@ dbCollector:
 # NetworkPolicy does not filter. Verified by hand on kind v0.33 with kindnet:
 # the host reaches all three through their NodePorts, and Alertmanager's
 # times out without this peer. Their Services keep externalTrafficPolicy
-# Cluster (Alertmanager's chart has no setting for it); the host's traffic
-# still matches the range.
+# Cluster (Alertmanager's chart has no setting for it), and the host's traffic
+# still matched the range in that check, unlike what the collector's comment
+# above found earlier. kind-e2e checks that a pod is still refused through
+# these NodePorts.
 backendNetworkPolicies:
   otelCollector:
     extraPeers:
