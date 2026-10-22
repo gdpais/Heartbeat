@@ -138,6 +138,7 @@ reload_alert_gone() {
 	svc_get prometheus:9090 /api/v1/alerts | jq -e 'all(.data.alerts[]; .labels.alertname != "HeartbeatCollectorConfigReloadFailed")'
 }
 rejected_reloads() { prom_value 'sum(heartbeat_collector_config_reloads_total{result="invalid_candidate"})'; }
+rejected_reloads_above() { now=$(rejected_reloads); [ -n "$now" ] && gt "$now" "$1"; }
 watchdog_active() { svc_get alertmanager:9093 /api/v2/alerts | jq -e 'any(.[]; .labels.alertname == "Watchdog")'; }
 last_success() { prom_value "heartbeat_collector_target_last_success_timestamp_seconds{target=\"$1\"}"; }
 # gt <a> <b>: numeric a > b, for decimals too.
@@ -523,10 +524,9 @@ rejected_before=$(rejected_reloads)
 # through, the collector rejects it. Written straight to the ConfigMap, which
 # is restored the same way.
 k -n "$NAMESPACE" get configmap heartbeat-integrations -o json >"$WORK/integrations-good.json"
-jq '.data["integrations.yaml"] |= sub("- name: waits"; "- name: wiats")' "$WORK/integrations-good.json" >"$WORK/integrations-typo.json"
-if cmp -s "$WORK/integrations-good.json" "$WORK/integrations-typo.json"; then
+jq -e '.data["integrations.yaml"] | contains("- name: waits")' "$WORK/integrations-good.json" >/dev/null ||
 	fail "no waits probe to misspell in the ConfigMap"
-fi
+jq '.data["integrations.yaml"] |= sub("- name: waits"; "- name: wiats")' "$WORK/integrations-good.json" >"$WORK/integrations-typo.json"
 k replace -f "$WORK/integrations-typo.json" >/dev/null
 wait_for 180 "reload error reported" reload_error_is_set
 admin_config | jq -r '"      last_reload_err: " + .last_reload_err'
@@ -537,9 +537,10 @@ wait_for 90 "collection still fresh" target_fresh sqlserver-dev
 [ "$(collector_restarts)" = "$restarts_before" ] || fail "collector restarted on invalid config"
 pass "invalid config rejected, version $version_good kept, still collecting"
 wait_for 60 "failed reload in Prometheus" reload_successful_is 0
+# The counter is incremented just after the gauge's snapshot is stored, so a
+# scrape can land between the two.
+wait_for 60 "rejected reload counted" rejected_reloads_above "${rejected_before:-0}"
 rejected_after=$(rejected_reloads)
-gt "$rejected_after" "${rejected_before:-0}" ||
-	fail "heartbeat_collector_config_reloads_total{result=\"invalid_candidate\"} did not grow ($rejected_before -> $rejected_after)"
 value_is "heartbeat_collector_config_info{version=\"$version_good\"}" 1 ||
 	fail "Prometheus does not show the kept version $version_good"
 wait_for 60 "HeartbeatCollectorConfigReloadFailed pending or firing" reload_alert_active
