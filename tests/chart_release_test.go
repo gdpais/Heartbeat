@@ -64,6 +64,7 @@ func TestChartDefaultsToReleasedArtifacts(t *testing.T) {
 	if imagePrefix != "ghcr.io/"+owner+"/heartbeat" {
 		t.Errorf("release.yml IMAGE_PREFIX is %q; update this test and the chart's image defaults together", imagePrefix)
 	}
+	chartRef := expand(workflow.Env["CHART_REPO"]) + "/" + chart.Name
 	services := workflow.Jobs.Images.Strategy.Matrix.Service
 	if len(services) == 0 {
 		t.Fatal("release.yml jobs.images.strategy.matrix.service is empty; the test is not reading the workflow")
@@ -71,9 +72,11 @@ func TestChartDefaultsToReleasedArtifacts(t *testing.T) {
 
 	var values map[string]any
 	readYAML(t, filepath.Join(root, "infra/helm/heartbeat/values.yaml"), &values)
+	var published []string
 	for _, service := range services {
 		ref := strings.ReplaceAll(expand(workflow.Jobs.Images.Env["REF"]), "${{ matrix.service }}", service)
 		repository := imagePrefix + "/" + service
+		published = append(published, repository)
 		if !strings.HasPrefix(ref, repository+":") {
 			t.Errorf("release.yml pushes %s as %q, not under IMAGE_PREFIX (%s)", service, ref, repository)
 		}
@@ -89,6 +92,20 @@ func TestChartDefaultsToReleasedArtifacts(t *testing.T) {
 		for _, field := range []string{"tag", "digest"} {
 			if got := image[field]; got != "" {
 				t.Errorf("values.yaml %s.image.%s is %v; leave it empty so the tag defaults to appVersion", key, field, got)
+			}
+		}
+	}
+
+	// The install docs name the same locations, so a move breaks them here
+	// rather than for a reader.
+	for _, doc := range []string{"docs/guides/install-from-release.md", "infra/helm/heartbeat/README.md"} {
+		content, err := os.ReadFile(filepath.Join(root, doc))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range append([]string{chartRef}, published...) {
+			if !strings.Contains(string(content), want) {
+				t.Errorf("%s does not mention %s", doc, want)
 			}
 		}
 	}

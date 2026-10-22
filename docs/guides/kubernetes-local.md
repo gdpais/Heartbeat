@@ -24,7 +24,7 @@ Heartbeat's own objects (fixed names; one release per namespace):
 
 | Object | Notes |
 | --- | --- |
-| `StatefulSet/db-collector` | Always one replica: a replacement pod starts only after the old one is gone, so SQL targets are never polled twice. Liveness `/healthz` (process only), readiness `/readyz`. No config checksum: ConfigMap changes hot-reload without a restart |
+| `StatefulSet/db-collector` | Always one replica: a replacement pod starts only after the old one is gone, so SQL targets are never polled twice. `podManagementPolicy: Parallel`, so an upgrade replaces a pod that never became Ready ([kubernetes/kubernetes#67250](https://github.com/kubernetes/kubernetes/issues/67250)); the field cannot change in place, so an install from chart 0.1.0 [deletes the StatefulSet once](install-from-release.md#upgrade). Liveness `/healthz` (process only), readiness `/readyz`. No config checksum: ConfigMap changes hot-reload without a restart |
 | `Service/db-collector-headless` | Headless, `publishNotReadyAddresses`; Prometheus discovers the collector through it even while it is unready |
 | `Service/db-collector` | Operator access (health, admin endpoints); ready pods only. kind: NodePort with `externalTrafficPolicy: Local`, so the NetworkPolicy sees the host's address |
 | `NetworkPolicy/db-collector` | Ingress to port 8082 only from the bundled Prometheus and the `dbCollector.networkPolicy.scrapers` (a shared Prometheus or another platform's scraper) and `.operators` peers; no peers means deny all. kind adds every source outside the pod subnet `10.244.0.0/16` (the host through the loopback NodePort, and containers on the Docker `kind` network); the production example adds a VPN range. Kubelet probes and `kubectl port-forward` are not affected. Needs a CNI that enforces NetworkPolicy (kind's kindnet does) |
@@ -121,7 +121,9 @@ accepts the objects and drops nothing.
 
 ## Secrets
 
-The chart never creates Secrets. `scripts/kind.sh` creates kind-only values:
+The chart never creates Secrets. `scripts/kind.sh` creates kind-only values;
+an install from a release creates its own
+([installing a release](install-from-release.md#1-create-the-namespace-and-secrets)):
 
 | Secret | Keys | kind value | Production |
 | --- | --- | --- | --- |

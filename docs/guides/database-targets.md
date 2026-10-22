@@ -39,6 +39,30 @@ rejects an override that is not one read-only `SELECT`
 only a safety net: these read-only grants are what stop a probe from changing
 anything, so never give the collector's login write rights.
 
+For the DBAs, the T-SQL for such a login (SQL Server authentication; pick
+your own name and a strong password):
+
+```sql
+USE master;  -- server permissions are granted from master
+CREATE LOGIN heartbeat_collector WITH PASSWORD = N'<password>';
+GRANT VIEW SERVER STATE TO heartbeat_collector;
+GRANT VIEW ANY DEFINITION TO heartbeat_collector;
+
+-- Check: both columns must be 0.
+EXECUTE AS LOGIN = N'heartbeat_collector';
+SELECT IS_SRVROLEMEMBER(N'sysadmin') AS is_sysadmin,
+       HAS_PERMS_BY_NAME(NULL, NULL, N'CONTROL SERVER') AS has_control_server;
+REVERT;
+
+-- Only when the target's database_name is not master: a user there, with no roles.
+USE FinanceDB;
+CREATE USER heartbeat_collector FOR LOGIN heartbeat_collector;
+```
+
+[`scripts/sqlserver-login.sh`](../../scripts/sqlserver-login.sh) creates the
+same login in the local sandbox, and refuses one that ends up
+sysadmin-equivalent.
+
 If the login is sysadmin-equivalent anyway (a member of `sysadmin`, or
 holding `CONTROL SERVER`), the collector logs a warning (with the target and
 `credential_ref`) and exports `heartbeat_collector_target_login_sysadmin` as
@@ -153,6 +177,7 @@ Secret into the collector's environment.
 | Where | Steps |
 | --- | --- |
 | kind | Put the values in a file and run `EXTRA_VALUES=<file> make kind-deploy`. |
+| Installed from a release | Put the values in a file and run `helm upgrade` with it and all your other values files ([installing a release](install-from-release.md#5-add-a-sql-server-target)). |
 | Production | Commit the values to the `heartbeat-deploy` repository; Argo CD syncs them. |
 
 Helm rejects values that fail the integrations schema before anything changes.
