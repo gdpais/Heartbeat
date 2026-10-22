@@ -154,7 +154,7 @@ requests it served, and each check's result
 make patientzero-scenario                        # list them
 make patientzero-scenario NAME=checkout-errors   # run one with its load; exits 0 if every signal showed
 make patientzero-scenario NAME=bad-deploy        # the error budget alerts, in Alertmanager (about 19 minutes)
-make patientzero-scenario NAME=slow-sql          # the latency budget alerts (about 22 minutes)
+make patientzero-scenario NAME=slow-sql          # the latency budget alerts (about 25 minutes)
 ```
 
 The journal is saved to `.tmp/patientzero-scenarios/<run>.jsonl`. Faults

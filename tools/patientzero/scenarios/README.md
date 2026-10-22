@@ -26,7 +26,7 @@ passed. Interrupting it stops the run, which removes its fault.
 | [`checkout-errors`](checkout-errors.yaml) | Half of `PlaceOrder` calls fail for 3 minutes | The `PlaceOrder` error ratio in `heartbeat_outsystems_operations_total` above 0.3, the injected error rows in Loki, the ratio back below 0.2 after the fault | about 6 minutes |
 | [`orderlist-latency`](orderlist-latency.yaml) | `OrderList` takes 3 s longer for 3 minutes | The screen p95 from `heartbeat_outsystems_operation_duration_seconds` above the 2 s SLO threshold, then back below 1 s | about 7 minutes |
 | [`bad-deploy`](bad-deploy.yaml) | A broken version of `PatientZero_App` fails every `PlaceOrder` with a new exception for 8 minutes, then is rolled back | The module's error rate and the exception in Loki; the error SLI past 1.44%; `OutSystemsErrorBudgetBurnFast` firing, then resolved; `OutSystemsErrorBudgetBurnSlow` firing | about 19 minutes |
-| [`slow-sql`](slow-sql.yaml) | The order list's query runs 2.5 to 3.5 s longer in SQL Server for 12 minutes | More running sessions on SQL Server; slow-SQL rows in Loki and `heartbeat_outsystems_slow_events_total`; the latency SLI past 14.4%; `OutSystemsLatencyBudgetBurnFast` firing, then resolved; `OutSystemsLatencyBudgetBurnSlow` firing | about 22 minutes |
+| [`slow-sql`](slow-sql.yaml) | The order list's query runs 2.5 to 3.5 s longer in SQL Server for 15 minutes | More running sessions on SQL Server; slow-SQL rows in Loki and `heartbeat_outsystems_slow_events_total`; the latency SLI past 14.4%; `OutSystemsLatencyBudgetBurnFast` firing, then resolved; `OutSystemsLatencyBudgetBurnSlow` firing | about 25 minutes |
 
 The ingest scenarios (rotation, log backlog and growth, restarts and
 outages of the db-collector, the OTel Collector, Loki and SQL Server) come
@@ -45,17 +45,19 @@ nothing is shortened for kind. That sets their length:
   fires a few minutes into the fault and resolves about 6 minutes after it,
   once the 5-minute window has emptied.
 - A slow burn (6 times the budget over 6 hours and 30 minutes, `for: 15m`)
-  fires about 16 minutes into the fault, so the run waits for it after the
-  fault has ended. It resolves only once the 30-minute window has emptied,
-  about 40 minutes after the fault started; the scenarios do not wait for
-  that.
+  fires about 17 minutes after the fault started, after `bad-deploy`'s
+  rollback, at the end of `slow-sql`'s fault. It resolves only once the
+  30-minute window has emptied, 40 to 50 minutes after the fault started;
+  the scenarios do not wait for that.
 - The windows reach back before the run. PatientZero traffic in the hours
   before dilutes the fault's share of them, so each scenario first checks
   that there was not too much (`last-hour-leaves-room-for-the-fast-burn`,
   `history-leaves-room-for-the-slow-burn`) and that its alerts are quiet
   (`fast-burn-quiet-before`, `slow-burn-quiet-before`). A second run of the
   same scenario fails those checks until the first one's slow burn has
-  resolved: wait about 45 minutes, or use a fresh cluster.
+  resolved: wait about 50 minutes, or use a fresh cluster. `slow-sql` can
+  run right after `bad-deploy`: their alerts differ, and one run of
+  `bad-deploy` leaves room in the windows.
 
 PatientZero's steady load stays inside both objectives without a fault:
 about 0.07% of its requests fail (refused orders) and none take 2 s.

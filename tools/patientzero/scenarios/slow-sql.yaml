@@ -3,7 +3,7 @@ version: 1
 name: slow-sql
 description: >-
   The query behind the order list, run by the OrderList screen and the
-  GetOrders API, takes 2.5 to 3.5 seconds longer in SQL Server for twelve
+  GetOrders API, takes 2.5 to 3.5 seconds longer in SQL Server for fifteen
   minutes, as an aggregate that has lost its index does. The platform logs
   each run as slow SQL, SQL Server holds more sessions running, and
   PatientZero burns its latency budget fast and slow:
@@ -14,7 +14,7 @@ steps:
   - name: baseline
     duration: 2m
   - name: slow
-    duration: 12m
+    duration: 15m
     fault:
       type: sql-latency
       params:
@@ -24,12 +24,13 @@ steps:
 signals:
   # Preconditions. The alerts start quiet, so the run sees them go from
   # resolved to firing. The slowed requests are about 60% of all requests,
-  # and the burn-rate windows reach back 1 and 6 hours: with at most 10,000
-  # requests (about 20 minutes of steady load) in the hour before, the
-  # 1-hour slow ratio passes 14.4% within 8 minutes, and with at most 30,000
-  # in the 6 hours before, the 6-hour one stays above 6% for the slow burn's
-  # 15 minutes. A run right after another slow-sql fails here: wait for its
-  # slow burn to resolve (about 45 minutes).
+  # and the burn-rate windows reach back 1 and 6 hours: with at most 15,000
+  # requests (about 35 minutes of steady load) in the hour before, the
+  # 1-hour slow ratio passes 14.4% within 12 minutes, and with at most 45,000
+  # in the 6 hours before, the 6-hour one passes 6% within 11 minutes and
+  # stays above it for the slow burn's 15. A run right after another
+  # slow-sql fails here: wait for its slow burn to resolve (about 50
+  # minutes).
   - name: fast-burn-quiet-before
     alert: OutSystemsLatencyBudgetBurnFast
     labels: {application: PatientZero}
@@ -48,14 +49,14 @@ signals:
     promql: >-
       sum(increase(heartbeat_outsystems_operations_total{application="PatientZero",log_type=~"screen|mobile_request|integration"}[1h]))
       or vector(0)
-    condition: "< 10000"
+    condition: "< 15000"
     step: baseline
     within: 30s
   - name: history-leaves-room-for-the-slow-burn
     promql: >-
       sum(increase(heartbeat_outsystems_operations_total{application="PatientZero",log_type=~"screen|mobile_request|integration"}[6h]))
       or vector(0)
-    condition: "< 30000"
+    condition: "< 45000"
     step: baseline
     within: 30s
 
@@ -96,7 +97,7 @@ signals:
     labels: {application: PatientZero, severity: critical}
     state: firing
     step: slow
-    within: 13m
+    within: 16m
   - name: fast-burn-resolves
     alert: OutSystemsLatencyBudgetBurnFast
     labels: {application: PatientZero}
@@ -121,4 +122,4 @@ signals:
     labels: {application: PatientZero, severity: warning}
     state: firing
     step: slow
-    within: 26m
+    within: 28m

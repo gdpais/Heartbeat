@@ -381,7 +381,7 @@ burn-rate alerts as shipped:
 
 ```bash
 make patientzero-scenario NAME=bad-deploy   # about 19 minutes
-make patientzero-scenario NAME=slow-sql     # about 22 minutes
+make patientzero-scenario NAME=slow-sql     # about 25 minutes
 ```
 
 `bad-deploy` publishes a broken version of the checkout module, and every
@@ -392,7 +392,7 @@ after the rollback, and `OutSystemsErrorBudgetBurnSlow` fires later. In
 SQL in the *OutSystems Overview* dashboard, more running sessions in *SQL
 Server Overview*, and the latency alerts. Open Alertmanager on
 <http://localhost:9093> meanwhile. Each waits for a slow burn that resolves
-only about 40 minutes after its fault started, so give a second run of the
+only 40 to 50 minutes after its fault started, so give a second run of the
 same scenario that long
 ([SLO scenarios](../../tools/patientzero/scenarios/README.md#slo-scenarios)).
 
