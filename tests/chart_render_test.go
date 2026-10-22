@@ -371,6 +371,21 @@ var chartProfiles = []chartProfile{
 		set:       []string{"otelCollectorQueue.persistence.size="},
 		wantError: "values don't meet the specifications of the schema",
 	},
+	{
+		// A misspelt top-level key fails instead of being ignored (v0.1.0
+		// deployed the collector anyway).
+		name:      "unknown-top-level-key",
+		set:       []string{"dbColector.enabled=false"},
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		// Helm's global values still reach the subcharts, for example a
+		// registry mirror.
+		name:           "global-values",
+		set:            []string{"global.imageRegistry=registry.example.internal"},
+		present:        []string{"StatefulSet/db-collector", "Deployment/grafana"},
+		collectorPeers: []string{bundledPrometheusPeer},
+	},
 }
 
 // Cluster-scoped kinds: the chart must install into a namespace it does not

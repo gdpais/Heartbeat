@@ -47,7 +47,8 @@ Third-party engines are pinned chart dependencies, each turned off with
 Rules the chart keeps (checked by `make chart-check`): only namespaced
 objects, no CRDs; deterministic rendering (no random values, lookups or
 hooks), because Argo CD renders the chart itself; Secrets created outside the
-chart and referenced by name; renders with Helm 3 and Helm 4.
+chart and referenced by name; unknown top-level values rejected by the schema;
+renders with Helm 3 and Helm 4.
 
 ## Network access
 
