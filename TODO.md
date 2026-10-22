@@ -69,6 +69,7 @@ Production delivery is section 18.
 - [x] Retire the platform Compose definition and the Kustomize bundle
 - [ ] Install the Renovate GitHub App on the repository (config is in `renovate.json`)
 - [ ] Agree the local loop's time and resource budget (measured: about 2.0 GiB RAM for the full profile)
+- [ ] Cap the sandbox SQL Server's memory (`MSSQL_MEMORY_LIMIT_MB` in `scripts/kind.sh` and `scripts/sqlserver-test.sh`), so that a load flood or a second cluster slows it down instead of getting it killed; on 2026-10-22 it was killed twice on an 8 GB Docker host, once under a PatientZero load flood and once when a second cluster started
 
 ### 0.5 Development workflow and releases
 
@@ -243,6 +244,7 @@ Replica ownership and outage testing are section 19. Design details:
 - [x] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; per-target TLS settings wait until a real target needs them
 - [x] Check at validation that a `query_template` is a single read-only `SELECT` (defense in depth; the read-only login stays the control)
 - [ ] Egress NetworkPolicy for the collector: DNS, the monitored targets and the OTel Collector only (the policy restricts ingress only)
+- [ ] A NodePort or LoadBalancer Service bypasses the collector's NetworkPolicy, so the unauthenticated `/metrics` (collector, target and environment names, probe counters) reaches anything that can reach a node. The chart default is ClusterIP and kind binds its node port to 127.0.0.1 only; say in the chart values and the deployment docs that production keeps ClusterIP
 
 ---
 
@@ -787,6 +789,12 @@ Later, each with the phase that needs it:
 - [ ] Phase 7, with the analyzer and alert work that uses them: timers, extension calls and a fake consumed REST partner; long-running screens and timers; `Instant` in a configured time zone across daylight saving switches; the `blocking` (and deadlock), `slow-partner`, `timer-backlog` and `bad-front-end` scenarios [6, 13]
 - [ ] Phase 7: investigations and reports on PatientZero runs compared with their journals; decide soak runs or a Prometheus TSDB backfill for multi-day baselines and weekly reports [6, 13, 14]
 - [ ] OTLP mode for the OutSystems Cloud/ODC streams and traces [3.4, 3.6]; a MuleSoft-like source [3.4]; an Oracle-backed variant [21]
+
+Hardening, from the 2026-10-22 security and performance reviews. PatientZero
+trusts its caller by design, so these keep it on the load path:
+- [ ] Default-deny NetworkPolicy in the `patientzero` namespace that admits port 8080 only from its known callers, such as the k6 load Job. PatientZero takes the user, session and client IP from request headers, so anything that reaches it can write forged rows into Loki. It stays ClusterIP and is never exposed outside the cluster
+- [ ] `placeOrder` returns a generic error and logs the detail, as `orderList` and `apiOrders` do; the HTML screen sends `X-Content-Type-Options: nosniff`, a restrictive CSP and `X-Frame-Options`
+- [ ] Backpressure on the business-database path: a sized connection pool with an acquire timeout and a concurrency limit on the handlers, answering 503 with `Retry-After` when saturated. Under a flood it now returns 500s as fast as SQL Server fails, and the pressure helped push the sandbox SQL Server out of memory
 
 ---
 
