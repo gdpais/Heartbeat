@@ -10,7 +10,11 @@ import (
 	"heartbeat/tools/patientzero/internal/scenario"
 )
 
-var entryPoints = []string{"OrderList", "PlaceOrder", "GetOrders"}
+var modules = map[string][]string{
+	"PatientZero_Web": {"OrderList"},
+	"PatientZero_App": {"PlaceOrder"},
+	"PatientZero_API": {"GetOrders"},
+}
 
 // setup returns an injector whose random numbers come from rnd and whose
 // sleeps are recorded instead of waited.
@@ -29,7 +33,7 @@ func setup(rnd ...float64) (*Injector, *scenario.Registry, *[]time.Duration) {
 		},
 	}
 	reg := scenario.NewRegistry()
-	Register(reg, inj, entryPoints)
+	Register(reg, inj, modules)
 	return inj, reg, &slept
 }
 
@@ -94,7 +98,7 @@ func TestNilInjectorInjectsNothing(t *testing.T) {
 func TestLatencyEndsWithTheRequest(t *testing.T) {
 	inj := &Injector{}
 	reg := scenario.NewRegistry()
-	Register(reg, inj, entryPoints)
+	Register(reg, inj, modules)
 	start(t, reg, "latency", map[string]any{"delay": "1m"})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -124,6 +128,127 @@ func TestParamsAreValidated(t *testing.T) {
 		{"errors", map[string]any{}, "ratio is required"},
 		{"errors", map[string]any{"ratio": 1.5}, "ratio 1.5 must be"},
 		{"errors", map[string]any{"ratio": 1, "message": strings.Repeat("x", MaxMessageLen+1)}, "message must be at most"},
+	}
+	for _, c := range cases {
+		_, err := reg.New(scenario.FaultSpec{Type: c.typ, Params: c.params})
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s %v: error %v, want %q", c.typ, c.params, err, c.want)
+		}
+	}
+}
+
+// A deploy publishes a new version of one module: its entry points fail
+// with the new version's exception, the others are untouched, and the
+// rollback when it stops runs the previous version again.
+func TestDeployFailsItsModuleAndVersionsIt(t *testing.T) {
+	inj, reg, slept := setup(0.1)
+	if v := inj.Version("PatientZero_App"); v != FirstVersion {
+		t.Fatalf("version before any deploy %d, want %d", v, FirstVersion)
+	}
+	f := start(t, reg, "deploy", map[string]any{"module": "PatientZero_App", "error_ratio": 1, "exception": "Invalid column name 'DiscountCode'."})
+	err := inj.Apply(context.Background(), "PlaceOrder")
+	var failure *Failure
+	if !errors.As(err, &failure) || !errors.Is(err, ErrInjected) || err.Error() != "Invalid column name 'DiscountCode'." {
+		t.Fatalf("PlaceOrder: %v, want the new version's exception, injected", err)
+	}
+	if err := inj.Apply(context.Background(), "OrderList"); err != nil {
+		t.Fatalf("OrderList is in another module: %v", err)
+	}
+	if len(*slept) != 0 {
+		t.Fatalf("a deploy without a delay slept %v", *slept)
+	}
+	if v, other := inj.Version("PatientZero_App"), inj.Version("PatientZero_Web"); v != FirstVersion+1 || other != FirstVersion {
+		t.Fatalf("versions App %d, Web %d; want %d and %d", v, other, FirstVersion+1, FirstVersion)
+	}
+	if err := f.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if v := inj.Version("PatientZero_App"); v != FirstVersion {
+		t.Fatalf("version after the rollback %d, want %d", v, FirstVersion)
+	}
+	if err := inj.Apply(context.Background(), "PlaceOrder"); err != nil {
+		t.Fatalf("PlaceOrder after the rollback: %v", err)
+	}
+	// The next publish gets a new number; its rollback goes back again.
+	f = start(t, reg, "deploy", map[string]any{"module": "PatientZero_App", "delay": "2s"})
+	if v := inj.Version("PatientZero_App"); v != FirstVersion+2 {
+		t.Fatalf("second deploy runs version %d, want %d", v, FirstVersion+2)
+	}
+	if err := inj.Apply(context.Background(), "PlaceOrder"); err != nil || len(*slept) != 1 || (*slept)[0] != 2*time.Second {
+		t.Fatalf("a slow deploy: err %v, slept %v; want no failure and 2s", err, *slept)
+	}
+	_ = f.Stop(context.Background())
+	if v := inj.Version("PatientZero_App"); v != FirstVersion {
+		t.Fatalf("version after the second rollback %d, want %d", v, FirstVersion)
+	}
+}
+
+func TestDeployFailsItsShareWithTheDefaultException(t *testing.T) {
+	// 0.1 < 0.5 fails, 0.9 does not.
+	inj, reg, _ := setup(0.1, 0.9)
+	start(t, reg, "deploy", map[string]any{"module": "PatientZero_API", "error_ratio": 0.5})
+	if err := inj.Apply(context.Background(), "GetOrders"); err == nil || err.Error() != DefaultException {
+		t.Fatalf("first call: %v, want %q", err, DefaultException)
+	}
+	if err := inj.Apply(context.Background(), "GetOrders"); err != nil {
+		t.Fatalf("second call: %v, want none", err)
+	}
+}
+
+// SQL latency is not spent in PatientZero: Apply does not wait for it, and
+// SQLDelay hands it to the Store, which spends it in SQL Server.
+func TestSQLLatencyIsHandedToTheStore(t *testing.T) {
+	inj, reg, slept := setup(0.5)
+	f := start(t, reg, "sql-latency", map[string]any{"entry_points": []any{"OrderList", "GetOrders"}, "delay": "3s", "jitter": "1s"})
+	if err := inj.Apply(context.Background(), "OrderList"); err != nil || len(*slept) != 0 {
+		t.Fatalf("Apply: err %v, slept %v; want neither", err, *slept)
+	}
+	if d := inj.SQLDelay("OrderList"); d != 3500*time.Millisecond {
+		t.Fatalf("OrderList SQL delay %v, want 3.5s (3s plus half the jitter)", d)
+	}
+	if d := inj.SQLDelay("PlaceOrder"); d != 0 {
+		t.Fatalf("PlaceOrder SQL delay %v, want none", d)
+	}
+	_ = f.Stop(context.Background())
+	if d := inj.SQLDelay("GetOrders"); d != 0 {
+		t.Fatalf("a stopped fault still slows the SQL: %v", d)
+	}
+	var none *Injector
+	if none.SQLDelay("OrderList") != 0 || none.Version("PatientZero_Web") != FirstVersion {
+		t.Fatal("a nil injector must inject nothing")
+	}
+}
+
+func TestSQLLatencySlowsItsShare(t *testing.T) {
+	// The ratio is drawn first: 0.6 >= 0.5 is not slowed, 0.2 is (then 0.2
+	// of no jitter).
+	inj, reg, _ := setup(0.6, 0.2)
+	start(t, reg, "sql-latency", map[string]any{"delay": "2s", "ratio": 0.5})
+	if d := inj.SQLDelay("GetOrders"); d != 0 {
+		t.Fatalf("first request slowed by %v, want not at all", d)
+	}
+	if d := inj.SQLDelay("GetOrders"); d != 2*time.Second {
+		t.Fatalf("second request slowed by %v, want 2s", d)
+	}
+}
+
+func TestNewFaultParamsAreValidated(t *testing.T) {
+	_, reg, _ := setup(0)
+	cases := []struct {
+		typ    string
+		params map[string]any
+		want   string
+	}{
+		{"deploy", map[string]any{"error_ratio": 1}, "module \"\" is not one of PatientZero_API, PatientZero_App, PatientZero_Web"},
+		{"deploy", map[string]any{"module": "Shop_CS", "error_ratio": 1}, "module \"Shop_CS\""},
+		{"deploy", map[string]any{"module": "PatientZero_App"}, "give error_ratio, delay or both"},
+		{"deploy", map[string]any{"module": "PatientZero_App", "error_ratio": 2}, "error_ratio 2 must be"},
+		{"deploy", map[string]any{"module": "PatientZero_App", "delay": "2m"}, "delay must be at most 1m0s"},
+		{"deploy", map[string]any{"module": "PatientZero_App", "error_ratio": 1, "exception": strings.Repeat("x", MaxMessageLen+1)}, "exception must be at most"},
+		{"deploy", map[string]any{"module": "PatientZero_App", "error_ratio": 1, "entry_points": []any{"PlaceOrder"}}, "unknown field \"entry_points\""},
+		{"sql-latency", map[string]any{}, "delay is required"},
+		{"sql-latency", map[string]any{"delay": "50s", "jitter": "20s"}, "at most 1m0s"},
+		{"sql-latency", map[string]any{"delay": "1s", "entry_points": []any{"Home"}}, "entry point \"Home\""},
 	}
 	for _, c := range cases {
 		_, err := reg.New(scenario.FaultSpec{Type: c.typ, Params: c.params})

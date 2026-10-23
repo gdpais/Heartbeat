@@ -19,8 +19,8 @@ steps:
         ratio: 0.5
         message: checkout-errors
 signals:
-  # About 3% of orders fail without the fault (k6 orders an unknown product),
-  # so the ratio is read against thresholds well clear of that.
+  # About 0.3% of orders fail without the fault (k6 orders an unknown
+  # product), so the ratio is read against thresholds well clear of that.
   - name: error-ratio-rises
     promql: >-
       sum(rate(heartbeat_outsystems_operations_total{application="PatientZero",log_type="mobile_request",operation="PlaceOrder",outcome="error"}[1m]))

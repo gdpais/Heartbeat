@@ -77,6 +77,7 @@ type runEndData struct {
 	Requests int64          `json:"requests"`
 	Failed   int64          `json:"failed"`
 	Injected int64          `json:"injected"`
+	SlowSQL  int64          `json:"slow_sql"`
 	Users    int            `json:"users"`
 	Sessions int            `json:"sessions"`
 }
@@ -251,7 +252,7 @@ func (r *Runner) execute(ctx context.Context, u *run, j *journal.Journal, faults
 	}
 	write(end, journal.RunEnd, runEndData{
 		Scenario: s.Name, State: state, Error: runErr, Seconds: end.Sub(start).Seconds(), Checks: counts,
-		Requests: total.Requests, Failed: total.Failed, Injected: total.Injected,
+		Requests: total.Requests, Failed: total.Failed, Injected: total.Injected, SlowSQL: total.SlowSQL,
 		Users: total.Users, Sessions: total.Sessions,
 	})
 	if err := j.Close(); err != nil && runErr == "" {

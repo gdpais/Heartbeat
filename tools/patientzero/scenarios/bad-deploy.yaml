@@ -1,0 +1,114 @@
+# yaml-language-server: $schema=scenario.schema.json
+version: 1
+name: bad-deploy
+description: >-
+  A broken version of the Reactive app module, PatientZero_App, is published:
+  from that moment every checkout (PlaceOrder) fails with an exception the
+  application has not thrown before, until the previous version is published
+  again eight minutes later. PatientZero burns its error budget fast and
+  slow: OutSystemsErrorBudgetBurnFast pages in Alertmanager and resolves
+  after the rollback, and OutSystemsErrorBudgetBurnSlow fires.
+load: steady
+steps:
+  - name: baseline
+    duration: 2m
+  - name: broken
+    duration: 8m
+    fault:
+      type: deploy
+      params:
+        module: PatientZero_App
+        error_ratio: 1
+        exception: Object reference not set to an instance of an object.
+signals:
+  # Preconditions. The alerts start quiet, so the run sees them go from
+  # resolved to firing. The burn-rate windows reach back 1 and 6 hours: an
+  # hour of steady load is about 25,000 requests, and the checkout fails
+  # about 120 times a minute. With at most 30,000 requests in the hour
+  # before, the 1-hour error ratio passes 1.44% within 5 minutes, so the fast
+  # burn fires during the fault; with at most 100,000 in the 6 hours before,
+  # the 6-hour one passes 0.6% within 5 minutes and stays above it for the
+  # slow burn's 15. A run right after another bad-deploy fails here: wait
+  # for its slow burn to resolve (about 40 minutes).
+  - name: fast-burn-quiet-before
+    alert: OutSystemsErrorBudgetBurnFast
+    labels: {application: PatientZero}
+    state: resolved
+    step: baseline
+    mode: always
+    within: 1m50s
+  - name: slow-burn-quiet-before
+    alert: OutSystemsErrorBudgetBurnSlow
+    labels: {application: PatientZero}
+    state: resolved
+    step: baseline
+    mode: always
+    within: 1m50s
+  - name: last-hour-leaves-room-for-the-fast-burn
+    promql: >-
+      sum(increase(heartbeat_outsystems_operations_total{application="PatientZero",log_type=~"screen|mobile_request|integration"}[1h]))
+      or vector(0)
+    condition: "< 30000"
+    step: baseline
+    within: 30s
+  - name: history-leaves-room-for-the-slow-burn
+    promql: >-
+      sum(increase(heartbeat_outsystems_operations_total{application="PatientZero",log_type=~"screen|mobile_request|integration"}[6h]))
+      or vector(0)
+    condition: "< 100000"
+    step: baseline
+    within: 30s
+
+  # The broken version: the module's errors, the new exception in Loki, and
+  # the SLI past the fast-burn threshold (14.4 times the 0.1% budget).
+  - name: module-errors-rise
+    promql: >-
+      sum(rate(heartbeat_outsystems_errors_total{application="PatientZero",module="PatientZero_App"}[1m]))
+    condition: "> 0.5"
+    step: broken
+    within: 4m
+  - name: new-exception-in-loki
+    logql: >-
+      sum(count_over_time({service_name="PatientZero", outsystems_log_type="error"}
+      |= "Object reference not set to an instance of an object." [2m]))
+    condition: "> 0"
+    step: broken
+    within: 4m
+  - name: error-ratio-above-fast-burn
+    promql: heartbeat:outsystems_request_errors:ratio_rate5m{application="PatientZero"}
+    condition: "> 0.0144"
+    step: broken
+    within: 4m
+
+  # The alerts, as Alertmanager has them. The fast burn needs 2 minutes over
+  # its threshold (for: 2m) on both its windows, and must fire during the
+  # fault, or fast-burn-resolves, which opens at its end, would pass without
+  # having seen it fire; it resolves once the 5-minute window no longer
+  # holds the failures. The slow burn needs 15 minutes (for: 15m), so it
+  # fires after the rollback; it resolves only once the failures leave its
+  # 30-minute window, after the run.
+  - name: fast-burn-fires
+    alert: OutSystemsErrorBudgetBurnFast
+    labels: {application: PatientZero, severity: critical}
+    state: firing
+    step: broken
+    within: 8m
+  - name: fast-burn-resolves
+    alert: OutSystemsErrorBudgetBurnFast
+    labels: {application: PatientZero}
+    state: resolved
+    step: broken
+    from: end
+    within: 10m
+  - name: error-ratio-recovers
+    promql: heartbeat:outsystems_request_errors:ratio_rate5m{application="PatientZero"}
+    condition: "< 0.006"
+    step: broken
+    from: end
+    within: 9m
+  - name: slow-burn-fires
+    alert: OutSystemsErrorBudgetBurnSlow
+    labels: {application: PatientZero, severity: warning}
+    state: firing
+    step: broken
+    within: 24m

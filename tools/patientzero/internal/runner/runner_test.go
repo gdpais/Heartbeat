@@ -105,7 +105,7 @@ func newEnv(t *testing.T, files ...string) *env {
 	t.Cleanup(func() { prom.Close(); loki.Close(); am.Close() })
 
 	reg := scenario.NewRegistry()
-	inject.Register(reg, e.inj, []string{"OrderList", "PlaceOrder", "GetOrders"})
+	inject.Register(reg, e.inj, map[string][]string{"PatientZero_Web": {"OrderList"}, "PatientZero_App": {"PlaceOrder"}, "PatientZero_API": {"GetOrders"}})
 	reg.Register(scenario.FaultType{Name: "restart-loki", Scope: scenario.ScopeCluster,
 		New: func(map[string]any) (scenario.Fault, error) { return failingFault{}, nil }})
 	reg.Register(scenario.FaultType{Name: "broken", Scope: scenario.ScopeInProcess,

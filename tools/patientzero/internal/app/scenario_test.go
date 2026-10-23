@@ -9,6 +9,7 @@ import (
 
 	"heartbeat/tools/patientzero/internal/inject"
 	"heartbeat/tools/patientzero/internal/scenario"
+	"heartbeat/tools/patientzero/internal/shop"
 	"heartbeat/tools/patientzero/internal/traffic"
 )
 
@@ -19,7 +20,7 @@ func switchOn(t *testing.T, s *Server, typ string, params map[string]any) {
 		s.Faults = &inject.Injector{Sleep: func(context.Context, time.Duration) error { return nil }}
 	}
 	reg := scenario.NewRegistry()
-	inject.Register(reg, s.Faults, EntryPoints)
+	inject.Register(reg, s.Faults, Modules)
 	f, err := reg.New(scenario.FaultSpec{Type: typ, Params: params})
 	if err != nil {
 		t.Fatal(err)
@@ -109,5 +110,114 @@ func TestAdminIsMountedOnlyWhenGiven(t *testing.T) {
 	s.Admin = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
 	if w := do(t, s, http.MethodPost, "/admin/run/stop", "", nil); w.Code != http.StatusTeapot {
 		t.Fatalf("admin handler: %d", w.Code)
+	}
+}
+
+// A bad deploy fails its module's requests with the new version's
+// exception, as the platform logs it: the exception's own message, not the
+// errors fault's marker, and the new eSpaceVer in EnvironmentInformation.
+// The rollback logs the previous version again.
+func TestDeployFailsWithTheNewVersionsException(t *testing.T) {
+	s, rec := newServer(t, &fakeStore{})
+	s.Traffic = &traffic.Counter{}
+	s.Traffic.Begin(t0)
+	do(t, s, http.MethodPost, PathPlaceOrder, `{"productId":99,"quantity":1}`, maria) // refused, before the deploy
+	before := rec.byType()["error"][0]
+	if env := before["EnvironmentInformation"].(string); !strings.HasPrefix(env, "eSpaceVer: 1 (Id=102)") {
+		t.Errorf("EnvironmentInformation before the deploy %q, want eSpaceVer 1 of PatientZero_App", env)
+	}
+
+	s.Faults = &inject.Injector{}
+	reg := scenario.NewRegistry()
+	inject.Register(reg, s.Faults, Modules)
+	f, err := reg.New(scenario.FaultSpec{Type: "deploy", Params: map[string]any{"module": "PatientZero_App", "error_ratio": 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rec.rows = nil
+	if w := do(t, s, http.MethodPost, PathPlaceOrder, `{"productId":1,"quantity":2}`, maria); w.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d, want 500: %s", w.Code, w.Body)
+	}
+	sameRequest(t, rec, "mobile_request error")
+	errRow := rec.byType()["error"][0]
+	if errRow["Message"] != inject.DefaultException {
+		t.Errorf("Message %q, want the exception alone", errRow["Message"])
+	}
+	if env := errRow["EnvironmentInformation"].(string); !strings.HasPrefix(env, "eSpaceVer: 2 (Id=102)") || !strings.Contains(env, "FE-PZ-1") {
+		t.Errorf("EnvironmentInformation %q, want the new version 2 and the front-end", env)
+	}
+	if stack := errRow["Stack"].(string); strings.Contains(stack, "System.Data") || !strings.Contains(stack, "PatientZero_App.PlaceOrder") {
+		t.Errorf("a deploy's failure is the action's own:\n%s", stack)
+	}
+	// The module's other entry points would fail too; other modules' do not.
+	rec.rows = nil
+	if w := do(t, s, http.MethodGet, PathAPIOrders, "", maria); w.Code != http.StatusOK {
+		t.Fatalf("GetOrders %d during a PatientZero_App deploy", w.Code)
+	}
+	if err := f.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rec.rows = nil
+	do(t, s, http.MethodPost, PathPlaceOrder, `{"productId":99,"quantity":1}`, maria)
+	if env := rec.byType()["error"][0]["EnvironmentInformation"].(string); !strings.HasPrefix(env, "eSpaceVer: 1 (Id=102)") {
+		t.Errorf("EnvironmentInformation after the rollback %q, want eSpaceVer 1", env)
+	}
+	_, run := s.Traffic.End(t0.Add(time.Minute))
+	if run.Requests != 4 || run.Failed != 3 || run.Injected != 1 {
+		t.Errorf("run summary %+v, want 4 requests, 3 failed, 1 injected", run)
+	}
+}
+
+// SQL latency reaches the Store, which spends it in SQL Server (the fake
+// store moves the clock instead). A statement slower than SlowSQL gets the
+// platform's slow-query row under the request's Request_Key, which the
+// collector counts as slow SQL; a fast one gets none.
+func TestSlowSQLIsSpentInTheStoreAndLogged(t *testing.T) {
+	now := t0
+	store := &fakeStore{elapse: func(d time.Duration) { now = now.Add(d) }}
+	s, rec := newServer(t, store)
+	s.Now = func() time.Time { return now }
+	s.SlowSQL = DefaultSlowSQL
+	s.Traffic = &traffic.Counter{}
+	s.Traffic.Begin(t0)
+
+	// No fault: the statement takes no time, so no slow-query row.
+	do(t, s, http.MethodGet, PathOrderList, "", maria)
+	sameRequest(t, rec, "screen")
+
+	switchOn(t, s, "sql-latency", map[string]any{"entry_points": []any{EntryOrderList, EntryGetOrders}, "delay": "3s"})
+	for _, c := range []struct{ method, path, body, types string }{
+		{http.MethodGet, PathOrderList, "", "screen general"},
+		{http.MethodGet, PathAPIOrders, "", "general integration general"},
+		{http.MethodPost, PathPlaceOrder, `{"productId":1,"quantity":1}`, "mobile_request"},
+	} {
+		rec.rows = nil
+		if w := do(t, s, c.method, c.path, c.body, maria); w.Code != http.StatusOK {
+			t.Fatalf("%s: status %d", c.path, w.Code)
+		}
+		sameRequest(t, rec, c.types)
+		general := rec.byType()["general"]
+		if c.path == PathPlaceOrder {
+			continue
+		}
+		slow := general[len(general)-1]
+		want := shop.Statements["Orders"] + " took 3000 ms"
+		if slow["Module_Name"] != "SLOWSQL" || slow["Message"] != want || slow["Message_Type"] != "Info" {
+			t.Errorf("%s slow-query row %v, want SLOWSQL and %q", c.path, slow, want)
+		}
+		if slow["Instant"] != now || slow["Espace_Name"] == nil || slow["Entrypoint_Name"] == "" {
+			t.Errorf("%s slow-query row %v", c.path, slow)
+		}
+	}
+	if got := store.delays; len(got) != 4 || got[0] != 0 || got[1] != 3*time.Second || got[2] != 3*time.Second || got[3] != 0 {
+		t.Errorf("SQL delays the store got %v, want [0 3s 3s 0]", got)
+	}
+	// The screen's Duration holds the time spent in SQL Server.
+	_, run := s.Traffic.End(now)
+	if run.SlowSQL != 2 || run.EntryPoints[EntryOrderList].SlowSQL != 1 || run.EntryPoints[EntryOrderList].DurationMsMax != 3000 {
+		t.Errorf("run summary %+v, want 2 slow-query rows and a 3 s OrderList", run)
 	}
 }

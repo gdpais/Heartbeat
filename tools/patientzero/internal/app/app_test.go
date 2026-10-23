@@ -24,6 +24,18 @@ const fixtureDir = "../../../../services/db-collector/internal/collectors/outsys
 type fakeStore struct {
 	customers map[string]int
 	fail      error
+	// delays records the SQL delay each Orders and PlaceOrder call got;
+	// elapse, when set, is called with it, so a fake clock can move on.
+	delays []time.Duration
+	elapse func(time.Duration)
+}
+
+func (f *fakeStore) spend(ctx context.Context) {
+	d := shop.Delay(ctx)
+	f.delays = append(f.delays, d)
+	if f.elapse != nil {
+		f.elapse(d)
+	}
 }
 
 func (f *fakeStore) Customer(_ context.Context, username string) (int, error) {
@@ -36,14 +48,16 @@ func (f *fakeStore) Customer(_ context.Context, username string) (int, error) {
 	return f.customers[username], nil
 }
 
-func (f *fakeStore) Orders(context.Context, int, int) ([]shop.Order, error) {
+func (f *fakeStore) Orders(ctx context.Context, _, _ int) ([]shop.Order, error) {
+	f.spend(ctx)
 	if f.fail != nil {
 		return nil, f.fail
 	}
 	return []shop.Order{{ID: 7, Product: "Thermometer", Quantity: 1, Total: 12.5}}, nil
 }
 
-func (f *fakeStore) PlaceOrder(_ context.Context, _ int, product, quantity int) (shop.Order, error) {
+func (f *fakeStore) PlaceOrder(ctx context.Context, _ int, product, quantity int) (shop.Order, error) {
+	f.spend(ctx)
 	if f.fail != nil {
 		return shop.Order{}, f.fail
 	}

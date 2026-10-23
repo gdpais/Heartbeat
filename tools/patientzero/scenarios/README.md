@@ -25,11 +25,46 @@ passed. Interrupting it stops the run, which removes its fault.
 | --- | --- | --- | --- |
 | [`checkout-errors`](checkout-errors.yaml) | Half of `PlaceOrder` calls fail for 3 minutes | The `PlaceOrder` error ratio in `heartbeat_outsystems_operations_total` above 0.3, the injected error rows in Loki, the ratio back below 0.2 after the fault | about 6 minutes |
 | [`orderlist-latency`](orderlist-latency.yaml) | `OrderList` takes 3 s longer for 3 minutes | The screen p95 from `heartbeat_outsystems_operation_duration_seconds` above the 2 s SLO threshold, then back below 1 s | about 7 minutes |
+| [`bad-deploy`](bad-deploy.yaml) | A broken version of `PatientZero_App` fails every `PlaceOrder` with a new exception for 8 minutes, then is rolled back | The module's error rate and the exception in Loki; the error SLI past 1.44%; `OutSystemsErrorBudgetBurnFast` firing, then resolved; `OutSystemsErrorBudgetBurnSlow` firing | about 19 minutes |
+| [`slow-sql`](slow-sql.yaml) | The order list's query runs 2.5 to 3.5 s longer in SQL Server for 15 minutes | More running sessions on SQL Server; slow-SQL rows in Loki and `heartbeat_outsystems_slow_events_total`; the latency SLI past 14.4%; `OutSystemsLatencyBudgetBurnFast` firing, then resolved; `OutSystemsLatencyBudgetBurnSlow` firing | about 25 minutes |
 
 The ingest scenarios (rotation, log backlog and growth, restarts and
-outages of the db-collector, the OTel Collector, Loki and SQL Server) and
-the SLO scenarios (`bad-deploy`, `slow-sql`) come next
-([TODO 16.5](../../../TODO.md)) and use this format and runner.
+outages of the db-collector, the OTel Collector, Loki and SQL Server) come
+next ([TODO 16.5](../../../TODO.md)) and use this format and runner.
+
+### SLO scenarios
+
+`bad-deploy` and `slow-sql` fire the OutSystems SLO burn-rate alerts
+([SLOs and alerts](../../../docs/architecture/application-observability.md#slos-and-alerts))
+through the whole path: PatientZero's log rows, the collector's derived
+metrics, the chart's recording rules and alerts, and Alertmanager. They run
+against the rules as shipped, with their real windows and `for` durations;
+nothing is shortened for kind. That sets their length:
+
+- A fast burn (14.4 times the budget over 1 hour and 5 minutes, `for: 2m`)
+  must fire during the fault, so that the run sees it resolve after it, and
+  resolves about 5 minutes after the fault, once the 5-minute window has
+  emptied. On kind it fired 3.5 minutes into `bad-deploy`'s fault and 13
+  minutes into `slow-sql`'s, whose slowed requests are a smaller share and
+  had more traffic before them in the 1-hour window.
+- A slow burn (6 times the budget over 6 hours and 30 minutes, `for: 15m`)
+  fires after at least 15 minutes: on kind 17.5 minutes after
+  `bad-deploy`'s fault started, after its rollback, and 22 minutes after
+  `slow-sql`'s. It resolves only once the 30-minute window has emptied, 40
+  to 50 minutes after the fault started; the scenarios do not wait for
+  that.
+- The windows reach back before the run. PatientZero traffic in the hours
+  before dilutes the fault's share of them, so each scenario first checks
+  that there was not too much (`last-hour-leaves-room-for-the-fast-burn`,
+  `history-leaves-room-for-the-slow-burn`) and that its alerts are quiet
+  (`fast-burn-quiet-before`, `slow-burn-quiet-before`). A second run of the
+  same scenario fails those checks until the first one's slow burn has
+  resolved: wait about 50 minutes, or use a fresh cluster. `slow-sql` can
+  run right after `bad-deploy`, whose run serves about 9,500 requests: their
+  alerts differ.
+
+PatientZero's steady load stays inside both objectives without a fault:
+about 0.07% of its requests fail (refused orders) and none take 2 s.
 
 ## Format
 
@@ -98,11 +133,33 @@ PatientZero's runner applies `in-process` faults only.
 | --- | --- | --- | --- |
 | `latency` | in-process | `delay` (required), `jitter`, `ratio` (0 to 1, default 1), `entry_points` | Delays `ratio` of the requests by `delay` plus up to `jitter` (together at most 1m), before their business SQL, so the delay is in the log rows' `Duration` |
 | `errors` | in-process | `ratio` (required, 0 to 1), `message` (at most 200 bytes), `entry_points` | Fails `ratio` of the requests before their business SQL: an `error` row with `Message` `injected by scenario: <message>` under the request's `Request_Key`, linked from its other rows, and the entry point's failure response (HTTP 500) |
+| `deploy` | in-process | `module` (required), `error_ratio` (0 to 1), `exception` (at most 200 bytes; .NET's `Object reference not set to an instance of an object.` by default), `delay` (at most 1m); `error_ratio`, `delay` or both | Publishes a new version of one module, as a broken publish does: its requests wait `delay` and `error_ratio` of them fail with an `error` row whose `Message` is the exception itself, and every error row of the module carries the new version in `EnvironmentInformation` (`eSpaceVer: 2 ...`). When the step ends, the previous version is published again |
+| `sql-latency` | in-process | `delay` (required), `jitter`, `ratio` (0 to 1, default 1), `entry_points` | Makes `ratio` of the requests' business statement run `delay` plus up to `jitter` (together at most 1m) longer in SQL Server: the statement's batch waits (`WAITFOR DELAY`) before its first statement, before any lock is taken, so SQL Server holds the session running for that long |
 
 `entry_points` names entry points as Heartbeat's `operation` label does:
-`OrderList`, `PlaceOrder`, `GetOrders`; empty or absent for all three. Two
-faults on at once add up: delays sum, and a request fails if any error fault
-hits it.
+`OrderList`, `PlaceOrder`, `GetOrders`; empty or absent for all three.
+`module` names a module (eSpace): `PatientZero_Web` (`OrderList`),
+`PatientZero_App` (`PlaceOrder`) or `PatientZero_API` (`GetOrders`). Two
+faults on at once add up: delays sum, and a request fails if any fault
+fails it.
+
+`sql-latency` is time SQL Server spends, not PatientZero: the request is
+active in SQL Server (the sessions probe counts its session as running, and
+`sys.dm_exec_requests` shows it waiting in the business database), and the
+request's log rows, and its slow-query row, carry it. What it does not
+reproduce is the CPU and the reads of a real scan: making PatientZero's
+small tables slow for real would take a production-sized table or the
+laptop's CPUs, and SQL Server reports `WAITFOR` as an idle wait, which the
+waits probe leaves out. Lock waits come with the `blocking` scenario
+(phase 7).
+
+**Slow-query rows.** PatientZero logs a business statement that takes more
+than 200 ms as the platform logs a slow query: a `general` row under the
+request's `Request_Key` with `Module_Name` `SLOWSQL` and the `Message`
+`<statement> took <n> ms`, which the collector counts in
+`heartbeat_outsystems_slow_events_total` and reads as the row's `Duration`.
+It times the statement as it runs, so anything that slows it writes one,
+not only a `sql-latency` fault.
 
 A fault type implements `scenario.Fault` (`Start` and `Stop`) and is
 registered with `Registry.Register`. `Stop` is called exactly once after a
@@ -206,9 +263,9 @@ interleave with the steps):
 | `run_start` | First line | `scenario`, `description`, `scenario_sha256` (of the definition below), `definition` (the scenario as run, defaults filled in), `load`, `host` (the pod), `sources` (`prometheus`, `loki`, `alertmanager` URLs), `summary_interval`, `poll_interval`, `planned_end` |
 | `fault_start` | A step's fault is on | `step`, `step_index`, `type`, `scope`, `params` |
 | `fault_end` | The fault is off | As `fault_start`, plus `reason` (`completed`, `stopped`, or `error` with `error`). A fault that failed to start has a `fault_end` with `error` and no `fault_start`, and ends the run |
-| `traffic` | Every 15 s, then once more at the end with `scope` `interval`; then one with `scope` `run` | `scope`, `from`, `to`, `requests`, `failed` (requests that wrote an error row, refused orders included), `injected` (failed by a fault), `users` and `sessions` (distinct, anonymous callers not counted as users), `users_capped` / `sessions_capped` when the 50,000-per-interval or 200,000-per-run cap was reached, and `entry_points`: per entry point `requests`, `failed`, `injected`, `anonymous`, `duration_ms_sum`, `duration_ms_max` |
+| `traffic` | Every 15 s, then once more at the end with `scope` `interval`; then one with `scope` `run` | `scope`, `from`, `to`, `requests`, `failed` (requests that wrote an error row, refused orders included), `injected` (failed by a fault), `slow_sql` (slow-query rows written), `users` and `sessions` (distinct, anonymous callers not counted as users), `users_capped` / `sessions_capped` when the 50,000-per-interval or 200,000-per-run cap was reached, and `entry_points`: per entry point `requests`, `failed`, `injected`, `slow_sql`, `anonymous`, `duration_ms_sum`, `duration_ms_max` |
 | `check` | A signal has its result | `signal`, `kind` (`promql`, `logql`, `alert`), `query` (the expression or alert name), `condition` or `state` and `labels`, `step`, `from`, `mode`, `within`, `window_start`, `window_end` (as the window actually opened), `result` (`pass`, `fail`, `skipped` when the run stopped before the window closed), `evaluated_at` (the deciding evaluation), `attempts`, `values` (that evaluation's values, sorted, at most 20), `series` (how many it returned), `error` (that evaluation's error, if any) |
-| `run_end` | Last line | `scenario`, `state` (`passed`, `failed` when a check failed, `stopped`, `error`), `error`, `seconds`, `checks` (`pass`, `fail`, `skipped` counts), `requests`, `failed`, `injected`, `users`, `sessions` (the whole run) |
+| `run_end` | Last line | `scenario`, `state` (`passed`, `failed` when a check failed, `stopped`, `error`), `error`, `seconds`, `checks` (`pass`, `fail`, `skipped` counts), `requests`, `failed`, `injected`, `slow_sql`, `users`, `sessions` (the whole run) |
 
 Traffic is counted as PatientZero serves it, from the request's start to
 its response, by the same handlers that write the log rows: the known
