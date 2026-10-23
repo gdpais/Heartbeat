@@ -75,6 +75,10 @@ const (
 	KindDelivery = "delivery"
 )
 
+// MaxDeliveryReach is how far back from the end of its window a delivery
+// check may count rows: the Ledger keeps its counts longer than this.
+const MaxDeliveryReach = 6 * time.Hour
+
 // LogTypes are the OutSystems log types a delivery check can count, as the
 // collector's outsystems_log_type label names them.
 var LogTypes = []string{"cyclic_job", "error", "extension", "general", "integration", "mobile_request", "request_event", "screen"}
@@ -476,6 +480,14 @@ func (s *Scenario) validateDelivery(sig *Signal, where string, add func(string, 
 		if end, _ := s.StepStart(d.ToStep); s.Anchor(*sig) < end+s.Steps[to].Duration.D() {
 			add("%s: a delivery check's window opens at or after the end of its to_step %q", where, d.ToStep)
 		}
+	}
+	if okFrom {
+		if start, _ := s.StepStart(d.FromStep); s.Anchor(*sig)+sig.Within.D()-start > MaxDeliveryReach {
+			add("%s: a delivery check counts rows at most %s back from the end of its window", where, MaxDeliveryReach)
+		}
+	}
+	if sig.Mode == ModeAlways {
+		add("%s: a delivery check waits for Loki to catch up: mode eventually, not always", where)
 	}
 	if sig.Condition != "" || sig.State != "" || len(sig.Labels) > 0 {
 		add("%s: a delivery check has no condition, state or labels", where)

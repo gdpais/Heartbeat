@@ -831,7 +831,7 @@ cmd_scenario() {
 	admin_retry saved_ "/admin/runs/$ended/journal" --fail -o "$SCENARIO_DIR/$ended.jsonl" ||
 		die "fetching the journal of $ended failed"
 	jq -r 'select(.event == "check") | .data |
-		"  \(.result | ascii_upcase)  \(.signal): \(.kind) \(.condition // .state) within \(.within) of the \(.from) of \(.step); \(.attempts) evaluations, last \(.values)\(if .error then "; " + .error else "" end)"' \
+		"  \(.result | ascii_upcase)  \(.signal): \(.kind)\(if (.condition // .state) then " " + (.condition // .state) else "" end) within \(.within) of the \(.from) of \(.step); \(.attempts) evaluations, last \(if .delivery then [.delivery[] | "\(.log_type) \(.loki)/\(.expected)"] | join(", ") else .values end)\(if .error then "; " + .error else "" end)"' \
 		"$SCENARIO_DIR/$ended.jsonl"
 	jq -r 'select(.event == "run_end") | .data |
 		"  \(.requests) requests (\(.failed) failed, \(.injected) injected) from \(.users) users in \(.sessions) sessions over \(.seconds | floor)s"' \

@@ -3,7 +3,17 @@ package oslog
 import (
 	"testing"
 	"time"
+
+	"heartbeat/tools/patientzero/internal/scenario"
 )
+
+// A delivery check may count rows as far back as scenario.MaxDeliveryReach;
+// the Ledger must still have them.
+func TestLedgerKeepsWhatADeliveryCheckReaches(t *testing.T) {
+	if LedgerRetention <= scenario.MaxDeliveryReach {
+		t.Fatalf("LedgerRetention %s, want more than scenario.MaxDeliveryReach %s", LedgerRetention, scenario.MaxDeliveryReach)
+	}
+}
 
 func screenAt(t time.Time) Row { return Row{Type: "screen", Columns: map[string]any{"Instant": t}} }
 

@@ -270,6 +270,8 @@ func TestParseRejectsBadDelivery(t *testing.T) {
 		{"window too early", "    step: calm\n    from: end", "    step: hurt\n    from: end", "opens at or after the end of its to_step \"calm\""},
 		{"with a condition", "    step: calm\n    within: 3m", "    step: calm\n    condition: \"> 0\"\n    within: 3m", "no condition, state or labels"},
 		{"with a query", "      lost_after: 30s\n", "      lost_after: 30s\n    promql: sum(up)\n", "exactly one of promql, logql, alert or delivery"},
+		{"always", "    step: calm\n    from: end", "    step: calm\n    from: end\n    mode: always", "mode eventually, not always"},
+		{"too far back", "    duration: 1m\nsignals:", "    duration: 6h\nsignals:", "at most 6h0m0s back"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if !strings.Contains(withDelivery, c.from) {
