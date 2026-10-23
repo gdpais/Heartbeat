@@ -47,13 +47,17 @@ against the rules as shipped, with their real windows and `for` durations;
 nothing is shortened for kind. That sets their length:
 
 - A fast burn (14.4 times the budget over 1 hour and 5 minutes, `for: 2m`)
-  fires a few minutes into the fault and resolves about 6 minutes after it,
-  once the 5-minute window has emptied.
+  must fire during the fault, so that the run sees it resolve after it, and
+  resolves about 5 minutes after the fault, once the 5-minute window has
+  emptied. On kind it fired 3.5 minutes into `bad-deploy`'s fault and 13
+  minutes into `slow-sql`'s, whose slowed requests are a smaller share and
+  had more traffic before them in the 1-hour window.
 - A slow burn (6 times the budget over 6 hours and 30 minutes, `for: 15m`)
-  fires about 17 minutes after the fault started, after `bad-deploy`'s
-  rollback, at the end of `slow-sql`'s fault. It resolves only once the
-  30-minute window has emptied, 40 to 50 minutes after the fault started;
-  the scenarios do not wait for that.
+  fires after at least 15 minutes: on kind 17.5 minutes after
+  `bad-deploy`'s fault started, after its rollback, and 22 minutes after
+  `slow-sql`'s. It resolves only once the 30-minute window has emptied, 40
+  to 50 minutes after the fault started; the scenarios do not wait for
+  that.
 - The windows reach back before the run. PatientZero traffic in the hours
   before dilutes the fault's share of them, so each scenario first checks
   that there was not too much (`last-hour-leaves-room-for-the-fast-burn`,
@@ -61,8 +65,8 @@ nothing is shortened for kind. That sets their length:
   (`fast-burn-quiet-before`, `slow-burn-quiet-before`). A second run of the
   same scenario fails those checks until the first one's slow burn has
   resolved: wait about 50 minutes, or use a fresh cluster. `slow-sql` can
-  run right after `bad-deploy`: their alerts differ, and one run of
-  `bad-deploy` leaves room in the windows.
+  run right after `bad-deploy`, whose run serves about 9,500 requests: their
+  alerts differ.
 
 PatientZero's steady load stays inside both objectives without a fault:
 about 0.07% of its requests fail (refused orders) and none take 2 s.

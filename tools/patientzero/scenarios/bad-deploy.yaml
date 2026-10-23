@@ -23,11 +23,13 @@ steps:
 signals:
   # Preconditions. The alerts start quiet, so the run sees them go from
   # resolved to firing. The burn-rate windows reach back 1 and 6 hours: an
-  # hour of steady load is about 25,000 requests, and the checkout's failures
-  # (a quarter of the requests for 8 minutes) keep the 6-hour error ratio
-  # above 0.6% for the slow burn's 15 minutes while at most about 100,000
-  # requests came before them. A run right after another bad-deploy fails
-  # here: wait for its slow burn to resolve (about 40 minutes).
+  # hour of steady load is about 25,000 requests, and the checkout fails
+  # about 120 times a minute. With at most 30,000 requests in the hour
+  # before, the 1-hour error ratio passes 1.44% within 5 minutes, so the fast
+  # burn fires during the fault; with at most 100,000 in the 6 hours before,
+  # the 6-hour one passes 0.6% within 5 minutes and stays above it for the
+  # slow burn's 15. A run right after another bad-deploy fails here: wait
+  # for its slow burn to resolve (about 40 minutes).
   - name: fast-burn-quiet-before
     alert: OutSystemsErrorBudgetBurnFast
     labels: {application: PatientZero}
@@ -42,6 +44,13 @@ signals:
     step: baseline
     mode: always
     within: 1m50s
+  - name: last-hour-leaves-room-for-the-fast-burn
+    promql: >-
+      sum(increase(heartbeat_outsystems_operations_total{application="PatientZero",log_type=~"screen|mobile_request|integration"}[1h]))
+      or vector(0)
+    condition: "< 30000"
+    step: baseline
+    within: 30s
   - name: history-leaves-room-for-the-slow-burn
     promql: >-
       sum(increase(heartbeat_outsystems_operations_total{application="PatientZero",log_type=~"screen|mobile_request|integration"}[6h]))
@@ -72,16 +81,18 @@ signals:
     within: 4m
 
   # The alerts, as Alertmanager has them. The fast burn needs 2 minutes over
-  # its threshold (for: 2m) on both its windows; it resolves once the 5-minute
-  # window no longer holds the failures. The slow burn needs 15 minutes
-  # (for: 15m), so it fires after the rollback; it resolves only once the
-  # failures leave its 30-minute window, after the run.
+  # its threshold (for: 2m) on both its windows, and must fire during the
+  # fault, or fast-burn-resolves, which opens at its end, would pass without
+  # having seen it fire; it resolves once the 5-minute window no longer
+  # holds the failures. The slow burn needs 15 minutes (for: 15m), so it
+  # fires after the rollback; it resolves only once the failures leave its
+  # 30-minute window, after the run.
   - name: fast-burn-fires
     alert: OutSystemsErrorBudgetBurnFast
     labels: {application: PatientZero, severity: critical}
     state: firing
     step: broken
-    within: 9m
+    within: 8m
   - name: fast-burn-resolves
     alert: OutSystemsErrorBudgetBurnFast
     labels: {application: PatientZero}
@@ -100,4 +111,4 @@ signals:
     labels: {application: PatientZero, severity: warning}
     state: firing
     step: broken
-    within: 22m
+    within: 24m
