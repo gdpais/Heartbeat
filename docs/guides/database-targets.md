@@ -73,11 +73,21 @@ Server cannot tell, the collector logs that once per check and exports no
 value. The `HeartbeatCollectorLoginElevated` alert fires when the metric has
 been `1` for 15 minutes.
 
-Connections use `encrypt=true` and verify the server certificate, so the target
-needs a certificate the collector trusts.
-`HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE=true` is for the local
-dev container only; it applies to every target, and the collector logs a
-warning at startup and lists it in `GET /admin/config`.
+### Certificates
+
+Connections use `encrypt=true` and verify the server's certificate. It must be
+issued for the target's `host` and chain to a public CA in the collector's
+image (Debian's `ca-certificates`). Otherwise every probe fails:
+`x509: certificate is not valid for any names, but wanted to match <host>` for
+SQL Server's default self-signed certificate, or
+`x509: certificate signed by unknown authority`. Trusting a private CA is not
+supported yet: the chart has no setting to add one to the collector.
+
+The chart value `dbCollector.sqlserver.trustServerCertificate: true` (the
+variable `HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE`) turns
+verification off. It is for the local dev container only: it applies to every
+target, and the collector logs a warning at startup and lists it in
+`GET /admin/config`.
 
 ### OutSystems logging database
 
@@ -191,7 +201,8 @@ is rejected and the previous config keeps running.
 ## 5. Verify
 
 ```bash
-curl -s -H "Authorization: Bearer $HEARTBEAT_ADMIN_TOKEN" http://localhost:8082/admin/config |
+# The header goes to curl on stdin, so the token stays off its command line.
+printf 'Authorization: Bearer %s\n' "$HEARTBEAT_ADMIN_TOKEN" | curl -s -H @- http://localhost:8082/admin/config |
   jq '.readiness.collectors[].targets[] | select(.name == "finance-prod")'   # state, and the driver error if it fails
 curl -s http://localhost:8082/metrics | grep 'heartbeat_collector_target_up{.*target="finance-prod"'
 ```

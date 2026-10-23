@@ -23,8 +23,8 @@ instead. Production deploys the same chart from ECR through Argo CD
 - A Kubernetes cluster. CI tests Kubernetes 1.36 on kind.
 - Helm 4.2 and kubectl. The chart also renders with Helm 3, but installs are
   tested with Helm 4.
-- A default StorageClass. The release asks for five volumes, about 21 GiB in
-  all (listed under [Uninstall](#uninstall)).
+- A default StorageClass. The release asks for five volumes, 20.25 GiB in all
+  (listed under [Uninstall](#uninstall)).
 - Memory: the pods request about 0.8 GiB, and their limits add up to about
   3.3 GiB.
 - A CNI that enforces NetworkPolicy (kindnet, Calico, Cilium, Amazon VPC CNI
@@ -92,15 +92,21 @@ It then prints the chart's notes: the Secrets it needs, how to check the
 install and how to reach Grafana. `helm show readme oci://ghcr.io/gdpais/charts/heartbeat --version "$VERSION"`
 prints the chart's README.
 
-If a value was wrong, fix it in `heartbeat.yaml` and run the
-[upgrade](#upgrade) command. A collector pod that never became Ready is
-replaced by the next upgrade; there is no pod to delete by hand.
+If a value was wrong, fix it in `heartbeat.yaml` and upgrade with it:
+
+```bash
+helm upgrade heartbeat oci://ghcr.io/gdpais/charts/heartbeat --version "$VERSION" \
+  --namespace heartbeat -f heartbeat.yaml --wait --timeout 10m
+```
+
+A collector pod that never became Ready is replaced by that upgrade; there is
+no pod to delete by hand.
 
 ## 4. Check that it works
 
 ```bash
 kubectl -n heartbeat get pods   # every pod Running, every container ready
-kubectl -n heartbeat port-forward svc/db-collector 8082 &
+kubectl -n heartbeat port-forward svc/db-collector 8082:8082 &
 curl -s localhost:8082/readyz   # {"status":"ready"}
 HEARTBEAT_ADMIN_TOKEN=$(kubectl -n heartbeat get secret heartbeat-runtime -o jsonpath='{.data.admin-token}' | base64 -d)
 # The header goes to curl on stdin, so the token stays off its command line.
@@ -109,6 +115,22 @@ printf 'Authorization: Bearer %s\n' "$HEARTBEAT_ADMIN_TOKEN" | curl -s -H @- loc
 kubectl -n heartbeat port-forward svc/grafana 3000:3000 &
 # later: kill %1 %2 stops both port-forwards
 ```
+
+The admin call prints `version`, the SHA-256 of the active config, the
+readiness `status`, and `warnings`, empty unless an insecure setting is on:
+
+```json
+{
+  "version": "<64 hex characters>",
+  "status": "ready",
+  "warnings": []
+}
+```
+
+Use free local ports. If something on your machine already holds
+`127.0.0.1:8082` or `:3000`, `kubectl port-forward` listens on `[::1]` only,
+without an error, and `localhost` may reach the other program. Then forward
+another port, for example `18082:8082`, and use it in the URLs.
 
 Then open http://localhost:3000 and log in with the `grafana-admin` Secret's
 user and password. The *Heartbeat* folder holds the dashboards. They show
@@ -132,11 +154,11 @@ login and its grants, with the T-SQL to create it (step 1), the target entry
 (step 2) and the credential (step 3). With a release install:
 
 ```bash
-# The collector login's password, not echoed; the Secret key comes from
-# credential_ref: env/finance-prod.
+SQL_LOGIN=heartbeat_collector   # the login the DBAs created
+# Its password, not echoed. The Secret key comes from credential_ref: env/finance-prod.
 read -rs SQL_PASSWORD
 kubectl -n heartbeat create secret generic heartbeat-sqlserver-credentials \
-  --from-env-file=<(printf 'HEARTBEAT_CREDENTIAL_ENV_FINANCE_PROD=heartbeat_collector:%s\n' "$SQL_PASSWORD")
+  --from-env-file=<(printf 'HEARTBEAT_CREDENTIAL_ENV_FINANCE_PROD=%s:%s\n' "$SQL_LOGIN" "$SQL_PASSWORD")
 unset SQL_PASSWORD
 ```
 
@@ -163,46 +185,79 @@ helm upgrade heartbeat oci://ghcr.io/gdpais/charts/heartbeat --version "$VERSION
   --namespace heartbeat -f heartbeat.yaml -f targets.yaml --wait --timeout 10m
 ```
 
-Naming the Secret for the first time restarts the collector. A later change
-to the target list hot-reloads without a restart; a change to the Secret's
-contents needs `kubectl -n heartbeat rollout restart statefulset/db-collector`.
-Then check the target as in [step 5](database-targets.md#5-verify), with the
-port-forward from step 4 above.
+Naming the Secret for the first time restarts the collector, which ends the
+step 4 port-forward (`error: lost connection to pod`): start it again. A later
+change to the target list hot-reloads without a restart; a change to the
+Secret's contents needs `kubectl -n heartbeat rollout restart statefulset/db-collector`.
+Then check the target as in [step 5](database-targets.md#5-verify).
+
+The collector verifies the server's TLS certificate. SQL Server's default
+self-signed certificate fails with `x509: certificate is not valid for any
+names`, and a certificate from a private CA cannot be trusted yet
+([certificates](database-targets.md#certificates)).
 
 ## Upgrade
 
-Read the release notes first, then set the new version and the new digest in
-`heartbeat.yaml`:
+Read the release notes first, and set the new digest in `heartbeat.yaml`.
+Check that your values pass the new chart's schema, which touches nothing in
+the cluster, then upgrade:
 
 ```bash
 VERSION=X.Y.Z
+helm template heartbeat oci://ghcr.io/gdpais/charts/heartbeat --version "$VERSION" \
+  --namespace heartbeat -f heartbeat.yaml -f targets.yaml >/dev/null
 helm upgrade heartbeat oci://ghcr.io/gdpais/charts/heartbeat --version "$VERSION" \
-  --namespace heartbeat -f heartbeat.yaml -f targets.yaml --wait --timeout 10m
+  --namespace heartbeat -f heartbeat.yaml -f targets.yaml --wait --timeout 10m --rollback-on-failure
 ```
 
-Pass your values files rather than `--reuse-values`, so the new chart's
-defaults apply to everything you did not set.
+Pass every values file you have, in the same order each time (`targets.yaml`
+exists once you have done step 5), rather than `--reuse-values`, so the new
+chart's defaults apply to everything you did not set.
 
-**From 0.1.0.** The release notes list the values that were renamed or
-removed since; update your values files to match. Two changes also need a
-step once:
+`--rollback-on-failure` (`--atomic` in Helm 3) rolls a failed upgrade back to
+the last revision that worked: Helm applies that revision's objects again and
+deletes the ones the failed upgrade added. Without it, a failed upgrade is
+left half done. Helm applies every object it can, keeps the objects the new
+version removes, and marks the revision `failed`. Fix the cause and upgrade
+again, or go back with `helm rollback heartbeat`.
 
-1. The collector's StatefulSet now uses `podManagementPolicy: Parallel`, so it
-   can replace a pod that never became Ready. Kubernetes cannot change that
-   field in place, and the upgrade fails with
-   `StatefulSet.apps "db-collector" is invalid: spec: Forbidden`. Delete the
-   StatefulSet first, leaving its pod running:
+**From 0.1.0.** Do these once, before the first upgrade, in this order:
+
+1. Update your values files. The release notes list the values renamed or
+   removed since 0.1.0. Remove `otelGateway`: the OTel gateway is gone
+   ([ADR 0009](../architecture/decisions/0009-remove-the-otel-gateway.md)),
+   and unknown top-level values now fail. The `helm template` check above
+   must pass before the next step, so that the upgrade cannot fail on the
+   values after it.
+2. Delete the collector's StatefulSet, leaving its pod running:
 
    ```bash
    kubectl -n heartbeat delete statefulset db-collector --cascade=orphan
    ```
 
-   The upgrade creates it again; the new StatefulSet adopts the running pod
-   and replaces it with the new version.
-2. The OTel gateway is gone
-   ([ADR 0009](../architecture/decisions/0009-remove-the-otel-gateway.md)),
-   and unknown top-level values now fail the upgrade. Remove `otelGateway`
-   from your values files.
+   It now uses `podManagementPolicy: Parallel`, so it can replace a pod that
+   never became Ready, and Kubernetes cannot change that field on an existing
+   StatefulSet.
+3. Run the upgrade above. It creates the StatefulSet again; the new
+   StatefulSet adopts the running pod and replaces it with the new version.
+   If it fails and rolls back, the rollback brings back the 0.1.0
+   StatefulSet: repeat step 2 before the next attempt.
+
+An upgrade attempted without step 2 fails with
+`StatefulSet.apps "db-collector" is invalid: spec: Forbidden`. With
+`--rollback-on-failure`, Helm then returns to 0.1.0; do steps 2 and 3. Without
+it, Helm has applied everything else and removed nothing:
+
+- the ConfigMaps are the new ones, `integrations.yaml` included;
+- Grafana and Loki run the new version, and their pods restarted;
+- the new NetworkPolicies, the `db-collector-state` and `otel-collector-queue`
+  claims and the new OTel Collector StatefulSet exist, beside the old OTel
+  Collector Deployment and the OTel gateway, which still run.
+
+The 0.1.0 collector rejects the new config (`invalid candidate config` in
+its log) and keeps collecting with its old one. Do not restart it: it reads
+the new file at startup and would exit. Do steps 2 and 3. The second upgrade
+completes the change and removes the old objects.
 
 ## Uninstall
 
