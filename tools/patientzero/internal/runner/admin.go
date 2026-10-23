@@ -58,9 +58,10 @@ func (a adminAuth) authorized(r *http.Request) bool {
 // Handler serves the admin endpoints under /admin/, behind the bearer token:
 //
 //	GET  /admin/scenarios                 the scenarios and fault types, and which can run here
-//	POST /admin/scenarios/{name}/start    start a scenario (202; 409 while another runs)
+//	POST /admin/scenarios/{name}/start    start a scenario (202; 409 while another runs); ?agent=host attaches a host agent
 //	GET  /admin/run                       the active run's status, or the last run's
-//	POST /admin/run/stop                  stop the active run and wait for its end
+//	POST /admin/run/faults/{id}           the host agent's answer to a cluster fault request
+//	POST /admin/run/stop                  stop the active run and wait for its end; ?detach=1 detaches the host agent first
 //	GET  /admin/runs                      the journals kept on disk, newest first
 //	GET  /admin/runs/{run}/journal        one run's journal, JSONL
 //
@@ -76,6 +77,7 @@ func (r *Runner) Handler(token string) http.Handler {
 	mux.HandleFunc("GET /admin/scenarios", r.listScenarios)
 	mux.HandleFunc("POST /admin/scenarios/{name}/start", r.startScenario)
 	mux.HandleFunc("GET /admin/run", r.runStatus)
+	mux.HandleFunc("POST /admin/run/faults/{id}", r.answerFault)
 	mux.HandleFunc("POST /admin/run/stop", r.stopRun)
 	mux.HandleFunc("GET /admin/runs", r.listRuns)
 	mux.HandleFunc("GET /admin/runs/{run}/journal", r.runJournal)
@@ -110,7 +112,7 @@ func (r *Runner) listScenarios(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (r *Runner) startScenario(w http.ResponseWriter, req *http.Request) {
-	st, err := r.Start(req.PathValue("name"))
+	st, err := r.StartWith(req.PathValue("name"), req.URL.Query().Get("agent") == "host")
 	switch {
 	case err == nil:
 		r.cfg.Log.Info("scenario start requested", "run", st.Run, "scenario", st.Scenario, "remote", req.RemoteAddr)
@@ -136,7 +138,28 @@ func (r *Runner) runStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
+// answerFault takes the host agent's answer to a cluster fault request:
+// {"error": ""} when it was applied, or the reason it was not.
+func (r *Runner) answerFault(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, `the body must be {"error": "..."}`)
+		return
+	}
+	if r.cfg.Delegate == nil || r.cfg.Delegate.Complete(req.PathValue("id"), body.Error) != nil {
+		writeError(w, http.StatusNotFound, ErrNoSuchRequest.Error())
+		return
+	}
+	r.cfg.Log.Info("cluster fault answered", "request", req.PathValue("id"), "error", body.Error)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (r *Runner) stopRun(w http.ResponseWriter, req *http.Request) {
+	if req.URL.Query().Get("detach") == "1" && r.cfg.Delegate != nil {
+		r.cfg.Delegate.Detach()
+	}
 	st, err := r.Stop()
 	if errors.Is(err, ErrNotRunning) {
 		writeError(w, http.StatusConflict, err.Error())

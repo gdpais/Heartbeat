@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=scenario.schema.json
+version: 1
+name: sqlserver-outage
+description: >-
+  The sandbox SQL Server, which holds PatientZero's databases and is the
+  collector's SQL Server target, stops for 2 minutes. PatientZero's requests
+  fail and write no log rows, since its logging database is down too; both
+  collector targets go down and back off. Once SQL Server is back the
+  targets come up again, the collector reads what it missed, and Loki ends
+  with every row PatientZero committed, once.
+load: steady
+steps:
+  - name: before
+    duration: 1m
+  - name: down
+    duration: 2m
+    fault:
+      type: outage
+      params: {workload: sqlserver}
+  - name: after
+    duration: 3m
+signals:
+  - name: targets-down
+    promql: max(heartbeat_collector_target_up{target=~"sqlserver-dev|patientzero-log"})
+    condition: "== 0"
+    step: down
+    within: 2m
+  # A failed target backs off, up to a few minutes, before it tries again.
+  - name: targets-back
+    promql: min(heartbeat_collector_target_up{target=~"sqlserver-dev|patientzero-log"})
+    condition: "== 1"
+    step: down
+    from: end
+    within: 6m
+  - name: every-row-once
+    delivery:
+      log_types: [screen, mobile_request, integration, general, error]
+    step: after
+    from: end
+    within: 8m

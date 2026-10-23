@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=scenario.schema.json
+version: 1
+name: otel-outage
+description: >-
+  The OTel Collector is down for 4 minutes while the load runs (its
+  StatefulSet scaled to 0). Prometheus cannot scrape it, so
+  HeartbeatServiceDown fires for it after 2 minutes and resolves once it is
+  back. The db-collector's exports fail meanwhile and are retried from the
+  same watermark, so once the Collector is back the backlog drains and Loki
+  ends with every row PatientZero committed, once.
+load: steady
+steps:
+  - name: before
+    duration: 1m
+  - name: down
+    duration: 4m
+    fault:
+      type: outage
+      params: {workload: otel-collector}
+  - name: after
+    duration: 2m
+signals:
+  - name: collector-down-fires
+    alert: HeartbeatServiceDown
+    labels: {job: otel-collector}
+    state: firing
+    step: down
+    within: 4m
+  - name: collector-down-resolves
+    alert: HeartbeatServiceDown
+    labels: {job: otel-collector}
+    state: resolved
+    step: down
+    from: end
+    within: 3m
+  - name: extraction-catches-up
+    promql: max(heartbeat_outsystems_extract_lag_seconds{collector="patientzero"})
+    condition: "< 120"
+    step: down
+    from: end
+    within: 4m
+  - name: every-row-once
+    delivery:
+      log_types: [screen, mobile_request, integration, general, error]
+    step: after
+    from: end
+    within: 5m

@@ -13,11 +13,10 @@ the Heartbeat module, chart, images or releases.
 
 > **Status:** first slice [16.5]: the service, its two databases on the
 > sandbox SQL Server, three entry points, k6 load, and the scenario runner
-> with its run journal, seven in-process faults, delivery checks, the SLO
-> scenarios and the in-process ingest scenarios. The restart and outage
-> scenarios with their host-side runner, the backfill, timers, extension
-> calls, the fake REST partner and the rest of the compressed calendar come
-> later. The logging schema is the collector
+> with its run journal, seven in-process and two cluster faults, delivery
+> checks, the SLO scenarios and the ingest scenarios but a backfill. Timers,
+> extension calls, the fake REST partner and the rest of the compressed
+> calendar come later. The logging schema is the collector
 > fixtures', the DDL of a surveyed OutSystems 11 logging database.
 
 ## Run it on kind
@@ -165,8 +164,11 @@ ingest scenarios (`rotation`, `log-backlog`, `late-commits`, `log-growth`)
 check that Loki holds exactly the rows PatientZero committed, which it
 counts as it writes them
 ([delivery checks](scenarios/README.md#delivery-checks)). Faults that act
-on other workloads (restarts, outages) run in a host-side runner that comes
-next.
+on other workloads (`restarts`, `loki-outage`, `otel-outage`,
+`collector-outage`, `sqlserver-outage`) need the kubeconfig and Docker,
+which PatientZero does not have: `make patientzero-scenario` applies them
+when PatientZero asks, as the run's host agent
+([cluster faults](scenarios/README.md#cluster-faults)).
 
 ## Production-sized logging database
 

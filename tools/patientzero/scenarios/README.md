@@ -19,7 +19,9 @@ names (`SCENARIO_LOAD=0` skips it, for a load you run yourself), starts the
 scenario through PatientZero's admin endpoint, prints each step and each
 check as it settles, saves the journal to
 `.tmp/patientzero-scenarios/<run>.jsonl`, and exits 0 only if every check
-passed. Interrupting it stops the run, which removes its fault.
+passed. Interrupting it stops the run, which removes its fault. For a
+scenario with cluster faults it is also the run's host agent, which needs
+`docker` ([cluster faults](#cluster-faults)).
 
 | Scenario | Fault | Must show | Takes |
 | --- | --- | --- | --- |
@@ -31,11 +33,18 @@ passed. Interrupting it stops the run, which removes its fault.
 | [`log-backlog`](log-backlog.yaml) | Every request's log rows committed 10 s late for 4 minutes, within the collector's 15 s lag | Extraction keeps up; Loki holds every row of the run, once | about 8 minutes |
 | [`late-commits`](late-commits.yaml) | Every request's log rows committed 90 s late for 3 minutes, past every log type's lag | The extracted rows stop, then return; Loki holds every row of the run but the late ones, once | about 9 minutes |
 | [`log-growth`](log-growth.yaml) | 20 extra general rows of 2,000 characters per request for 5 minutes, about 100 MB | The SQL Server storage probe sees `patientzero_log`'s data file grow; extraction keeps up; Loki discards nothing and holds every row, once | about 9 minutes |
+| [`restarts`](restarts.yaml) | The db-collector, the OTel Collector and Loki restarted one after the other | No `HeartbeatServiceDown` for the OTel Collector, no discarded rows; Loki holds every row of the run, once | about 9 minutes |
+| [`loki-outage`](loki-outage.yaml) | Loki down for 3 minutes | `heartbeat_outsystems_export_blocked` 1 while the target stays up; extraction catches up; Loki holds every row, once | about 7 minutes |
+| [`otel-outage`](otel-outage.yaml) | The OTel Collector down for 4 minutes | `HeartbeatServiceDown` for it firing, then resolved; extraction catches up; Loki holds every row, once | about 8 minutes |
+| [`collector-outage`](collector-outage.yaml) | The db-collector down for 3 minutes | Its scrape target gone, then back; extraction catches up; Loki holds every row, once | about 7 minutes |
+| [`sqlserver-outage`](sqlserver-outage.yaml) | The sandbox SQL Server stopped for 2 minutes | Both collector targets down, then up again; Loki holds every row PatientZero could write, once | about 7 minutes |
 
-The other ingest scenarios, restarts and outages of the db-collector, the
-OTel Collector, Loki and SQL Server and a backfill, act on other workloads
-and wait for the host-side runner ([cluster faults](#cluster-faults);
-[TODO 16.5](../../../TODO.md)).
+The last five have cluster faults: `make patientzero-scenario` applies them
+as the run's host agent ([cluster faults](#cluster-faults)). A backfill
+within Loki's 168 hours is not a scenario yet ([TODO 16.5](../../../TODO.md));
+`make patientzero-scale-collect` and `make patientzero-scale-check` backfill a
+generated log and check it against its known answers
+([PatientZero](../README.md#in-loki)).
 
 ### SLO scenarios
 
@@ -180,7 +189,8 @@ counts.
 
 A fault type has a name, parameters and a **scope**, which says which runner
 can apply it ([`internal/scenario/registry.go`](../internal/scenario/registry.go)).
-PatientZero's runner applies `in-process` faults only.
+PatientZero's runner applies `in-process` faults itself, and hands
+`cluster` faults to the run's host agent.
 
 | Type | Scope | Parameters | Does |
 | --- | --- | --- | --- |
@@ -230,18 +240,46 @@ Server are `cluster` faults: they act on other workloads, which needs
 Kubernetes RBAC (delete a pod, scale a StatefulSet) or the Docker host (stop
 the SQL Server container, which runs outside the cluster). PatientZero has
 neither, on purpose: a test application that can delete pods is a risk on
-any cluster it is installed on. Its runner lists such scenarios as not
-runnable and refuses to start them (HTTP 422).
+any cluster it is installed on.
 
-They will run in a **host-side runner**: the same `internal/runner`,
-`internal/scenario` and journal code in a command that `make
-patientzero-scenario` and `scripts/kind-e2e.sh` run on the host, with the
-kubeconfig and Docker they already use (`kubectl delete pod`, `kubectl
-scale`, `docker stop`), registering the cluster fault types with scope
-`cluster`. Traffic summaries and the counts of committed rows that
-delivery checks compare Loki with still come from PatientZero, which serves
-the requests and writes the rows. That runner comes with the restart and
-outage scenarios.
+| Type | Scope | Parameters | Does |
+| --- | --- | --- | --- |
+| `restart` | cluster | `workload` (required): `db-collector`, `otel-collector`, `loki` or `sqlserver` | When its step starts: deletes the workload's pod and waits until its StatefulSet's new pod is Ready, or restarts SQL Server's container and waits until it is healthy. The end of the step changes nothing |
+| `outage` | cluster | `workload` (required), as for `restart` | For its step: scales the StatefulSet to 0 and waits until its pod is gone, or stops SQL Server's container; at the end, scales it back to 1 and waits until it is ready, or starts the container and waits until it is healthy |
+
+The workloads are the Heartbeat chart's StatefulSets in the Heartbeat
+namespace, one pod each, and the sandbox SQL Server container
+(`SQLSERVER_CONTAINER`).
+
+**The host agent.** A run with cluster faults is started with a host agent
+attached: `make patientzero-scenario` starts it with `?agent=host` and
+becomes that agent, on the host, with the kubeconfig and Docker it already
+uses. PatientZero still runs the scenario: its steps and their clock, the
+checks, the journal, the traffic it serves and the rows it commits, which
+delivery checks compare Loki with. When a step's cluster fault starts or
+stops, PatientZero's runner posts a request in the run's status
+(`fault_request`: `id`, `action` `start` or `stop`, `type`, `params`) and
+waits; the agent, which polls the status every 2 seconds, applies it with
+`kubectl delete pod`, `kubectl scale` or `docker stop` and answers on
+`POST /admin/run/faults/{id}`, with an `error` if it failed. The request
+fails, and the run with it, if the agent has not answered within 5
+minutes. Without an agent PatientZero refuses such a scenario (HTTP 422),
+and the listing marks it `agent: true`.
+
+The agent applies only these two types to these four workloads, for the
+run it started. Interrupted, it stops the run detached (`POST
+/admin/run/stop?detach=1`: PatientZero fails the pending and later requests
+at once instead of waiting), then ends the outages it started. Killed
+outright, it cannot: scale the StatefulSet back to 1 (`kubectl --context
+kind-heartbeat -n heartbeat scale statefulset/<name> --replicas=1`) or start
+the container (`docker start heartbeat-sqlserver-dev`) by hand.
+
+A host-side runner, the same runner code on the host with the faults
+applied directly, was the plan before this. It would have had to read the
+traffic and the committed rows from PatientZero and reach Prometheus, Loki
+and Alertmanager through port-forwards; with the agent, PatientZero stays
+the one place a run is clocked, checked and journaled, and the host side
+only does what needs its access.
 
 ## Admin endpoints
 
@@ -258,9 +296,10 @@ only from the files built into the image; a request can only name one.
 | Request | Answers |
 | --- | --- |
 | `GET /admin/scenarios` | The scenarios (steps, signals, fault types, load, `max_duration_seconds`, whether this runner can run each and why not) and the registered fault types |
-| `POST /admin/scenarios/{name}/start` | 202 and the run's status; 404 unknown, 409 while another run is active (one at a time), 422 not runnable here |
-| `GET /admin/run` | The active run's status (state, current step, each check's result so far), else the last run's, else `{"state": "idle"}` |
-| `POST /admin/run/stop` | Stops the active run and answers once it has ended: its fault removed, open checks `skipped`, the journal closed with `run_end` state `stopped`; 409 if none is active |
+| `POST /admin/scenarios/{name}/start` | 202 and the run's status; 404 unknown, 409 while another run is active (one at a time), 422 not runnable here. `?agent=host` attaches a host agent for its cluster faults |
+| `GET /admin/run` | The active run's status (state, current step, each check's result so far, the cluster fault request waiting for the host agent), else the last run's, else `{"state": "idle"}` |
+| `POST /admin/run/faults/{id}` | The host agent's answer to a cluster fault request, `{"error": ""}` when applied: 204; 404 if no such request is waiting |
+| `POST /admin/run/stop` | Stops the active run and answers once it has ended: its fault removed, open checks `skipped`, the journal closed with `run_end` state `stopped`; 409 if none is active. `?detach=1` detaches the host agent first |
 | `GET /admin/runs` | The journals on disk, newest first |
 | `GET /admin/runs/{run}/journal` | One run's journal (`application/x-ndjson`), everything written so far while it runs |
 
@@ -339,8 +378,10 @@ jq -c 'select(.event == "traffic" and .data.scope == "interval") | .data | {to, 
 1. Write `<name>.yaml` here, with the schema line at the top.
 2. Use a fault type from the registry, or add one: an in-process fault in
    [`internal/inject`](../internal/inject/inject.go) (registered by
-   `inject.Register`), with its parameters in the schema's `fault` section;
-   a cluster fault waits for the host-side runner above.
+   `inject.Register`), a cluster fault in
+   [`internal/cluster`](../internal/cluster/cluster.go) and the host agent
+   (`cluster_fault` in [`scripts/patientzero.sh`](../scripts/patientzero.sh)),
+   with its parameters in the schema's `fault` section.
 3. Read the expected signals from metrics and logs Heartbeat already
    produces; leave room for the collector's lag (about a minute; screen rows
    another minute) and the query's own range. A query's range also reaches

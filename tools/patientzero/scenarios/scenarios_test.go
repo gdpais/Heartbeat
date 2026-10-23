@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"heartbeat/tools/patientzero/internal/app"
+	"heartbeat/tools/patientzero/internal/cluster"
 	"heartbeat/tools/patientzero/internal/inject"
 	"heartbeat/tools/patientzero/internal/scenario"
 	"heartbeat/tools/patientzero/scenarios"
@@ -17,6 +18,7 @@ import (
 func registry() *scenario.Registry {
 	reg := scenario.NewRegistry()
 	inject.Register(reg, &inject.Injector{}, app.Modules)
+	cluster.Register(reg, nil)
 	return reg
 }
 
@@ -129,7 +131,16 @@ func TestSchemaMatchesValidation(t *testing.T) {
 	allOf, _ := path(t, s, "$defs", "fault", "allOf").([]any)
 	var described []string
 	for _, a := range allOf {
-		described = append(described, path(t, a.(map[string]any), "if", "properties", "type", "const").(string))
+		cond := path(t, a.(map[string]any), "if", "properties", "type").(map[string]any)
+		if c, ok := cond["const"].(string); ok {
+			described = append(described, c)
+		} else {
+			described = append(described, strings(t, cond["enum"])...)
+			workloads := strings(t, path(t, a.(map[string]any), "then", "properties", "params", "properties", "workload", "enum"))
+			if want := slices.Sorted(slices.Values(cluster.Workloads)); !slices.Equal(workloads, want) {
+				t.Errorf("schema workloads %v, cluster.Workloads %v", workloads, want)
+			}
+		}
 		if path(t, a.(map[string]any), "if", "properties", "type", "const") == "log-flood" {
 			params := path(t, a.(map[string]any), "then", "properties", "params", "properties").(map[string]any)
 			if rows := number(t, path(t, params, "rows", "maximum")); rows != inject.MaxFloodRows {
