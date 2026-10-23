@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// LedgerRetention is how long the Ledger keeps its counts: longer than any
-// scenario's row window.
+// LedgerRetention is how long the Ledger keeps its counts: longer than a
+// delivery check may reach back (scenario.MaxDeliveryReach).
 const LedgerRetention = 8 * time.Hour
 
 // Ledger counts the log rows PatientZero has committed, per log type and

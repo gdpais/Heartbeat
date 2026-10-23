@@ -165,9 +165,13 @@ stored twice) and no fewer (a row lost).
   lag and never goes back, so a row committed later than that is never read
   ([ADR 0008](../../../docs/architecture/decisions/0008-outsystems-11-log-extraction.md)).
   With `lost_after`, the rows a `commit-delay` fault held back longer than it
-  must be missing and the others present. Set it between the scenario's
-  delays and above every log type's lag plus its poll: 15 s plus 15 s for
-  PatientZero's collector on kind, 1 minute plus 15 s for screen rows.
+  must be missing and the others present. It only splits the scenario's
+  delays, so choose them so the split is certain: every delay below
+  `lost_after` under the smallest lag (15 s for PatientZero's collector on
+  kind), every delay above it longer than the largest lag plus its poll (1
+  minute plus 15 s, for screen rows). A delay in between loses some rows and
+  not others. A check also fails when no row was written in its window, and
+  its mode is always `eventually`.
 
 The journal's `check` line records the rows' window and each log type's
 counts.

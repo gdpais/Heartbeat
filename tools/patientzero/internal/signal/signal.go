@@ -94,8 +94,9 @@ type Result struct {
 // EvaluateDelivery runs a delivery check once: for each of its log types,
 // the lines Loki holds of the Application with a timestamp in the window
 // (one instant count_over_time query at w.To), against what the Ledger
-// counted. It passes when they are equal for every log type: a missing row
-// or a row stored twice changes the count. The window is widened to whole
+// counted. It passes when they are equal for every log type, and at least
+// one row was written: a missing row or a row stored twice changes the
+// count, and a window with no rows checks nothing. The window is widened to whole
 // seconds, From down and To up, the same on both sides. Values are Loki's
 // counts, in the check's log type order.
 func (s Sources) EvaluateDelivery(ctx context.Context, sig scenario.Signal, w Window) (Result, error) {
@@ -142,6 +143,14 @@ func (s Sources) EvaluateDelivery(ctx context.Context, sig scenario.Signal, w Wi
 		r.Values = append(r.Values, float64(lines))
 	}
 	r.Series = len(r.Values)
+	var written int64
+	for _, c := range r.Delivery {
+		written += c.Written
+	}
+	if written == 0 {
+		r.Pass = false
+		return r, errors.New("PatientZero committed no rows in the window: is the load running?")
+	}
 	return r, nil
 }
 

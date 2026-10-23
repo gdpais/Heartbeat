@@ -219,6 +219,11 @@ func TestDeliveryComparesLokiWithTheLedger(t *testing.T) {
 		t.Errorf("ledger asked %q, want the held rows over 30s", ledger.asked[len(ledger.asked)-1])
 	}
 
+	// No rows written: nothing to check, so no pass.
+	empty := Sources{Loki: srv.URL, Ledger: &fakeLedger{}, Application: "PatientZero"}
+	if res, err := empty.EvaluateDelivery(context.Background(), scenario.Signal{Name: "d", Delivery: &scenario.Delivery{LogTypes: []string{"error"}}}, w); res.Pass || err == nil {
+		t.Errorf("a window without rows: %+v, %v; want a failure", res, err)
+	}
 	if _, err := (Sources{Loki: srv.URL}).EvaluateDelivery(context.Background(), sig, w); err == nil {
 		t.Error("a delivery check without a ledger must fail")
 	}
