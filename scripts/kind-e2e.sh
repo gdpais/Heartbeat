@@ -142,6 +142,14 @@ collector_waiting_on() {
 }
 collector_image() { k -n "$NAMESPACE" get pod db-collector-0 -o jsonpath='{.status.containerStatuses[0].image}'; }
 collector_policy() { k -n "$NAMESPACE" get statefulset db-collector -o jsonpath='{.spec.podManagementPolicy}'; }
+# True when db-collector-0 is Ready, not terminating, and on the StatefulSet's
+# update revision. kubectl rollout status can report a new StatefulSet done
+# while it still has to replace an adopted pod.
+collector_on_update_revision() {
+	update=$(k -n "$NAMESPACE" get statefulset db-collector -o jsonpath='{.status.updateRevision}')
+	[ -n "$update" ] && [ "$(k -n "$NAMESPACE" get pod db-collector-0 \
+		-o jsonpath='{.metadata.labels.controller-revision-hash}/{.status.conditions[?(@.type=="Ready")].status}/{.metadata.deletionTimestamp}')" = "$update/True/" ]
+}
 prometheus_answers() { [ -n "$(prom_value prometheus_tsdb_lowest_timestamp_seconds)" ]; }
 # Prints the type Prometheus scraped for a metric (counter, gauge, ...).
 metric_type() { svc_get prometheus:9090 "/api/v1/metadata?metric=$1" | jq -r --arg m "$1" '.data[$m][0].type // empty'; }
@@ -610,11 +618,16 @@ k -n "$NAMESPACE" get statefulset db-collector -o json |
 k -n "$NAMESPACE" delete statefulset db-collector --cascade=orphan --wait >/dev/null
 k -n "$NAMESPACE" create -f "$WORK/statefulset-ordered.json" >/dev/null
 [ "$(collector_policy)" = OrderedReady ] || fail "could not recreate the StatefulSet with OrderedReady"
-k -n "$NAMESPACE" rollout status statefulset/db-collector --timeout 3m >/dev/null
+wait_for 180 "collector on the OrderedReady StatefulSet's revision" collector_on_update_revision
 uid_before=$(collector_pod_uid)
+k -n "$NAMESPACE" get statefulset db-collector -o json | jq -S .spec.template >"$WORK/template-before.json"
 EXTRA_VALUES="$WORK/e2e-reload.yaml $base_values" scripts/kind.sh deploy >/dev/null
 [ "$(collector_policy)" = Parallel ] || fail "db-collector StatefulSet is $(collector_policy) after the deploy, not Parallel"
-[ "$(collector_pod_uid)" = "$uid_before" ] || fail "the collector pod was replaced by the policy change"
+if [ "$(collector_pod_uid)" != "$uid_before" ]; then
+	k -n "$NAMESPACE" get statefulset db-collector -o json | jq -S .spec.template >"$WORK/template-after.json"
+	diff "$WORK/template-before.json" "$WORK/template-after.json" || true
+	fail "the collector pod was replaced by the policy change (pod template diff above, before -> after)"
+fi
 pass "recreated as Parallel; the collector pod kept running"
 
 # ----------------------------------------------------------------------------
