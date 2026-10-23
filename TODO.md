@@ -69,6 +69,8 @@ Production delivery is section 18.
 - [x] Retire the platform Compose definition and the Kustomize bundle
 - [ ] Install the Renovate GitHub App on the repository (config is in `renovate.json`)
 - [ ] Agree the local loop's time and resource budget (measured: about 2.0 GiB RAM for the full profile)
+- [ ] Cap the sandbox SQL Server's memory (`MSSQL_MEMORY_LIMIT_MB` in `scripts/kind.sh` and `scripts/sqlserver-test.sh`), so that a load flood or a second cluster slows it down instead of getting it killed; on 2026-10-22 it was killed twice on an 8 GB Docker host, once under a PatientZero load flood and once when a second cluster started
+- [ ] Reject unknown keys inside each component's chart values (`dbCollector.enabeld` is ignored today)
 
 ### 0.5 Development workflow and releases
 
@@ -243,6 +245,7 @@ Replica ownership and outage testing are section 19. Design details:
 - [x] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; per-target TLS settings wait until a real target needs them
 - [x] Check at validation that a `query_template` is a single read-only `SELECT` (defense in depth; the read-only login stays the control)
 - [ ] Egress NetworkPolicy for the collector: DNS, the monitored targets and the OTel Collector only (the policy restricts ingress only)
+- [ ] A NodePort or LoadBalancer Service bypasses the collector's NetworkPolicy, so the unauthenticated `/metrics` (collector, target and environment names, probe counters) reaches anything that can reach a node. The chart default is ClusterIP and kind binds its node port to 127.0.0.1 only; say in the chart values and the deployment docs that production keeps ClusterIP
 
 ---
 
@@ -292,6 +295,9 @@ follow the ingest path.
 - [x] Persistent sending queue for the logs exporter (`file_storage` on a volume), so a Collector restart loses nothing the db-collector counted delivered; a kind test restarts the Collector during a backlog and compares Loki with the rows read. The stage validation's "restarts without gaps" needs it. The queue is on the `otel-collector-queue` claim and the Collector is a one-replica StatefulSet; `make kind-e2e` restarts it with Loki down and 6,000 queued rows, and Loki ends with each of them once ([why](docs/architecture/application-observability.md)). A 64 MiB queue sent the batches it was sending at a restart last, out of order (1,297 of 6,000 rows over three hours lost in kind); the next item closes it
 - [x] Keep the order across a Collector restart: the logs exporter's queue holds one request and the receiver waits for room in it, so nothing queues behind the request being sent. The db-collector waits for the Collector without failing the target: the export runs in the background outside the probe deadline, retried until accepted; the log type reads nothing more meanwhile, its target stays up and `heartbeat_outsystems_export_blocked` is 1; nothing is held on SQL Server and at most 64 MiB of row data in memory. `make kind-e2e` restarts the Collector during 45-minute and three-hour backlogs with Loki down, and Loki ends with every row of both, once ([why](docs/architecture/application-observability.md))
 - [x] Decide the OTel gateway's future: removed with its JSON event endpoint and alert sink; Alertmanager's default receiver has no integrations; push sources go to the OTel Collector over OTLP, mapped with OTTL ([ADR 0009](docs/architecture/decisions/0009-remove-the-otel-gateway.md))
+- [ ] Alert on `heartbeat_outsystems_export_blocked`: it is 1 from the first minute of a Loki outage, but only `OutSystemsLogExtractionBehind` fires, about 40 minutes in
+- [ ] Show rows committed past the `lag`: ADR 0008 accepts that the extractor skips them, but nothing says it happened; only the derived request rate drops (PatientZero's `late-commits` scenario loses exactly the rows it held back)
+- [ ] `heartbeat_outsystems_log_delay_seconds` only reflects delays between the `lag` and the `lag` plus the poll interval, so it cannot show the log service falling behind, although ADR 0008 says it does: fix the metric or the ADR
 
 ### 3.4 Generic telemetry expansion
 - [ ] Harden generic OTLP ingest after OutSystems path works
@@ -552,6 +558,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Add SQL Server recording rules
 - [x] Add alert rule output path (`rules/generated/`, loaded by Prometheus; nothing renders into it yet)
 - [x] Add an `alerting` block so Prometheus sends alerts to Alertmanager (plus an always-firing Watchdog routed to a dead-man's switch)
+- [ ] `HeartbeatServiceDown` cannot fire for a missing db-collector: Prometheus finds it through DNS on its headless Service, so with no pod there is no `up` series (seen in PatientZero's `collector-outage` scenario). Alert on the missing series too, and add Loki, which the alert does not cover
 
 ### 9.2 Loki
 - [x] Provision Loki for app logs
@@ -570,6 +577,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Provision routing configuration
 - [x] Support grouping/dedupe/silence/delivery
 - [ ] Integrate rendered routes from Heartbeat metadata (needs the API; routing is static today)
+- [ ] Alertmanager's StatefulSet keeps `podManagementPolicy: OrderedReady` (its chart has no setting for it), so after a bad config its pod is never replaced and the upgrade waits ([kubernetes#67250](https://github.com/kubernetes/kubernetes/issues/67250))
 
 ### 9.5 OpenTelemetry Collector
 - [x] Provision collector config
@@ -787,6 +795,12 @@ Later, each with the phase that needs it:
 - [ ] Phase 7, with the analyzer and alert work that uses them: timers, extension calls and a fake consumed REST partner; long-running screens and timers; `Instant` in a configured time zone across daylight saving switches; the `blocking` (and deadlock), `slow-partner`, `timer-backlog` and `bad-front-end` scenarios [6, 13]
 - [ ] Phase 7: investigations and reports on PatientZero runs compared with their journals; decide soak runs or a Prometheus TSDB backfill for multi-day baselines and weekly reports [6, 13, 14]
 - [ ] OTLP mode for the OutSystems Cloud/ODC streams and traces [3.4, 3.6]; a MuleSoft-like source [3.4]; an Oracle-backed variant [21]
+
+Hardening, from the 2026-10-22 security and performance reviews. PatientZero
+trusts its caller by design, so these keep it on the load path:
+- [ ] Default-deny NetworkPolicy in the `patientzero` namespace that admits port 8080 only from its known callers, such as the k6 load Job. PatientZero takes the user, session and client IP from request headers, so anything that reaches it can write forged rows into Loki. It stays ClusterIP and is never exposed outside the cluster
+- [ ] `placeOrder` returns a generic error and logs the detail, as `orderList` and `apiOrders` do; the HTML screen sends `X-Content-Type-Options: nosniff`, a restrictive CSP and `X-Frame-Options`
+- [ ] Backpressure on the business-database path: a sized connection pool with an acquire timeout and a concurrency limit on the handlers, answering 503 with `Retry-After` when saturated. Under a flood it now returns 500s as fast as SQL Server fails, and the pressure helped push the sandbox SQL Server out of memory
 
 ---
 
