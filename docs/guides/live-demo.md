@@ -298,7 +298,14 @@ hb_admin '{version, last_reload_err, status: .readiness.status, target: .readine
 
 `last_reload_err` says `platform "unsupported" is not supported (supported:
 grafana, generic)`; the version, the
-readiness and the target are unchanged. Restore it as Helm's field manager,
+readiness and the target are unchanged. Monitoring sees the rejection too:
+
+```bash
+hb_metrics '^heartbeat_collector_config_last_reload_successful'   # 0 until a reload succeeds
+curl -s localhost:9090/api/v1/alerts | jq -c '.data.alerts[] | select(.labels.alertname == "HeartbeatCollectorConfigReloadFailed") | .state'   # pending, firing after 2m
+```
+
+Restore it as Helm's field manager,
 so the next `make kind-deploy` does not conflict:
 
 ```bash

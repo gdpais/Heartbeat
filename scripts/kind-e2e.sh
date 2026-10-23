@@ -128,6 +128,17 @@ target_up() { [ "$(prom_value "heartbeat_collector_target_up{target=\"$1\"}")" =
 version_changed_from() { [ "$(config_version)" != "$1" ]; }
 reload_error_is_set() { admin_config | jq -e '.last_reload_err != ""'; }
 reload_error_is_clear() { admin_config | jq -e '.last_reload_err == ""'; }
+# The last reload's result as Prometheus scraped it (1 ok, 0 failed), and
+# whether its alert is pending or firing.
+reload_successful_is() { value_is 'heartbeat_collector_config_last_reload_successful{job="db-collector"}' "$1"; }
+reload_alert_active() {
+	svc_get prometheus:9090 /api/v1/alerts | jq -e 'any(.data.alerts[]; .labels.alertname == "HeartbeatCollectorConfigReloadFailed")'
+}
+reload_alert_gone() {
+	svc_get prometheus:9090 /api/v1/alerts | jq -e 'all(.data.alerts[]; .labels.alertname != "HeartbeatCollectorConfigReloadFailed")'
+}
+rejected_reloads() { prom_value 'sum(heartbeat_collector_config_reloads_total{result="invalid_candidate"})'; }
+rejected_reloads_above() { now=$(rejected_reloads); [ -n "$now" ] && gt "$now" "$1"; }
 watchdog_active() { svc_get alertmanager:9093 /api/v2/alerts | jq -e 'any(.[]; .labels.alertname == "Watchdog")'; }
 last_success() { prom_value "heartbeat_collector_target_last_success_timestamp_seconds{target=\"$1\"}"; }
 # gt <a> <b>: numeric a > b, for decimals too.
@@ -498,27 +509,50 @@ EXTRA_VALUES="$WORK/e2e-reload.yaml $base_values" scripts/kind.sh deploy >/dev/n
 # kubelet propagates ConfigMap updates within about a minute.
 wait_for 180 "new config version active" version_changed_from "$version_before"
 [ "$(collector_pod_uid)" = "$uid_before" ] || fail "collector pod was replaced by a config change"
-pass "config $version_before -> $(config_version), same pod"
+version_new=$(config_version)
+# One info series: the new version replaces the old one.
+wait_for 60 "new version in Prometheus" value_is "heartbeat_collector_config_info{version=\"$version_new\"}" 1
+value_is 'count(heartbeat_collector_config_info{job="db-collector"})' 1 ||
+	fail "Prometheus has more than one heartbeat_collector_config_info series after a reload"
+pass "config $version_before -> $version_new, same pod, and Prometheus shows only the new version"
 
-step "an invalid ConfigMap update is rejected while collection continues"
+step "an invalid ConfigMap update is rejected while collection continues, and monitoring shows it"
 version_good=$(config_version)
 restarts_before=$(collector_restarts)
-# Valid YAML that the Go loader rejects (a platform Heartbeat does not know),
-# written straight to the ConfigMap: Helm's values schema refuses to render it.
+rejected_before=$(rejected_reloads)
+# A misspelled probe name (usability finding F4): Helm's values schema lets it
+# through, the collector rejects it. Written straight to the ConfigMap, which
+# is restored the same way.
 k -n "$NAMESPACE" get configmap heartbeat-integrations -o json >"$WORK/integrations-good.json"
-jq '.data["integrations.yaml"] = "platform: unsupported\ncollectors: [{id: broken, kind: sqlserver, enabled: true}]\n"' \
-	"$WORK/integrations-good.json" | k replace -f - >/dev/null
+jq -e '.data["integrations.yaml"] | contains("- name: waits")' "$WORK/integrations-good.json" >/dev/null ||
+	fail "no waits probe to misspell in the ConfigMap"
+jq '.data["integrations.yaml"] |= sub("- name: waits"; "- name: wiats")' "$WORK/integrations-good.json" >"$WORK/integrations-typo.json"
+k replace -f "$WORK/integrations-typo.json" >/dev/null
 wait_for 180 "reload error reported" reload_error_is_set
 admin_config | jq -r '"      last_reload_err: " + .last_reload_err'
+admin_config | jq -e '.last_reload_err | contains("unknown SQL Server probe \"wiats\"; probes: ")' >/dev/null ||
+	fail "last_reload_err does not name the misspelled probe and the valid ones"
 [ "$(config_version)" = "$version_good" ] || fail "invalid config replaced the active version"
 wait_for 90 "collection still fresh" target_fresh sqlserver-dev
 [ "$(collector_restarts)" = "$restarts_before" ] || fail "collector restarted on invalid config"
 pass "invalid config rejected, version $version_good kept, still collecting"
+wait_for 60 "failed reload in Prometheus" reload_successful_is 0
+# The counter is incremented just after the gauge's snapshot is stored, so a
+# scrape can land between the two.
+wait_for 60 "rejected reload counted" rejected_reloads_above "${rejected_before:-0}"
+rejected_after=$(rejected_reloads)
+value_is "heartbeat_collector_config_info{version=\"$version_good\"}" 1 ||
+	fail "Prometheus does not show the kept version $version_good"
+wait_for 60 "HeartbeatCollectorConfigReloadFailed pending or firing" reload_alert_active
+pass "the rejection shows in Prometheus: last_reload_successful 0, $rejected_after rejected, version $version_good, alert active"
 # Restore as Helm's field manager: Helm 4 upgrades with server-side apply and
 # would otherwise conflict with the out-of-band edit.
 jq 'del(.metadata.resourceVersion, .metadata.uid, .metadata.creationTimestamp)' "$WORK/integrations-good.json" |
 	k apply --server-side --field-manager=helm --force-conflicts -f - >/dev/null
 wait_for 180 "reload error cleared" reload_error_is_clear
+wait_for 60 "successful reload in Prometheus" reload_successful_is 1
+wait_for 60 "HeartbeatCollectorConfigReloadFailed resolved" reload_alert_gone
+pass "the restored config reloads: last_reload_successful 1, alert gone"
 admin_unforward
 
 # ----------------------------------------------------------------------------
