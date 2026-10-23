@@ -29,8 +29,9 @@ const (
 	DefaultSummaryInterval = 15 * time.Second
 	DefaultPollInterval    = 10 * time.Second
 	// faultStopTimeout bounds a fault's Stop, which runs with a fresh
-	// context after the run's own has ended.
-	faultStopTimeout = 30 * time.Second
+	// context after the run's own has ended: longer than a cluster fault
+	// waits for its host agent.
+	faultStopTimeout = DefaultAgentTimeout + 30*time.Second
 	// evalTimeout bounds one signal evaluation.
 	evalTimeout = 15 * time.Second
 )
@@ -61,8 +62,11 @@ type Config struct {
 	PollInterval time.Duration
 	// Host names this runner in run_start, such as the pod name.
 	Host string
-	Now  func() time.Time
-	Log  *slog.Logger
+	// Delegate hands cluster faults to the host agent of a run started with
+	// one (delegate.go); nil runs no cluster faults.
+	Delegate *Delegate
+	Now      func() time.Time
+	Log      *slog.Logger
 }
 
 // Runner runs scenarios one at a time.
@@ -116,6 +120,9 @@ type Listing struct {
 	MaxDurationSeconds float64  `json:"max_duration_seconds"`
 	Runnable           bool     `json:"runnable"`
 	Reason             string   `json:"reason,omitempty"`
+	// Agent is true when the scenario has cluster faults: it runs only with
+	// a host agent attached to apply them.
+	Agent bool `json:"agent"`
 }
 
 // FaultTypeListing describes a registered fault type.
@@ -143,7 +150,8 @@ func (r *Runner) Scenarios() []Listing {
 			l.Signals = append(l.Signals, sig.Name)
 		}
 		l.Signals = nonNil(l.Signals)
-		if err := r.runnable(s); err != nil {
+		l.Agent = r.needsAgent(s)
+		if err := r.runnable(s, l.Agent); err != nil {
 			l.Reason = err.Error()
 		} else {
 			l.Runnable = true
@@ -170,8 +178,22 @@ func nonNil(s []string) []string {
 	return s
 }
 
-// runnable reports why this runner cannot run s, or nil.
-func (r *Runner) runnable(s *scenario.Scenario) error {
+// needsAgent reports whether s has a cluster fault.
+func (r *Runner) needsAgent(s *scenario.Scenario) bool {
+	for _, st := range s.Steps {
+		if st.Fault == nil {
+			continue
+		}
+		if t, ok := r.cfg.Registry.Type(st.Fault.Type); ok && t.Scope == scenario.ScopeCluster {
+			return true
+		}
+	}
+	return false
+}
+
+// runnable reports why this runner cannot run s, with or without a host
+// agent attached, or nil.
+func (r *Runner) runnable(s *scenario.Scenario, agent bool) error {
 	for _, st := range s.Steps {
 		if st.Fault == nil {
 			continue
@@ -180,8 +202,11 @@ func (r *Runner) runnable(s *scenario.Scenario) error {
 		if !ok {
 			return fmt.Errorf("fault type %q is not registered", st.Fault.Type)
 		}
-		if !slices.Contains(r.cfg.Scopes, t.Scope) {
+		if !slices.Contains(r.cfg.Scopes, t.Scope) || (t.Scope == scenario.ScopeCluster && r.cfg.Delegate == nil) {
 			return fmt.Errorf("fault type %q acts on the %s; this runner applies only %s faults", t.Name, t.Scope, joinScopes(r.cfg.Scopes))
+		}
+		if t.Scope == scenario.ScopeCluster && !agent {
+			return fmt.Errorf("fault type %q acts on the cluster and needs a host agent to apply it: start the run with make patientzero-scenario", t.Name)
 		}
 	}
 	for _, sig := range s.Signals {
@@ -232,6 +257,9 @@ type Status struct {
 	Checks   []CheckStatus `json:"checks"`
 	Error    string        `json:"error,omitempty"`
 	Journal  string        `json:"journal"`
+	// FaultRequest is the cluster fault the host agent has to apply or
+	// remove now, if any.
+	FaultRequest *FaultRequest `json:"fault_request,omitempty"`
 }
 
 // CheckStatus is one signal's check so far.
@@ -282,12 +310,16 @@ func newRunID(now time.Time, name string) string {
 
 // Start starts the scenario called name and returns its status. It fails
 // with ErrBusy while another run is active.
-func (r *Runner) Start(name string) (Status, error) {
+func (r *Runner) Start(name string) (Status, error) { return r.StartWith(name, false) }
+
+// StartWith starts the scenario called name; agent says a host agent is
+// attached to apply its cluster faults (delegate.go).
+func (r *Runner) StartWith(name string, agent bool) (Status, error) {
 	s, ok := r.byName[name]
 	if !ok {
 		return Status{}, ErrUnknown
 	}
-	if err := r.runnable(s); err != nil {
+	if err := r.runnable(s, agent); err != nil {
 		return Status{}, fmt.Errorf("%w: %v", ErrNotRunnable, err)
 	}
 	r.mu.Lock()
@@ -333,9 +365,13 @@ func (r *Runner) Start(name string) (Status, error) {
 	r.current = u
 	r.done = make(chan struct{})
 	done := r.done
+	if agent && r.cfg.Delegate != nil {
+		r.cfg.Delegate.attach()
+	}
 	go func() {
 		defer close(done)
 		r.execute(ctx, u, j, faults, start)
+		r.cfg.Delegate.end()
 		cancel()
 		r.mu.Lock()
 		r.current, r.last = nil, u
@@ -368,7 +404,9 @@ func (r *Runner) Status() (Status, bool) {
 	defer r.mu.Unlock()
 	switch {
 	case r.current != nil:
-		return r.current.snapshot(), true
+		st := r.current.snapshot()
+		st.FaultRequest = r.cfg.Delegate.Pending()
+		return st, true
 	case r.last != nil:
 		return r.last.snapshot(), true
 	}

@@ -42,6 +42,7 @@ import (
 	_ "github.com/microsoft/go-mssqldb"
 
 	"heartbeat/tools/patientzero/internal/app"
+	"heartbeat/tools/patientzero/internal/cluster"
 	"heartbeat/tools/patientzero/internal/inject"
 	"heartbeat/tools/patientzero/internal/logschema"
 	"heartbeat/tools/patientzero/internal/oslog"
@@ -216,6 +217,9 @@ func run(log *slog.Logger) error {
 	cfg.sources.Ledger = ledgerCounts{ledger}
 	registry := scenario.NewRegistry()
 	inject.Register(registry, faults, app.Modules)
+	// Cluster faults go to the host agent of the run that has them.
+	delegate := &runner.Delegate{}
+	cluster.Register(registry, delegate)
 	list, err := scenario.LoadDir(scenarios.FS, ".", registry)
 	if err != nil {
 		return fmt.Errorf("scenarios: %w", err)
@@ -223,7 +227,8 @@ func run(log *slog.Logger) error {
 	scenarioRunner := runner.New(ctx, runner.Config{
 		Scenarios:  list,
 		Registry:   registry,
-		Scopes:     []scenario.Scope{scenario.ScopeInProcess},
+		Scopes:     []scenario.Scope{scenario.ScopeInProcess, scenario.ScopeCluster},
+		Delegate:   delegate,
 		Sources:    cfg.sources,
 		Traffic:    counter,
 		JournalDir: cfg.journalDir,

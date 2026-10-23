@@ -62,7 +62,7 @@
       "additionalProperties": false,
       "required": ["type"],
       "properties": {
-        "type": { "enum": ["latency", "errors", "deploy", "sql-latency", "rotation", "commit-delay", "log-flood"], "description": "A type from the fault registry (README.md, \"Fault registry\")." },
+        "type": { "enum": ["latency", "errors", "deploy", "sql-latency", "rotation", "commit-delay", "log-flood", "restart", "outage"], "description": "A type from the fault registry (README.md, \"Fault registry\")." },
         "params": { "type": "object" }
       },
       "allOf": [
@@ -160,6 +160,22 @@
                 "required": ["delay"],
                 "properties": {
                   "delay": { "$ref": "#/$defs/duration", "description": "How long every request's log rows wait before they are committed; at most 10m." }
+                }
+              }
+            },
+            "required": ["params"]
+          }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["restart", "outage"] } } },
+          "then": {
+            "properties": {
+              "params": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["workload"],
+                "properties": {
+                  "workload": { "enum": ["db-collector", "loki", "otel-collector", "sqlserver"], "description": "The Heartbeat StatefulSet of that name, or SQL Server's container. A cluster fault: the host agent of the run applies it." }
                 }
               }
             },

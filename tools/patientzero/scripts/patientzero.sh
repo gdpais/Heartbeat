@@ -27,7 +27,10 @@
 #   running next to it, follows it to its end, saves its run journal to
 #   .tmp/patientzero-scenarios/<run>.jsonl and exits 0 only if every signal
 #   check passed. Without SCENARIO it lists the scenarios. Interrupting it
-#   stops the run (its fault is removed) and the load it started.
+#   stops the run (its fault is removed) and the load it started. For a
+#   scenario with cluster faults it is the run's host agent: it restarts or
+#   stops the db-collector, the OTel Collector, Loki or SQL Server when
+#   PatientZero asks, and ends an outage it started when interrupted.
 # scale: a production-sized test logging database, patientzero_scale on the
 # sandbox SQL Server: two weeks of the surveyed installation's log, written
 # straight into the cycle tables (tools/patientzero/cmd/oslog-scale), then
@@ -637,12 +640,117 @@ admin_retry() {
 	done
 }
 
+# The host agent: PatientZero asks for a run's cluster faults in its status
+# (fault_request), and this applies them with kubectl and docker and
+# answers (scenarios/README.md, "Cluster faults"). The outages it started
+# and has not ended are listed in $work/outages, so an interrupted run ends
+# them.
+
+pod_uid() { kubectl_ -n "$HEARTBEAT_NAMESPACE" get pod "$1" -o jsonpath='{.metadata.uid}' 2>/dev/null || true; }
+pod_ready() {
+	[ "$(kubectl_ -n "$HEARTBEAT_NAMESPACE" get pod "$1" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ]
+}
+
+# wait_replaced <pod> <uid>: waits until a pod of that name, another than
+# uid, is Ready.
+wait_replaced() {
+	i=0
+	until uid_=$(pod_uid "$1") && [ -n "$uid_" ] && [ "$uid_" != "$2" ] && pod_ready "$1"; do
+		i=$((i + 1))
+		[ "$i" -le 150 ] || { echo "$1 was not replaced and Ready within 5 minutes"; return 1; }
+		sleep 2
+	done
+}
+
+wait_sqlserver() {
+	i=0
+	until sqlserver_healthy; do
+		i=$((i + 1))
+		[ "$i" -le 60 ] || { echo "$SQLSERVER_CONTAINER did not become healthy within 5 minutes"; return 1; }
+		sleep 5
+	done
+}
+
+# end_outage <workload>: starts the workload again and waits until it is
+# ready.
+end_outage() {
+	if [ "$1" = sqlserver ]; then
+		docker start "$SQLSERVER_CONTAINER" >/dev/null && wait_sqlserver || return 1
+	else
+		kubectl_ -n "$HEARTBEAT_NAMESPACE" scale "statefulset/$1" --replicas=1 >/dev/null &&
+			kubectl_ -n "$HEARTBEAT_NAMESPACE" rollout status "statefulset/$1" --timeout=5m >/dev/null || return 1
+	fi
+	grep -vx "$1" "$work/outages" >"$work/outages.new" || true
+	mv "$work/outages.new" "$work/outages"
+}
+
+# cluster_fault <action> <type> <workload>: applies (start) or removes
+# (stop) a cluster fault; on failure it prints why.
+cluster_fault() {
+	case $3 in
+	db-collector | otel-collector | loki) pod=$3-0 ;;
+	sqlserver) pod= ;;
+	*) echo "unknown workload $3"; return 1 ;;
+	esac
+	case $2:$1 in
+	restart:start)
+		if [ -n "$pod" ]; then
+			uid=$(pod_uid "$pod")
+			kubectl_ -n "$HEARTBEAT_NAMESPACE" delete pod "$pod" --wait=false >/dev/null && wait_replaced "$pod" "$uid"
+		else
+			docker restart "$SQLSERVER_CONTAINER" >/dev/null && wait_sqlserver
+		fi
+		;;
+	restart:stop) ;;
+	outage:start)
+		printf '%s\n' "$3" >>"$work/outages"
+		if [ -n "$pod" ]; then
+			kubectl_ -n "$HEARTBEAT_NAMESPACE" scale "statefulset/$3" --replicas=0 >/dev/null &&
+				kubectl_ -n "$HEARTBEAT_NAMESPACE" wait --for=delete "pod/$pod" --timeout=3m >/dev/null
+		else
+			docker stop "$SQLSERVER_CONTAINER" >/dev/null
+		fi
+		;;
+	outage:stop) end_outage "$3" ;;
+	*) echo "unknown cluster fault $2 $1"; return 1 ;;
+	esac
+}
+
+# agent_answer <status>: applies the fault request in a run's status, once,
+# and answers it.
+agent_answer() {
+	id=$(printf '%s' "$1" | jq -r '.fault_request.id // empty')
+	[ -n "$id" ] && [ "$id" != "$answered" ] || return 0
+	action=$(printf '%s' "$1" | jq -r .fault_request.action)
+	type=$(printf '%s' "$1" | jq -r .fault_request.type)
+	workload=$(printf '%s' "$1" | jq -r '.fault_request.params.workload // empty')
+	log "cluster fault: $type $workload, $action"
+	if out=$(cluster_fault "$action" "$type" "$workload" 2>&1); then
+		msg=
+	else
+		msg=$(printf '%s' "${out:-failed}" | tail -c 400)
+		log "cluster fault $type $workload failed to $action: $msg"
+	fi
+	answered=$id
+	admin_retry answer_ "/admin/run/faults/$id" -X POST -H 'Content-Type: application/json' \
+		--data "$(jq -cn --arg e "$msg" '{error: $e}')" --fail -o /dev/null ||
+		log "could not answer the $type request; the run waits for it, then fails"
+}
+
 scenario_cleanup() {
 	status=$?
 	if [ -n "$run" ]; then
 		log "stopping run $run"
-		admin_retry stopped_ /admin/run/stop -X POST --fail -o /dev/null ||
+		# Detached, PatientZero does not wait for an agent that has stopped
+		# answering; the outages are ended below.
+		admin_retry stopped_ "/admin/run/stop${agent:+?detach=1}" -X POST --fail -o /dev/null ||
 			log "could not stop run $run; it ends on its own, or: POST /admin/run/stop"
+	fi
+	if [ -s "$work/outages" ]; then
+		for workload in $(cat "$work/outages"); do
+			log "ending the $workload outage"
+			end_outage "$workload" || log "could not start $workload again; start it by hand"
+		done
 	fi
 	if [ -n "$started_load" ]; then
 		kubectl_ -n "$NAMESPACE" delete job "$LOAD_JOB" --ignore-not-found --wait=false >/dev/null 2>&1 || true
@@ -657,7 +765,7 @@ cmd_scenario() {
 	helm status "$RELEASE" --kube-context "$CONTEXT" --namespace "$NAMESPACE" >/dev/null 2>&1 ||
 		die "PatientZero is not installed on $CLUSTER; run make patientzero-up"
 	command -v jq >/dev/null || die "jq is required"
-	work= forward= run= started_load=
+	work= forward= run= started_load= agent= answered=
 	trap scenario_cleanup EXIT
 	trap 'exit 130' INT TERM
 	scenario_forward
@@ -674,6 +782,15 @@ cmd_scenario() {
 		die "$SCENARIO cannot run in PatientZero: $(printf '%s' "$info" | jq -r .reason)"
 	profile=$(printf '%s' "$info" | jq -r .load)
 	max=$(printf '%s' "$info" | jq -r '.max_duration_seconds | ceil')
+	# A scenario with cluster faults runs with this command as its host
+	# agent; its faults wait up to 5 minutes each for a workload to be ready.
+	poll=5
+	if [ "$(printf '%s' "$info" | jq -r .agent)" = true ]; then
+		agent=1 poll=2
+		command -v docker >/dev/null || die "docker is required for $SCENARIO's cluster faults"
+		: >"$work/outages"
+		max=$((max + 600))
+	fi
 	if [ "$profile" != none ] && [ "${SCENARIO_LOAD:-1}" != 0 ]; then
 		# The load outlasts the scenario; it is stopped when the scenario ends.
 		LOAD_DURATION=$((max + 120))s
@@ -681,7 +798,7 @@ cmd_scenario() {
 		start_load "$profile"
 		started_load=1
 	fi
-	response=$(admin "/admin/scenarios/$SCENARIO/start" -X POST -w '\n%{http_code}') || die "starting $SCENARIO failed"
+	response=$(admin "/admin/scenarios/$SCENARIO/start${agent:+?agent=host}" -X POST -w '\n%{http_code}') || die "starting $SCENARIO failed"
 	code=$(printf '%s\n' "$response" | tail -n 1)
 	body=$(printf '%s\n' "$response" | sed '$d')
 	[ "$code" = 202 ] || die "starting $SCENARIO failed (HTTP $code): $body"
@@ -704,8 +821,9 @@ cmd_scenario() {
 			esac
 		done
 		[ "$state" = running ] || break
+		[ -z "$agent" ] || agent_answer "$status"
 		[ "$(date +%s)" -lt "$deadline" ] || die "run $run has not ended after ${max}s; stopping it"
-		sleep 5
+		sleep "$poll"
 	done
 	ended=$run
 	run=
