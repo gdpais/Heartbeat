@@ -298,7 +298,14 @@ hb_admin '{version, last_reload_err, status: .readiness.status, target: .readine
 
 `last_reload_err` says `platform "unsupported" is not supported (supported:
 grafana, generic)`; the version, the
-readiness and the target are unchanged. Restore it as Helm's field manager,
+readiness and the target are unchanged. Monitoring sees the rejection too:
+
+```bash
+hb_metrics '^heartbeat_collector_config_last_reload_successful'   # 0 until a reload succeeds
+curl -s localhost:9090/api/v1/alerts | jq -c '.data.alerts[] | select(.labels.alertname == "HeartbeatCollectorConfigReloadFailed") | .state'   # pending, firing after 2m
+```
+
+Restore it as Helm's field manager,
 so the next `make kind-deploy` does not conflict:
 
 ```bash
@@ -375,6 +382,26 @@ the ratio falls back once the fault ends. Watch it in Grafana's *OutSystems
 Errors* dashboard meanwhile. The run's journal, what PatientZero injected
 and served every 15 seconds, is in `.tmp/patientzero-scenarios/`
 ([format](../../tools/patientzero/scenarios/README.md#run-journal)).
+
+Two longer scenarios page in Alertmanager, through the chart's SLO
+burn-rate alerts as shipped:
+
+```bash
+make patientzero-scenario NAME=bad-deploy   # about 19 minutes
+make patientzero-scenario NAME=slow-sql     # about 25 minutes
+```
+
+`bad-deploy` publishes a broken version of the checkout module, and every
+`PlaceOrder` fails with a new exception until it is rolled back:
+`OutSystemsErrorBudgetBurnFast` fires within about 5 minutes and resolves
+after the rollback, and `OutSystemsErrorBudgetBurnSlow` fires later. In
+`slow-sql` the order list's query runs about 3 s longer in SQL Server: slow
+SQL in the *OutSystems Overview* dashboard, more running sessions in *SQL
+Server Overview*, and the latency alerts. Open Alertmanager on
+<http://localhost:9093> meanwhile. Each waits for a slow burn that resolves
+only 40 to 50 minutes after its fault started, so give a second run of the
+same scenario that long
+([SLO scenarios](../../tools/patientzero/scenarios/README.md#slo-scenarios)).
 
 ## 6. Alert delivery
 

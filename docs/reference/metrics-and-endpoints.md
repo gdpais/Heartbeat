@@ -44,7 +44,7 @@ Reload can also be triggered with `SIGHUP` or file polling.
 | Field | Content |
 | --- | --- |
 | `version`, `loaded_at`, `last_reload_at` | Active config version (SHA-256 of the file) and timestamps |
-| `last_reload_err`, `runtime_diverged`, `rollback_err` | Why the last reload was rejected or failed; set until the next successful reload |
+| `last_reload_err`, `runtime_diverged`, `rollback_err` | Why the last reload was rejected or failed; set until the next successful reload. Monitoring sees it as [`heartbeat_collector_config_last_reload_successful`](#config-reloads) 0 |
 | `warnings` | Insecure startup settings, e.g. `sqlserver_trust_server_certificate` |
 | `readiness` | What `/readyz` decided and why: `status`, `reasons`, and per collector its phase, cycle age, restarts and targets. Each target has its state (`ok`, `failed`, `backoff`, or `blocked` for an `outsystems_logs` target waiting for the OTel Collector), consecutive failures, last success and the raw driver `error` of its last failed cycle, kept while it backs off, which can name the host, port and login but never contains the password. A `blocked` target's `error` says which log type waits, with how many rows, and for how long |
 | `config` | The active config, redacted ([configuration reference](configuration.md#validation-and-reload-behavior)) |
@@ -204,6 +204,26 @@ scheduled probe, 13 histogram series (10 buckets, `+Inf`, sum, count) and 4
 error counters: 157 series for a target with the 9 built-in probes. Probe
 metric series are listed in the table above.
 
+### Config reloads
+
+The outcome of every load of `integrations.yaml`: at startup, and on each
+reload, whatever triggered it (file polling, `SIGHUP` or
+`POST /admin/config/reload`). 7 series in all.
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `heartbeat_collector_config_last_reload_successful` | gauge | none | 1 if the last load or reload succeeded; 0 if it was rejected (invalid file) or could not be applied, until the next successful one. The last good config keeps running meanwhile, unless the rollback of a failed apply failed too (`runtime_diverged`, and `/readyz` returns 503). It is 0 exactly while `GET /admin/config` shows a `last_reload_err` |
+| `heartbeat_collector_config_last_reload_success_timestamp_seconds` | gauge | none | Unix time of the last successful load or reload: when the active config was loaded |
+| `heartbeat_collector_config_reloads_total` | counter | `result` | Loads and reloads by result, the `result` of `POST /admin/config/reload`: `ok`, `invalid_candidate` (unreadable or invalid file, nothing applied), `apply_failed` (valid file, collectors not reconciled; rolled back or diverged), `busy` (gave up waiting for another reload; nothing read, the gauges unchanged). Created at 0 for every result |
+| `heartbeat_collector_config_info` | gauge | `version` | Always 1. `version` is the active config's SHA-256, as in `GET /admin/config`. One series, which changes only when a reload activates a different file |
+
+The startup load counts as one `ok`: a file that fails validation at startup
+stops the collector instead (it exits, and Kubernetes restarts it), so
+`HeartbeatServiceDown` reports that case. A rejected reload therefore matters
+twice: the change has not taken effect, and if the file in the ConfigMap stays
+invalid, the next pod restart fails. `HeartbeatCollectorConfigReloadFailed`
+(below) fires on it.
+
 ### OutSystems log extraction
 
 `outsystems_logs` collectors
@@ -272,7 +292,9 @@ DNS discovery on the headless `db-collector-headless` Service, which lists the
 pod even while it is unready, so the collector's failure metrics are still
 scraped. Prometheus sends alerts to `alertmanager:9093`.
 
-Rules ([`heartbeat.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules/heartbeat.rules.yml)):
+Rules ([`heartbeat.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules/heartbeat.rules.yml),
+and [`heartbeat-config-reload.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules/heartbeat-config-reload.rules.yml)
+for the config reload alert):
 
 | Rule | Type |
 | --- | --- |
@@ -289,16 +311,22 @@ Rules ([`heartbeat.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules
 | `HeartbeatServiceDown` | Alert: `up == 0` for the DB collector or OTel Collector |
 | `LokiDiscardingLogs` | Alert (warning): Loki discarded log rows in the last 10 minutes for a reason other than its rate limit (`loki_discarded_samples_total`); those rows are lost |
 | `HeartbeatCollectorLoginElevated` | Alert (warning): `heartbeat_collector_target_login_sysadmin == 1` for 15m, the collector's login for a target is sysadmin-equivalent |
+| `HeartbeatCollectorConfigReloadFailed` | Alert (warning): `heartbeat_collector_config_last_reload_successful == 0` for 2m, the collector rejected or could not apply its last config change and still runs the last good config. The reason is `last_reload_err` in `GET /admin/config` and the `config reload rejected` or `config reload failed` line in the pod log. Clears on the next successful reload. On by default; `prometheusRules.configReloadAlert.enabled: false` leaves it out |
 | `Watchdog` | Alert: always firing. Alertmanager routes it to the `deadmans-switch` receiver (healthchecks.io in production, ADR 0005), which notifies when it stops arriving |
 
 `files/prometheus/rules/generated/` (in the chart) is loaded but empty; it is
 reserved for rules rendered from alert policies. The chart ships all rule files
-in the `heartbeat-prometheus-rules` ConfigMap. `make rules-check` validates the
+in the `heartbeat-prometheus-rules` ConfigMap. An alert that can be turned off
+has a rule file of its own, which the chart leaves out of the ConfigMap when
+its value is false, so operators do not edit rule files:
+`prometheusRules.configReloadAlert.enabled` for
+`heartbeat-config-reload.rules.yml`. `prometheusRules.enabled: false` leaves
+out every rule. `make rules-check` validates the
 rules and runs their promtool unit tests (`files/prometheus/rules/tests/`). A Go
 test fails if a rule, rule test, dashboard, script or metrics doc names a SQL
-Server metric the probe catalog does not emit or an OutSystems metric the
-collector does not export, or if a rule or dashboard reads a counter without
-`rate()` or `increase()`.
+Server metric the probe catalog does not emit, an OutSystems metric or a
+collector self-metric (`heartbeat_collector_*`) the collector does not export,
+or if a rule or dashboard reads a counter without `rate()` or `increase()`.
 
 ## Known gaps
 

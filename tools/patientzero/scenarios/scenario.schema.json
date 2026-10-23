@@ -42,6 +42,10 @@
       "uniqueItems": true,
       "description": "Entry points by Heartbeat's operation label; empty or absent for all."
     },
+    "module": {
+      "enum": ["PatientZero_API", "PatientZero_App", "PatientZero_Web"],
+      "description": "A PatientZero module (eSpace): PatientZero_Web serves OrderList, PatientZero_App PlaceOrder, PatientZero_API GetOrders."
+    },
     "ratio": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
     "step": {
       "type": "object",
@@ -58,7 +62,7 @@
       "additionalProperties": false,
       "required": ["type"],
       "properties": {
-        "type": { "enum": ["latency", "errors"], "description": "A type from the fault registry (README.md, \"Fault registry\")." },
+        "type": { "enum": ["latency", "errors", "deploy", "sql-latency", "rotation", "commit-delay", "log-flood", "restart", "outage"], "description": "A type from the fault registry (README.md, \"Fault registry\")." },
         "params": { "type": "object" }
       },
       "allOf": [
@@ -98,6 +102,103 @@
             },
             "required": ["params"]
           }
+        },
+        {
+          "if": { "properties": { "type": { "const": "deploy" } } },
+          "then": {
+            "properties": {
+              "params": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["module"],
+                "anyOf": [{ "required": ["error_ratio"] }, { "required": ["delay"] }],
+                "properties": {
+                  "module": { "$ref": "#/$defs/module" },
+                  "error_ratio": { "$ref": "#/$defs/ratio", "description": "Share of the module's requests the new version fails." },
+                  "exception": { "type": "string", "maxLength": 200, "description": "The error row's Message; .NET's NullReferenceException message by default." },
+                  "delay": { "$ref": "#/$defs/duration", "description": "Added to every request of the module; at most 1m." }
+                }
+              }
+            },
+            "required": ["params"]
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "sql-latency" } } },
+          "then": {
+            "properties": {
+              "params": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["delay"],
+                "properties": {
+                  "entry_points": { "$ref": "#/$defs/entryPoints" },
+                  "delay": { "$ref": "#/$defs/duration", "description": "How much longer the business statement runs in SQL Server; delay plus jitter at most 1m." },
+                  "jitter": { "$ref": "#/$defs/duration", "description": "A random extra delay up to this." },
+                  "ratio": { "$ref": "#/$defs/ratio", "default": 1, "description": "Share of the requests slowed." }
+                }
+              }
+            },
+            "required": ["params"]
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "rotation" } } },
+          "then": {
+            "properties": {
+              "params": { "type": "object", "additionalProperties": false, "maxProperties": 0, "description": "None: every log type's views move one cycle table on." }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "commit-delay" } } },
+          "then": {
+            "properties": {
+              "params": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["delay"],
+                "properties": {
+                  "delay": { "$ref": "#/$defs/duration", "description": "How long every request's log rows wait before they are committed; at most 10m." }
+                }
+              }
+            },
+            "required": ["params"]
+          }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["restart", "outage"] } } },
+          "then": {
+            "properties": {
+              "params": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["workload"],
+                "properties": {
+                  "workload": { "enum": ["db-collector", "loki", "otel-collector", "sqlserver"], "description": "The Heartbeat StatefulSet of that name, or SQL Server's container. A cluster fault: the host agent of the run applies it." }
+                }
+              }
+            },
+            "required": ["params"]
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "log-flood" } } },
+          "then": {
+            "properties": {
+              "params": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["rows"],
+                "properties": {
+                  "entry_points": { "$ref": "#/$defs/entryPoints" },
+                  "rows": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Extra general rows each request logs." },
+                  "bytes": { "type": "integer", "minimum": 1, "maximum": 2000, "default": 1000, "description": "Length of each extra row's Message." }
+                }
+              }
+            },
+            "required": ["params"]
+          }
         }
       ]
     },
@@ -110,6 +211,23 @@
         "promql": { "type": "string", "minLength": 1, "description": "An instant PromQL query, run against Prometheus." },
         "logql": { "type": "string", "minLength": 1, "description": "An instant LogQL metric query, run against Loki, such as sum(count_over_time({...} |= \"x\" [2m])). A log query (lines, no metric) fails the evaluation." },
         "alert": { "type": "string", "minLength": 1, "description": "An alert name in Alertmanager." },
+        "delivery": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["log_types"],
+          "description": "A delivery check: Loki holds exactly the log rows PatientZero committed with an Instant from the start of from_step to the end of to_step, less those held back longer than lost_after. Its window opens at or after the end of to_step.",
+          "properties": {
+            "log_types": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "enum": ["cyclic_job", "error", "extension", "general", "integration", "mobile_request", "request_event", "screen"] }
+            },
+            "from_step": { "$ref": "#/$defs/name", "description": "The step whose start opens the rows' window; the first step by default." },
+            "to_step": { "$ref": "#/$defs/name", "description": "The step whose end closes the rows' window; the last step by default." },
+            "lost_after": { "$ref": "#/$defs/duration", "description": "Rows a commit-delay fault held back longer than this must be missing from Loki: committed past the collector's lag, they are never read. Without it every row must be there." }
+          }
+        },
         "labels": {
           "type": "object",
           "propertyNames": { "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$" },
@@ -132,15 +250,23 @@
         }
       },
       "oneOf": [
-        { "required": ["promql"], "not": { "anyOf": [{ "required": ["logql"] }, { "required": ["alert"] }] } },
-        { "required": ["logql"], "not": { "anyOf": [{ "required": ["promql"] }, { "required": ["alert"] }] } },
-        { "required": ["alert"], "not": { "anyOf": [{ "required": ["promql"] }, { "required": ["logql"] }] } }
+        { "required": ["promql"], "not": { "anyOf": [{ "required": ["logql"] }, { "required": ["alert"] }, { "required": ["delivery"] }] } },
+        { "required": ["logql"], "not": { "anyOf": [{ "required": ["promql"] }, { "required": ["alert"] }, { "required": ["delivery"] }] } },
+        { "required": ["alert"], "not": { "anyOf": [{ "required": ["promql"] }, { "required": ["logql"] }, { "required": ["delivery"] }] } },
+        { "required": ["delivery"], "not": { "anyOf": [{ "required": ["promql"] }, { "required": ["logql"] }, { "required": ["alert"] }] } }
       ],
       "allOf": [
         {
           "if": { "required": ["alert"] },
-          "then": { "required": ["state"], "not": { "required": ["condition"] } },
-          "else": { "required": ["condition"], "not": { "anyOf": [{ "required": ["state"] }, { "required": ["labels"] }] } }
+          "then": { "required": ["state"], "not": { "required": ["condition"] } }
+        },
+        {
+          "if": { "anyOf": [{ "required": ["promql"] }, { "required": ["logql"] }] },
+          "then": { "required": ["condition"], "not": { "anyOf": [{ "required": ["state"] }, { "required": ["labels"] }] } }
+        },
+        {
+          "if": { "required": ["delivery"] },
+          "then": { "not": { "anyOf": [{ "required": ["condition"] }, { "required": ["state"] }, { "required": ["labels"] }] } }
         }
       ]
     }

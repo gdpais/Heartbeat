@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=scenario.schema.json
+version: 1
+name: collector-outage
+description: >-
+  The db-collector is down for 3 minutes while the load runs (its StatefulSet
+  scaled to 0). Prometheus finds it through its headless Service, so with no
+  pod it has no target at all: up has no series and HeartbeatServiceDown,
+  which needs up == 0, does not fire. Once it is back it reads the 3 minutes
+  it missed from the watermarks it saved, and Loki ends with every row
+  PatientZero committed, once.
+load: steady
+steps:
+  - name: before
+    duration: 1m
+  - name: down
+    duration: 3m
+    fault:
+      type: outage
+      params: {workload: db-collector}
+  - name: after
+    duration: 2m
+signals:
+  - name: collector-target-gone
+    promql: up{job="db-collector"} == 1
+    condition: absent
+    step: down
+    within: 2m
+  - name: collector-back
+    promql: max(up{job="db-collector"})
+    condition: "== 1"
+    step: down
+    from: end
+    within: 2m
+  - name: extraction-catches-up
+    promql: max(heartbeat_outsystems_extract_lag_seconds{collector="patientzero"})
+    condition: "< 120"
+    step: down
+    from: end
+    within: 4m
+  - name: every-row-once
+    delivery:
+      log_types: [screen, mobile_request, integration, general, error]
+    step: after
+    from: end
+    within: 5m

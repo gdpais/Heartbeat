@@ -27,10 +27,12 @@
 package sqlserver
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
 
+	heartbeatconfig "heartbeat/internal/config"
 	collectorexport "heartbeat/services/db-collector/internal/export"
 )
 
@@ -388,4 +390,37 @@ func (c Catalog) Get(name string) (Probe, bool) {
 // Names returns the names of every probe in the catalog, sorted.
 func (c Catalog) Names() []string {
 	return slices.Sorted(maps.Keys(c.byName))
+}
+
+// Validate rejects a sqlserver collector, enabled or not, that names a probe
+// the catalog does not have, in its default probes or a target's own.  A
+// query_template override replaces the query of a probe; it cannot add one,
+// because the catalog also holds the probe's metric descriptors.  The
+// db-collector registers it with [heartbeatconfig.WithValidator], so a typo
+// is a rejected config instead of a target that fails every cycle.
+func (c Catalog) Validate(cfg heartbeatconfig.RuntimeConfig) error {
+	for _, collector := range cfg.Collectors {
+		if collector.Kind != heartbeatconfig.KindSQLServer {
+			continue
+		}
+		if err := c.validateProbes("collector "+collector.ID, collector.Probes); err != nil {
+			return err
+		}
+		for _, target := range collector.Targets {
+			if err := c.validateProbes(fmt.Sprintf("collector %s target %s", collector.ID, target.Name), target.Probes); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateProbes checks the probes of one scope against the catalog.
+func (c Catalog) validateProbes(scope string, probes []heartbeatconfig.ProbeRuntimeConfig) error {
+	for _, probe := range probes {
+		if _, ok := c.Get(probe.Name); !ok {
+			return fmt.Errorf("%s: unknown SQL Server probe %q; probes: %s", scope, probe.Name, strings.Join(c.Names(), ", "))
+		}
+	}
+	return nil
 }

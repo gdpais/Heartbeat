@@ -284,3 +284,19 @@ func TestRunRejectsUnknownLogTypes(t *testing.T) {
 		t.Fatalf("Run error = %v", err)
 	}
 }
+
+// Run fails closed on a config that names a SQL Server probe the catalog does
+// not have (usability finding F4), and names the probes it does have.
+func TestRunRejectsUnknownSQLServerProbes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "integrations.yaml")
+	writeTestConfig(t, path, testCollector{id: "sql-a", env: "prod"})
+	content, _ := os.ReadFile(path)
+	if err := os.WriteFile(path, []byte(strings.Replace(string(content), "name: waits", "name: wiats", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := Run(context.Background(), Config{ListenAddr: "127.0.0.1:0", IntegrationsPath: path, StateDir: t.TempDir()})
+	want := `collector sql-a: unknown SQL Server probe "wiats"; probes: blocking, buffer_cache, cpu, file_io, memory_pressure, sessions, storage, throughput, waits`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Run error = %v, want it to contain %q", err, want)
+	}
+}

@@ -68,6 +68,18 @@ var (
 	apiModule = module{"PatientZero_API", 103} // Exposed REST API
 )
 
+// Modules maps each module (eSpace) to its entry points: what a deploy
+// scenario fault publishes a new version of.
+var Modules = map[string][]string{
+	webModule.Name: {EntryOrderList},
+	appModule.Name: {EntryPlaceOrder},
+	apiModule.Name: {EntryGetOrders},
+}
+
+// DefaultSlowSQL is the SlowSQL threshold PatientZero runs with: a business
+// statement that takes longer gets the platform's slow-query row.
+const DefaultSlowSQL = 200 * time.Millisecond
+
 // ordersShown is how many orders the screens and the API return.
 const ordersShown = 20
 
@@ -88,6 +100,14 @@ type Server struct {
 	Traffic *traffic.Counter
 	// Admin serves /admin/ (the scenario runner); nil serves nothing there.
 	Admin http.Handler
+	// Ledger counts the committed log rows, the known answer of a scenario's
+	// delivery checks; nil counts nothing.
+	Ledger *oslog.Ledger
+	// SlowSQL is how long a business statement may take before the request
+	// logs it as the platform does a slow query: a general row with
+	// Module_Name SLOWSQL and the Message "<statement> took <n> ms". Zero
+	// logs none.
+	SlowSQL time.Duration
 }
 
 // Handler routes the health endpoints and the entry points.
@@ -131,6 +151,8 @@ type call struct {
 	action     string
 	// name is the entry point's name in EntryPoints.
 	name string
+	// slowSQL counts the slow-query rows the call wrote.
+	slowSQL int
 }
 
 func (s *Server) begin(r *http.Request, m module, entryPoint, action, name string) *call {
@@ -172,8 +194,38 @@ func (s *Server) injectFaults(ctx context.Context, c *call) error {
 func (s *Server) observe(c *call, end time.Time, err error) {
 	s.Traffic.Observe(traffic.Request{
 		EntryPoint: c.name, User: c.Username, Session: c.Session, Duration: end.Sub(c.Start),
-		Failed: err != nil, Injected: errors.Is(err, inject.ErrInjected),
+		Failed: err != nil, Injected: errors.Is(err, inject.ErrInjected), SlowSQL: c.slowSQL,
 	})
+}
+
+// query runs one business statement of the call, named as in
+// shop.Statements. A sql-latency fault that hits the call makes it run longer
+// in SQL Server. When it succeeds after more than SlowSQL, query returns
+// the platform's slow-query row for it.
+func (s *Server) query(ctx context.Context, c *call, statement string, run func(context.Context) error) ([]oslog.Row, error) {
+	ctx = shop.WithDelay(ctx, s.Faults.SQLDelay(c.name))
+	if s.SlowSQL <= 0 {
+		return nil, run(ctx)
+	}
+	start := s.now()
+	err := run(ctx)
+	end := s.now()
+	took := end.Sub(start)
+	if err != nil || took < s.SlowSQL {
+		return nil, err
+	}
+	c.slowSQL++
+	cols := c.common()
+	cols["Instant"] = end
+	cols["Session_Id"] = c.Session
+	cols["Client_IP"] = c.ClientIP
+	cols["Message"] = fmt.Sprintf("%s took %d ms", shop.Statements[statement], took.Milliseconds())
+	cols["Message_Type"] = "Info"
+	cols["Module_Name"] = "SLOWSQL"
+	cols["Action_Name"] = c.action
+	cols["Entrypoint_Name"] = c.entryPoint
+	cols["Error_Id"] = ""
+	return []oslog.Row{{Type: "general", Columns: c.user(cols)}}, nil
 }
 
 // common are the columns every log row of the call carries.
@@ -212,7 +264,10 @@ func (s *Server) errorRow(c *call, at time.Time, err error) (oslog.Row, string) 
 	cols["Server"] = s.FrontEnd
 	cols["Entrypoint_Name"] = c.entryPoint
 	cols["Action_Name"] = c.action
-	cols["EnvironmentInformation"] = fmt.Sprintf("FrontEnd: %s, Module: %s (Id=%d)", s.FrontEnd, c.module.Name, c.module.ID)
+	// eSpaceVer is the module's running version, which a deploy fault
+	// changes.
+	cols["EnvironmentInformation"] = fmt.Sprintf("eSpaceVer: %d (Id=%d), Module: %s, FrontEnd: %s",
+		s.Faults.Version(c.module.Name), c.module.ID, c.module.Name, s.FrontEnd)
 	return oslog.Row{Type: "error", Columns: c.user(cols)}, id
 }
 
@@ -255,24 +310,80 @@ func stack(c *call, err error) string {
 	return strings.Join(frames, "\n")
 }
 
-// finish writes the call's log rows. A failed write is logged and does not
-// change the response: the platform's log service is asynchronous too.
-func (s *Server) finish(ctx context.Context, c *call, rows []oslog.Row) {
-	if err := s.Logs.Write(context.WithoutCancel(ctx), rows); err != nil {
-		s.logger().Error("writing log rows failed", "request_key", c.RequestKey, "entry_point", c.entryPoint, "err", err)
+// finish writes the call's log rows, which end at end. A failed write is
+// logged and does not change the response: the platform's log service is
+// asynchronous too. A log-flood fault adds general rows; a commit-delay
+// fault holds the rows back for a while, after the response, as a log
+// service that has fallen behind commits them late.
+func (s *Server) finish(ctx context.Context, c *call, end time.Time, rows []oslog.Row) {
+	rows = append(rows, s.flood(c, end)...)
+	if d := s.Faults.CommitDelay(); d > 0 {
+		go func() {
+			t := time.NewTimer(d)
+			defer t.Stop()
+			<-t.C
+			s.write(context.Background(), c, rows, d)
+		}()
+		return
 	}
+	s.write(context.WithoutCancel(ctx), c, rows, 0)
+}
+
+// write commits rows, and counts them in the Ledger and the run's traffic
+// once they are committed; held is how long a commit-delay fault held them
+// back.
+func (s *Server) write(ctx context.Context, c *call, rows []oslog.Row, held time.Duration) {
+	if err := s.Logs.Write(ctx, rows); err != nil {
+		s.logger().Error("writing log rows failed", "request_key", c.RequestKey, "entry_point", c.entryPoint, "err", err)
+		return
+	}
+	s.Ledger.Add(rows, held)
+	committed := map[string]int64{}
+	for _, r := range rows {
+		committed[r.Type]++
+	}
+	s.Traffic.Committed(committed)
+}
+
+// flood is the general rows a log-flood fault adds to the call: verbose
+// LogMessage calls of its module, each Message bytes long.
+func (s *Server) flood(c *call, at time.Time) []oslog.Row {
+	n, size := s.Faults.Flood(c.name)
+	rows := make([]oslog.Row, 0, n)
+	for i := 1; i <= n; i++ {
+		msg := fmt.Sprintf("%s: step %d of %d ", c.action, i, n)
+		if len(msg) < size {
+			msg += strings.Repeat(".", size-len(msg))
+		}
+		cols := c.common()
+		cols["Instant"] = at
+		cols["Session_Id"] = c.Session
+		cols["Client_IP"] = c.ClientIP
+		cols["Message"] = msg[:min(len(msg), size)]
+		cols["Message_Type"] = "Trace"
+		cols["Module_Name"] = c.module.Name
+		cols["Action_Name"] = c.action
+		cols["Entrypoint_Name"] = c.entryPoint
+		cols["Error_Id"] = ""
+		rows = append(rows, oslog.Row{Type: "general", Columns: c.user(cols)})
+	}
+	return rows
 }
 
 // Traditional web screen: OrderList, the user's newest orders.
 func (s *Server) orderList(w http.ResponseWriter, r *http.Request) {
 	c := s.begin(r, webModule, "OrderList", "Preparation", EntryOrderList)
 	var orders []shop.Order
+	var slow []oslog.Row
 	err := s.identify(r.Context(), c)
 	if err == nil {
 		err = s.injectFaults(r.Context(), c)
 	}
 	if err == nil {
-		orders, err = s.Store.Orders(r.Context(), c.UserID, ordersShown)
+		slow, err = s.query(r.Context(), c, "Orders", func(ctx context.Context) (err error) {
+			orders, err = s.Store.Orders(ctx, c.UserID, ordersShown)
+			return err
+		})
 	}
 	var page strings.Builder
 	if err == nil {
@@ -295,12 +406,12 @@ func (s *Server) orderList(w http.ResponseWriter, r *http.Request) {
 	screen["Client_IP"] = c.ClientIP
 	screen["Executed_By"] = s.FrontEnd
 	screen["Viewstate_Bytes"] = 0
-	rows := []oslog.Row{{Type: "screen", Columns: c.user(screen)}}
+	rows := append([]oslog.Row{{Type: "screen", Columns: c.user(screen)}}, slow...)
 	if err != nil {
 		row, _ := s.errorRow(c, end, err)
 		rows = append(rows, row)
 	}
-	s.finish(r.Context(), c, rows)
+	s.finish(r.Context(), c, end, rows)
 	s.observe(c, end, err)
 
 	if err != nil {
@@ -332,6 +443,7 @@ func (s *Server) placeOrder(w http.ResponseWriter, r *http.Request) {
 	c := s.begin(r, appModule, "Checkout", "PlaceOrder", EntryPlaceOrder)
 	var in placeOrderInput
 	var order shop.Order
+	var slow []oslog.Row
 	err := s.identify(r.Context(), c)
 	if err == nil {
 		if derr := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); derr != nil {
@@ -342,11 +454,14 @@ func (s *Server) placeOrder(w http.ResponseWriter, r *http.Request) {
 		err = s.injectFaults(r.Context(), c)
 	}
 	if err == nil {
-		order, err = s.Store.PlaceOrder(r.Context(), c.UserID, in.ProductID, in.Quantity)
+		slow, err = s.query(r.Context(), c, "PlaceOrder", func(ctx context.Context) (err error) {
+			order, err = s.Store.PlaceOrder(ctx, c.UserID, in.ProductID, in.Quantity)
+			return err
+		})
 	}
 	end := s.now()
 
-	var rows []oslog.Row
+	rows := slow
 	errID := ""
 	if err != nil {
 		var row oslog.Row
@@ -366,7 +481,7 @@ func (s *Server) placeOrder(w http.ResponseWriter, r *http.Request) {
 	req["Login_Id"] = c.Session
 	req["Error_Id"] = errID
 	rows = append([]oslog.Row{{Type: "mobile_request", Columns: c.user(req)}}, rows...)
-	s.finish(r.Context(), c, rows)
+	s.finish(r.Context(), c, end, rows)
 	s.observe(c, end, err)
 
 	if err != nil {
@@ -380,16 +495,20 @@ func (s *Server) placeOrder(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiOrders(w http.ResponseWriter, r *http.Request) {
 	c := s.begin(r, apiModule, "Orders", "GetOrders", EntryGetOrders)
 	var orders []shop.Order
+	var slow []oslog.Row
 	err := s.identify(r.Context(), c)
 	if err == nil {
 		err = s.injectFaults(r.Context(), c)
 	}
 	if err == nil {
-		orders, err = s.Store.Orders(r.Context(), c.UserID, ordersShown)
+		slow, err = s.query(r.Context(), c, "Orders", func(ctx context.Context) (err error) {
+			orders, err = s.Store.Orders(ctx, c.UserID, ordersShown)
+			return err
+		})
 	}
 	end := s.now()
 
-	var rows []oslog.Row
+	rows := slow
 	errID := ""
 	if err != nil {
 		var row oslog.Row
@@ -425,7 +544,7 @@ func (s *Server) apiOrders(w http.ResponseWriter, r *http.Request) {
 		{Type: "general", Columns: c.user(general)},
 		{Type: "integration", Columns: integration},
 	}, rows...)
-	s.finish(r.Context(), c, rows)
+	s.finish(r.Context(), c, end, rows)
 	s.observe(c, end, err)
 
 	if err != nil {

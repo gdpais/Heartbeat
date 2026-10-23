@@ -164,8 +164,9 @@ visible through Grafana, collected by a login that is not `sysadmin`; a failed
 target is isolated; the Watchdog alert reaches Alertmanager; an
 `outsystems_logs` collector, added by a hot reload, extracts a fixture
 `oslog_Error` table to Loki and counts the rows in Prometheus; a valid ConfigMap
-change hot-reloads without a restart; an invalid one is rejected while
-collection continues; a SQL Server outage shows as a failed target without
+change hot-reloads without a restart; an invalid one (a misspelled probe) is
+rejected while collection continues, shows in the reload metric and alert, and
+clears with the next valid one; a SQL Server outage shows as a failed target without
 restarting the collector; a collector update never runs two
 collectors (it prints the rollout time, collection gap and SQL Server session
 count); a deploy replaces a collector pod that never became Ready, and moves a

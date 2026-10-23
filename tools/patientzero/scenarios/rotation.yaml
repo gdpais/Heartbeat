@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=scenario.schema.json
+version: 1
+name: rotation
+description: >-
+  The platform's weekly log rotation, on demand, while the load runs: every
+  log type's views move one cycle table on, as they do every Friday at 23:45,
+  so the rows of the minutes before are now in the previous week's view and
+  new rows go into the next table. The collector reads both weeks' views, so
+  extraction does not fall behind and Loki ends with every row PatientZero
+  committed, each once.
+load: steady
+steps:
+  - name: before
+    duration: 2m
+  - name: rotated
+    duration: 3m
+    fault:
+      type: rotation
+signals:
+  # Each log type's extraction lag is its lag (15 s; 1 minute for screens)
+  # plus up to a 15-second poll.
+  - name: extraction-keeps-up
+    promql: max(heartbeat_outsystems_extract_lag_seconds{collector="patientzero"})
+    condition: "< 120"
+    step: rotated
+    mode: always
+    within: 3m
+  # Every row committed from the start of the run to the end of the last
+  # step, whichever week's table it is in: screen rows trail by their 1-minute
+  # lag.
+  - name: every-row-once
+    delivery:
+      log_types: [screen, mobile_request, integration, general, error]
+    step: rotated
+    from: end
+    within: 4m

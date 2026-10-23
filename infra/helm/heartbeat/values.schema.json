@@ -192,7 +192,24 @@
       "type": "object"
     },
     "prometheusRules": {
-      "type": "object"
+      "description": "Heartbeat's Prometheus rule files, in the heartbeat-prometheus-rules ConfigMap.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "configReloadAlert": {
+          "description": "The HeartbeatCollectorConfigReloadFailed alert: the db-collector rejected or could not apply its last config change. Disabled leaves its rule file out of the ConfigMap.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
     },
     "grafanaDashboards": {
       "type": "object"

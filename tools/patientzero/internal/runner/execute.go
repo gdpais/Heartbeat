@@ -11,6 +11,7 @@ import (
 
 	"heartbeat/tools/patientzero/internal/journal"
 	"heartbeat/tools/patientzero/internal/scenario"
+	"heartbeat/tools/patientzero/internal/signal"
 	"heartbeat/tools/patientzero/internal/traffic"
 )
 
@@ -66,6 +67,10 @@ type checkData struct {
 	Values      []float64         `json:"values"`
 	Series      int               `json:"series"`
 	Error       string            `json:"error,omitempty"`
+	// Delivery checks only: the rows' window and each log type's counts.
+	RowsFrom *time.Time             `json:"rows_from,omitempty"`
+	RowsTo   *time.Time             `json:"rows_to,omitempty"`
+	Delivery []signal.DeliveryCount `json:"delivery,omitempty"`
 }
 
 type runEndData struct {
@@ -77,6 +82,7 @@ type runEndData struct {
 	Requests int64          `json:"requests"`
 	Failed   int64          `json:"failed"`
 	Injected int64          `json:"injected"`
+	SlowSQL  int64          `json:"slow_sql"`
 	Users    int            `json:"users"`
 	Sessions int            `json:"sessions"`
 }
@@ -144,6 +150,10 @@ func (r *Runner) execute(ctx context.Context, u *run, j *journal.Journal, faults
 	// fault it watches has actually started or stopped.
 	began := make([]chan struct{}, len(s.Steps))
 	ended := make([]chan struct{}, len(s.Steps))
+	// When each step began and ended, written before its channel closes:
+	// a delivery check's rows' window, read once its own window has opened.
+	starts := make([]time.Time, len(s.Steps))
+	ends := make([]time.Time, len(s.Steps))
 	stepIndex := map[string]int{}
 	for i, st := range s.Steps {
 		began[i], ended[i] = make(chan struct{}), make(chan struct{})
@@ -161,7 +171,12 @@ func (r *Runner) execute(ctx context.Context, u *run, j *journal.Journal, faults
 			if sig.From == scenario.FromEnd {
 				opened = ended[stepIndex[sig.Step]]
 			}
-			d := r.check(ctx, u, i, sig, start.Add(s.Anchor(sig)), opened)
+			var rows func() signal.Window
+			if sig.Kind() == scenario.KindDelivery {
+				from, to := stepIndex[sig.Delivery.FromStep], stepIndex[sig.Delivery.ToStep]
+				rows = func() signal.Window { return signal.Window{From: starts[from], To: ends[to]} }
+			}
+			d := r.check(ctx, u, i, sig, start.Add(s.Anchor(sig)), opened, rows)
 			results[i] = d.Result
 			write(r.cfg.Now(), journal.Check, d)
 		}()
@@ -175,6 +190,7 @@ func (r *Runner) execute(ctx context.Context, u *run, j *journal.Journal, faults
 			break
 		}
 		u.update(func(s *Status) { s.Step = st.Name })
+		starts[i] = r.cfg.Now()
 		end := stepStart.Add(st.Duration.D())
 		if f := faults[i]; f != nil {
 			fd := faultData{Step: st.Name, StepIndex: i, Type: st.Fault.Type, Params: st.Fault.Params}
@@ -211,10 +227,12 @@ func (r *Runner) execute(ctx context.Context, u *run, j *journal.Journal, faults
 				u.cancel()
 				break
 			}
+			ends[i] = r.cfg.Now()
 			close(ended[i])
 		} else {
 			close(began[i])
 			sleepUntil(ctx, r.cfg.Now, end)
+			ends[i] = r.cfg.Now()
 			close(ended[i])
 		}
 		stepStart = end
@@ -234,12 +252,15 @@ func (r *Runner) execute(ctx context.Context, u *run, j *journal.Journal, faults
 	for _, res := range results {
 		counts[res]++
 	}
+	// A stopped run is stopped, even when stopping made its fault fail to
+	// start or stop (a cluster fault whose agent detached); the error is
+	// kept.
 	state := StatePassed
 	switch {
-	case runErr != "":
-		state = StateError
 	case r.isStopped(u) || r.base.Err() != nil:
 		state = StateStopped
+	case runErr != "":
+		state = StateError
 	case counts[ResultFail] > 0:
 		state = StateFailed
 	}
@@ -251,7 +272,7 @@ func (r *Runner) execute(ctx context.Context, u *run, j *journal.Journal, faults
 	}
 	write(end, journal.RunEnd, runEndData{
 		Scenario: s.Name, State: state, Error: runErr, Seconds: end.Sub(start).Seconds(), Checks: counts,
-		Requests: total.Requests, Failed: total.Failed, Injected: total.Injected,
+		Requests: total.Requests, Failed: total.Failed, Injected: total.Injected, SlowSQL: total.SlowSQL,
 		Users: total.Users, Sessions: total.Sessions,
 	})
 	if err := j.Close(); err != nil && runErr == "" {
@@ -285,7 +306,7 @@ func sleepUntil(ctx context.Context, now func() time.Time, t time.Time) bool {
 // more when the window closes. The window opens at anchor, or when opened is
 // closed if that is later (the step's fault actually on or off), and stays
 // open for sig.Within.
-func (r *Runner) check(ctx context.Context, u *run, i int, sig scenario.Signal, anchor time.Time, opened <-chan struct{}) checkData {
+func (r *Runner) check(ctx context.Context, u *run, i int, sig scenario.Signal, anchor time.Time, opened <-chan struct{}, rows func() signal.Window) checkData {
 	d := checkData{
 		Signal: sig.Name, Kind: sig.Kind(), Query: sig.Query(), Condition: sig.Condition, State: sig.State,
 		Labels: sig.Labels, Step: sig.Step, From: sig.From, Mode: sig.Mode, Within: sig.Within.String(),
@@ -309,10 +330,22 @@ func (r *Runner) check(ctx context.Context, u *run, i int, sig scenario.Signal, 
 	}
 	deadline := anchor.Add(sig.Within.D())
 	d.WindowStart, d.WindowEnd = anchor.UTC(), deadline.UTC()
+	var window signal.Window
+	if rows != nil {
+		window = rows()
+		from, to := window.From.UTC(), window.To.UTC()
+		d.RowsFrom, d.RowsTo = &from, &to
+	}
 	for {
 		at := r.cfg.Now()
 		evalCtx, cancel := context.WithTimeout(ctx, evalTimeout)
-		res, err := r.cfg.Sources.Evaluate(evalCtx, sig, at)
+		var res signal.Result
+		var err error
+		if rows != nil {
+			res, err = r.cfg.Sources.EvaluateDelivery(evalCtx, sig, window)
+		} else {
+			res, err = r.cfg.Sources.Evaluate(evalCtx, sig, at)
+		}
 		cancel()
 		if ctx.Err() != nil {
 			// Stopped mid-evaluation: the run's end, not the signal's.
@@ -322,7 +355,7 @@ func (r *Runner) check(ctx context.Context, u *run, i int, sig scenario.Signal, 
 		d.Attempts++
 		evaluated := at.UTC()
 		d.EvaluatedAt = &evaluated
-		d.Values, d.Series, d.Error = nonNilValues(res.Values), res.Series, ""
+		d.Values, d.Series, d.Delivery, d.Error = nonNilValues(res.Values), res.Series, res.Delivery, ""
 		if err != nil {
 			d.Error = err.Error()
 		}

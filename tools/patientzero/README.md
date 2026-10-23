@@ -13,9 +13,10 @@ the Heartbeat module, chart, images or releases.
 
 > **Status:** first slice [16.5]: the service, its two databases on the
 > sandbox SQL Server, three entry points, k6 load, and the scenario runner
-> with its run journal and two in-process faults. The ingest and SLO
-> scenarios, timers, extension calls, the fake REST partner and the
-> compressed calendar come later. The logging schema is the collector
+> with its run journal, seven in-process and two cluster faults, delivery
+> checks, the SLO scenarios and the ingest scenarios but a backfill. Timers,
+> extension calls, the fake REST partner and the rest of the compressed
+> calendar come later. The logging schema is the collector
 > fixtures', the DDL of a surveyed OutSystems 11 logging database.
 
 ## Run it on kind
@@ -68,7 +69,11 @@ connection's peer without it).
 | Exposed REST API `Orders.GetOrders` | `GET /PatientZero_API/rest/Orders/orders` | The user's newest orders | `integration` (exposed, `Source` is the caller) and `general` (the API's own message, which carries the user and session the integration log has no columns for) |
 
 A failed request adds an `error` row under the same `Request_Key`, and the
-other rows' `Error_Id` points at it. An unknown product or a quantity below 1
+other rows' `Error_Id` points at it; its `EnvironmentInformation` names the
+module's version (`eSpaceVer`), which a scenario's bad deploy changes. A
+business statement that takes more than 200 ms adds the platform's
+slow-query row, a `general` row with `Module_Name` `SLOWSQL`
+([scenarios](scenarios/README.md#fault-registry)). An unknown product or a quantity below 1
 fails `PlaceOrder` with HTTP 400. Every user is a `Customer` row in the
 business database, created on first use; its id is the `User_Id` in the logs.
 
@@ -111,8 +116,10 @@ whole day, split evenly over its 24 hours).
   session, with the session id `<run>.v<n>.<session number>`. A session opens
   the order list, then opens it again or places an order, with think time
   between steps and a pause between sessions. One session in ten is
-  anonymous: it only opens the order list. 3% of orders name an unknown
-  product, so they get HTTP 400 and an `error` row.
+  anonymous: it only opens the order list. 0.3% of orders name an unknown
+  product, so they get HTTP 400 and an `error` row: about 0.07% of all
+  requests, inside the 99.9% objective of Heartbeat's
+  [SLO alerts](../../docs/architecture/application-observability.md#slos-and-alerts).
 - **Partners.** `partner.<k>` call the exposed REST API from `10.30.0.<k>`,
   with no session: each call gets a new one, as a stateless API client does.
 - **Run id.** `<profile>-<UTC start time>`, printed at the start, begins
@@ -147,11 +154,21 @@ requests it served, and each check's result
 ```bash
 make patientzero-scenario                        # list them
 make patientzero-scenario NAME=checkout-errors   # run one with its load; exits 0 if every signal showed
+make patientzero-scenario NAME=bad-deploy        # the error budget alerts, in Alertmanager (about 19 minutes)
+make patientzero-scenario NAME=slow-sql          # the latency budget alerts (about 25 minutes)
+make patientzero-scenario NAME=rotation          # the weekly rotation; Loki must hold every row
 ```
 
-The journal is saved to `.tmp/patientzero-scenarios/<run>.jsonl`. Faults
-that act on other workloads (restarts, outages) run in a host-side runner
-that comes with the ingest scenarios.
+The journal is saved to `.tmp/patientzero-scenarios/<run>.jsonl`. The
+ingest scenarios (`rotation`, `log-backlog`, `late-commits`, `log-growth`)
+check that Loki holds exactly the rows PatientZero committed, which it
+counts as it writes them
+([delivery checks](scenarios/README.md#delivery-checks)). Faults that act
+on other workloads (`restarts`, `loki-outage`, `otel-outage`,
+`collector-outage`, `sqlserver-outage`) need the kubeconfig and Docker,
+which PatientZero does not have: `make patientzero-scenario` applies them
+when PatientZero asks, as the run's host agent
+([cluster faults](scenarios/README.md#cluster-faults)).
 
 ## Production-sized logging database
 

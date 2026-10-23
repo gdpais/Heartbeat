@@ -60,6 +60,9 @@ type chartProfile struct {
 	// goMemLimit is the collector's GOMEMLIMIT; empty means 204MiB, 80% of
 	// the default 256Mi limit, and "-" means none.
 	goMemLimit string
+	// configReloadAlertOff means prometheusRules.configReloadAlert.enabled
+	// is false: the rules ConfigMap must not hold the reload alert.
+	configReloadAlertOff bool
 	// wantError, when set, is part of the error helm must fail with; nothing
 	// else is checked.
 	wantError string
@@ -409,6 +412,20 @@ var chartProfiles = []chartProfile{
 		present:        []string{"StatefulSet/db-collector", "Deployment/grafana"},
 		collectorPeers: []string{bundledPrometheusPeer},
 	},
+	{
+		// The reload alert is turned off with a value, not by editing rule
+		// files; every other rule stays.
+		name:                 "config-reload-alert-disabled",
+		set:                  []string{"prometheusRules.configReloadAlert.enabled=false"},
+		present:              []string{"ConfigMap/heartbeat-prometheus-rules"},
+		collectorPeers:       []string{bundledPrometheusPeer},
+		configReloadAlertOff: true,
+	},
+	{
+		name:      "config-reload-alert-misspelled",
+		inline:    "prometheusRules: {configReloadAlrt: {enabled: false}}",
+		wantError: "values don't meet the specifications of the schema",
+	},
 }
 
 // Cluster-scoped kinds: the chart must install into a namespace it does not
@@ -579,6 +596,7 @@ func TestChartProfiles(t *testing.T) {
 			checkLokiLabelPolicy(t, objects)
 			checkGrafanaGzip(t, objects)
 			checkNotes(t, profile)
+			checkConfigReloadAlert(t, objects, profile.configReloadAlertOff)
 		})
 	}
 }
@@ -616,6 +634,44 @@ func checkNotes(t *testing.T, profile chartProfile) {
 		if strings.Contains(notes, unwanted) {
 			t.Errorf("NOTES contain %q:\n%s", unwanted, notes)
 		}
+	}
+}
+
+// checkConfigReloadAlert checks that the rules ConfigMap, when rendered,
+// holds HeartbeatCollectorConfigReloadFailed unless off, and the chart's
+// other alerts either way.
+func checkConfigReloadAlert(t *testing.T, objects map[string]object, off bool) {
+	t.Helper()
+	rules, ok := objects["ConfigMap/heartbeat-prometheus-rules"]
+	if !ok {
+		return
+	}
+	alerts := map[string]bool{}
+	for file, content := range rules.Data {
+		var doc struct {
+			Groups []struct {
+				Rules []struct {
+					Alert string `yaml:"alert"`
+				} `yaml:"rules"`
+			} `yaml:"groups"`
+		}
+		mustUnmarshal(t, content, &doc)
+		for _, group := range doc.Groups {
+			for _, rule := range group.Rules {
+				if rule.Alert != "" {
+					alerts[rule.Alert] = true
+				}
+			}
+		}
+		if file == "heartbeat-config-reload.rules.yml" && off {
+			t.Errorf("rules ConfigMap holds %s with prometheusRules.configReloadAlert.enabled=false", file)
+		}
+	}
+	if got := alerts["HeartbeatCollectorConfigReloadFailed"]; got == off {
+		t.Errorf("HeartbeatCollectorConfigReloadFailed in the rules ConfigMap: %v, want %v", got, !off)
+	}
+	if !alerts["HeartbeatServiceDown"] || !alerts["Watchdog"] {
+		t.Errorf("rules ConfigMap lost the chart's other alerts: %v", alerts)
 	}
 }
 

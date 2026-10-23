@@ -65,7 +65,12 @@ are actually running, and collectors that are not running (crashed or failed)
 are restarted even if their config is unchanged. If applying fails part-way,
 the applied steps are rolled back in reverse order; if the rollback also fails,
 `runtime_diverged` is set and `/readyz` returns 503 until a later reload
-succeeds.
+succeeds. Unknown SQL Server probe names and OutSystems log types are invalid
+too: `internal/app` registers both catalogs' `Validate` with the config
+manager, and the runtime check stays as a backstop. Every load and reload is
+exported as `heartbeat_collector_config_*` metrics, and a rejected or failed
+one fires `HeartbeatCollectorConfigReloadFailed`
+([config reload metrics](../../docs/reference/metrics-and-endpoints.md#config-reloads)).
 
 ## Failure Isolation And Readiness
 

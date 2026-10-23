@@ -1,6 +1,7 @@
-# promtool unit tests for heartbeat.rules.yml; run with `make rules-check`.
+# promtool unit tests for the chart's rule files; run with `make rules-check`.
 rule_files:
   - ../heartbeat.rules.yml
+  - ../heartbeat-config-reload.rules.yml
 
 evaluation_interval: 1m
 
@@ -101,6 +102,34 @@ tests:
             exp_annotations:
               summary: "db-collector logs in to dev/db1 as a sysadmin-equivalent login"
               description: "The collector login for db1 is a member of sysadmin or holds CONTROL SERVER. Give it only VIEW SERVER STATE and VIEW ANY DEFINITION."
+
+  - name: A rejected config reload alerts after 2 minutes and clears on the next good one
+    interval: 1m
+    input_series:
+      # Loaded, rejected at 2m, fixed at 6m.
+      - series: 'heartbeat_collector_config_last_reload_successful{instance="10.244.0.7:8082",job="db-collector"}'
+        values: '1 1 0 0 0 0 1 1'
+    alert_rule_test:
+      - alertname: HeartbeatCollectorConfigReloadFailed
+        eval_time: 1m
+        exp_alerts: []
+      # Pending, not firing, a minute after the rejection.
+      - alertname: HeartbeatCollectorConfigReloadFailed
+        eval_time: 3m
+        exp_alerts: []
+      - alertname: HeartbeatCollectorConfigReloadFailed
+        eval_time: 4m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: 10.244.0.7:8082
+              job: db-collector
+            exp_annotations:
+              summary: "db-collector 10.244.0.7:8082 did not apply its last config change"
+              description: "The db-collector rejected or could not apply its last config reload and still runs the last good config: the change has not taken effect. The reason is last_reload_err in GET /admin/config, and the \"config reload rejected\" or \"config reload failed\" line in the pod log. Fix the config and apply it again; the alert clears on the next successful reload. If the file itself is invalid, a restarted pod does not start until it is fixed."
+      - alertname: HeartbeatCollectorConfigReloadFailed
+        eval_time: 6m
+        exp_alerts: []
 
   - name: OutSystems request error ratio covers user-facing requests only
     interval: 1m

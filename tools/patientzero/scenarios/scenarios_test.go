@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"heartbeat/tools/patientzero/internal/app"
+	"heartbeat/tools/patientzero/internal/cluster"
 	"heartbeat/tools/patientzero/internal/inject"
 	"heartbeat/tools/patientzero/internal/scenario"
 	"heartbeat/tools/patientzero/scenarios"
@@ -16,7 +17,8 @@ import (
 // registry is the registry PatientZero's main builds.
 func registry() *scenario.Registry {
 	reg := scenario.NewRegistry()
-	inject.Register(reg, &inject.Injector{}, app.EntryPoints)
+	inject.Register(reg, &inject.Injector{}, app.Modules)
+	cluster.Register(reg, nil)
 	return reg
 }
 
@@ -103,6 +105,18 @@ func TestSchemaMatchesValidation(t *testing.T) {
 	if got := strings(t, path(t, s, "$defs", "entryPoints", "items", "enum")); !slices.Equal(got, entryPoints) {
 		t.Errorf("schema entry points %v, app.EntryPoints %v", got, entryPoints)
 	}
+	var modules []string
+	for m := range app.Modules {
+		modules = append(modules, m)
+	}
+	sort.Strings(modules)
+	if got := strings(t, path(t, s, "$defs", "module", "enum")); !slices.Equal(got, modules) {
+		t.Errorf("schema modules %v, app.Modules %v", got, modules)
+	}
+	logTypes := slices.Sorted(slices.Values(scenario.LogTypes))
+	if got := strings(t, path(t, s, "$defs", "signal", "properties", "delivery", "properties", "log_types", "items", "enum")); !slices.Equal(got, logTypes) {
+		t.Errorf("schema delivery log types %v, scenario.LogTypes %v", got, logTypes)
+	}
 	loads := slices.Sorted(slices.Values(scenario.LoadProfiles))
 	if got := strings(t, path(t, s, "properties", "load", "enum")); !slices.Equal(got, loads) {
 		t.Errorf("schema load profiles %v, scenario.LoadProfiles %v", got, loads)
@@ -117,11 +131,32 @@ func TestSchemaMatchesValidation(t *testing.T) {
 	allOf, _ := path(t, s, "$defs", "fault", "allOf").([]any)
 	var described []string
 	for _, a := range allOf {
-		described = append(described, path(t, a.(map[string]any), "if", "properties", "type", "const").(string))
-		if path(t, a.(map[string]any), "if", "properties", "type", "const") == "errors" {
-			max := number(t, path(t, a.(map[string]any), "then", "properties", "params", "properties", "message", "maxLength"))
+		cond := path(t, a.(map[string]any), "if", "properties", "type").(map[string]any)
+		if c, ok := cond["const"].(string); ok {
+			described = append(described, c)
+		} else {
+			described = append(described, strings(t, cond["enum"])...)
+			workloads := strings(t, path(t, a.(map[string]any), "then", "properties", "params", "properties", "workload", "enum"))
+			if want := slices.Sorted(slices.Values(cluster.Workloads)); !slices.Equal(workloads, want) {
+				t.Errorf("schema workloads %v, cluster.Workloads %v", workloads, want)
+			}
+		}
+		if path(t, a.(map[string]any), "if", "properties", "type", "const") == "log-flood" {
+			params := path(t, a.(map[string]any), "then", "properties", "params", "properties").(map[string]any)
+			if rows := number(t, path(t, params, "rows", "maximum")); rows != inject.MaxFloodRows {
+				t.Errorf("schema log-flood rows maximum %d, inject.MaxFloodRows %d", rows, inject.MaxFloodRows)
+			}
+			if bytes := number(t, path(t, params, "bytes", "maximum")); bytes != inject.MaxFloodBytes {
+				t.Errorf("schema log-flood bytes maximum %d, inject.MaxFloodBytes %d", bytes, inject.MaxFloodBytes)
+			}
+		}
+		for typ, field := range map[string]string{"errors": "message", "deploy": "exception"} {
+			if path(t, a.(map[string]any), "if", "properties", "type", "const") != typ {
+				continue
+			}
+			max := number(t, path(t, a.(map[string]any), "then", "properties", "params", "properties", field, "maxLength"))
 			if max != inject.MaxMessageLen {
-				t.Errorf("schema errors message maxLength %d, inject.MaxMessageLen %d", max, inject.MaxMessageLen)
+				t.Errorf("schema %s %s maxLength %d, inject.MaxMessageLen %d", typ, field, max, inject.MaxMessageLen)
 			}
 		}
 	}

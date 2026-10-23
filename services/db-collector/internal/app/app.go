@@ -33,6 +33,7 @@ import (
 	collectorexport "heartbeat/services/db-collector/internal/export"
 	"heartbeat/services/db-collector/internal/export/otlp"
 	catalogoutsystems "heartbeat/services/db-collector/internal/probes/outsystems"
+	catalogsqlserver "heartbeat/services/db-collector/internal/probes/sqlserver"
 )
 
 // collectorKinds are the collector kinds this service runs.
@@ -123,22 +124,36 @@ func defaultTimeouts() timeouts {
 // pollers, closes pooled database connections, and only then returns. Every
 // step is bounded (see defaultTimeouts). Run returns nil on a clean shutdown.
 func Run(ctx context.Context, cfg Config) error {
+	deps, err := newRunDeps(cfg)
+	if err != nil {
+		return err
+	}
+	return run(ctx, deps)
+}
+
+// newRunDeps loads the config, failing closed on an invalid file, and builds
+// the production collaborators of run.
+func newRunDeps(cfg Config) (runDeps, error) {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	}
-	logTypes := catalogoutsystems.DefaultCatalog()
-	configManager, err := heartbeatconfig.NewManager(cfg.IntegrationsPath, heartbeatconfig.WithValidator(logTypes.Validate))
+	configManager, err := newConfigManager(cfg.IntegrationsPath)
 	if err != nil {
-		return err
+		return runDeps{}, err
 	}
 	registry, probeMetrics, err := newRegistry()
 	if err != nil {
-		return err
+		return runDeps{}, err
 	}
+	configMetrics, err := newConfigMetrics(registry, configManager.Snapshot)
+	if err != nil {
+		return runDeps{}, err
+	}
+	configMetrics.observe(nil) // the startup load
 	logMetrics, err := outsystems.NewMetrics(registry)
 	if err != nil {
-		return err
+		return runDeps{}, err
 	}
 	exporter := collectorexport.NewPrometheusExporter(registry)
 	manager := connector.NewManager(connector.EnvCredentialResolver{})
@@ -152,10 +167,11 @@ func Run(ctx context.Context, cfg Config) error {
 		heartbeatconfig.KindOutSystemsLogs: logs,
 	}
 	runner := collectors.NewRunner(executor, exporter, collectors.LoggingEvidenceSink{}).WithLogger(logger).WithProbeMetrics(probeMetrics)
-	return run(ctx, runDeps{
+	return runDeps{
 		cfg:           cfg,
 		logger:        logger,
 		configManager: configManager,
+		configMetrics: configMetrics,
 		registry:      registry,
 		newLifecycle: func(parent context.Context) *pollerLifecycle {
 			return newPollerLifecycle(parent, runner, logger)
@@ -170,7 +186,17 @@ func Run(ctx context.Context, cfg Config) error {
 			return manager.Close()
 		},
 		timeouts: defaultTimeouts(),
-	})
+	}, nil
+}
+
+// newConfigManager loads the integrations file at path with every check the
+// db-collector applies, at startup and on each reload: the loader's own,
+// then the names of the SQL Server probes and OutSystems log types, which
+// only the embedded catalogs know.
+func newConfigManager(path string) (*heartbeatconfig.Manager, error) {
+	return heartbeatconfig.NewManager(path,
+		heartbeatconfig.WithValidator(catalogsqlserver.DefaultCatalog().Validate),
+		heartbeatconfig.WithValidator(catalogoutsystems.DefaultCatalog().Validate))
 }
 
 // runDeps are the collaborators of run, injectable for tests.
@@ -178,6 +204,9 @@ type runDeps struct {
 	cfg           Config
 	logger        *slog.Logger
 	configManager *heartbeatconfig.Manager
+	// configMetrics, when set, counts every reload; Run has already counted
+	// the startup load.
+	configMetrics *configMetrics
 	registry      *prometheus.Registry
 	// newLifecycle builds the poller supervisor under parent.
 	newLifecycle func(parent context.Context) *pollerLifecycle
@@ -208,6 +237,7 @@ func run(ctx context.Context, deps runDeps) error {
 	lifecycle := deps.newLifecycle(context.WithoutCancel(ctx))
 	svc := newService(deps.configManager, lifecycle, logger, deps.cfg.AdminToken, deps.timeouts)
 	svc.warnings = startupWarnings(deps.cfg, logger)
+	svc.configMetrics = deps.configMetrics
 	server := &http.Server{Addr: deps.cfg.ListenAddr, Handler: routes(deps.registry, svc), ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
@@ -246,6 +276,8 @@ type service struct {
 	// warnings are the insecure settings found at startup, listed in GET
 	// /admin/config.
 	warnings []startupWarning
+	// configMetrics counts reloads by result; nil counts nothing.
+	configMetrics *configMetrics
 
 	// initialized is set once the initial reconcile has launched every
 	// collector.
@@ -393,17 +425,17 @@ func (s *service) handleReload(w http.ResponseWriter, r *http.Request) {
 	// out must not cancel (and roll back) a reload halfway. s.reload still
 	// bounds it with timeouts.reload.
 	summary, err := s.reload(context.WithoutCancel(r.Context()), "admin")
-	response := reloadResponse{Result: "ok", Summary: summary}
+	response := reloadResponse{Result: reloadResult(err), Summary: summary}
 	status := http.StatusOK
 	if err != nil {
 		response.Error = err.Error()
-		switch {
-		case errors.Is(err, heartbeatconfig.ErrInvalidCandidate):
-			status, response.Result = http.StatusBadRequest, "invalid_candidate"
-		case errors.Is(err, heartbeatconfig.ErrReloadBusy):
-			status, response.Result = http.StatusServiceUnavailable, "busy"
+		switch response.Result {
+		case reloadInvalidCandidate:
+			status = http.StatusBadRequest
+		case reloadBusy:
+			status = http.StatusServiceUnavailable
 		default:
-			status, response.Result = http.StatusInternalServerError, "apply_failed"
+			status = http.StatusInternalServerError
 			rolledBack := rollbackSucceeded(err)
 			response.RolledBack = &rolledBack
 		}
@@ -503,6 +535,7 @@ func (s *service) reload(parent context.Context, trigger string) (reloadSummary,
 		}
 		return heartbeatconfig.ReconcileWithRollback(ctx, s.lifecycle, diff, s.timeouts.rollback)
 	})
+	s.configMetrics.observe(err)
 	attrs := []any{
 		"trigger", trigger, "duration", s.now().Sub(start).String(), "config_version", snapshot.Config.Version,
 		"added", summary.Added, "updated", summary.Updated, "removed", summary.Removed,

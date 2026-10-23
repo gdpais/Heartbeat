@@ -1,0 +1,48 @@
+# yaml-language-server: $schema=scenario.schema.json
+version: 1
+name: late-commits
+description: >-
+  The platform's log service falls 90 seconds behind for 3 minutes: every
+  request's log rows are committed a minute and a half after the request.
+  That is past the collector's lag (15 seconds; 1 minute for screens), and
+  the collector never reads behind its watermark, so those rows never reach
+  Loki: the loss ADR 0008 accepts for rows committed past the lag. What
+  Heartbeat shows is PatientZero's extracted rows stopping while its users
+  are still served. Rows committed on time again, after the fault, all
+  arrive.
+load: steady
+steps:
+  - name: before
+    duration: 1m
+  - name: behind
+    duration: 3m
+    fault:
+      type: commit-delay
+      params:
+        delay: 90s
+  - name: after
+    duration: 3m
+signals:
+  # Within about 2 minutes of the fault, the last on-time rows have been
+  # read and left the 1-minute rate; the rows committed late are never read.
+  - name: extracted-rows-stop
+    promql: sum(rate(heartbeat_outsystems_extract_rows_total{collector="patientzero"}[1m]))
+    condition: "< 0.1"
+    step: behind
+    within: 3m
+  - name: extracted-rows-return
+    promql: sum(rate(heartbeat_outsystems_extract_rows_total{collector="patientzero"}[1m]))
+    condition: "> 2"
+    step: behind
+    from: end
+    within: 3m
+  # Loki holds every row of the run except those committed past the lag,
+  # which are exactly the rows the fault held: 90 seconds is more than any
+  # log type's lag plus its 15-second poll, and 10 seconds would not be.
+  - name: only-the-late-rows-are-lost
+    delivery:
+      log_types: [screen, mobile_request, integration, general, error]
+      lost_after: 30s
+    step: after
+    from: end
+    within: 4m
