@@ -252,12 +252,15 @@ func (r *Runner) execute(ctx context.Context, u *run, j *journal.Journal, faults
 	for _, res := range results {
 		counts[res]++
 	}
+	// A stopped run is stopped, even when stopping made its fault fail to
+	// start or stop (a cluster fault whose agent detached); the error is
+	// kept.
 	state := StatePassed
 	switch {
-	case runErr != "":
-		state = StateError
 	case r.isStopped(u) || r.base.Err() != nil:
 		state = StateStopped
+	case runErr != "":
+		state = StateError
 	case counts[ResultFail] > 0:
 		state = StateFailed
 	}

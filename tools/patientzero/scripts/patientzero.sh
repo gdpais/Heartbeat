@@ -651,13 +651,16 @@ pod_ready() {
 	[ "$(kubectl_ -n "$HEARTBEAT_NAMESPACE" get pod "$1" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ]
 }
 
+# The agent's waits give up after 4 minutes, inside the 5 PatientZero waits
+# for an answer, so the run records why.
+
 # wait_replaced <pod> <uid>: waits until a pod of that name, another than
 # uid, is Ready.
 wait_replaced() {
 	i=0
 	until uid_=$(pod_uid "$1") && [ -n "$uid_" ] && [ "$uid_" != "$2" ] && pod_ready "$1"; do
 		i=$((i + 1))
-		[ "$i" -le 150 ] || { echo "$1 was not replaced and Ready within 5 minutes"; return 1; }
+		[ "$i" -le 120 ] || { echo "$1 was not replaced and Ready within 4 minutes"; return 1; }
 		sleep 2
 	done
 }
@@ -666,7 +669,7 @@ wait_sqlserver() {
 	i=0
 	until sqlserver_healthy; do
 		i=$((i + 1))
-		[ "$i" -le 60 ] || { echo "$SQLSERVER_CONTAINER did not become healthy within 5 minutes"; return 1; }
+		[ "$i" -le 48 ] || { echo "$SQLSERVER_CONTAINER did not become healthy within 4 minutes"; return 1; }
 		sleep 5
 	done
 }
@@ -678,7 +681,7 @@ end_outage() {
 		docker start "$SQLSERVER_CONTAINER" >/dev/null && wait_sqlserver || return 1
 	else
 		kubectl_ -n "$HEARTBEAT_NAMESPACE" scale "statefulset/$1" --replicas=1 >/dev/null &&
-			kubectl_ -n "$HEARTBEAT_NAMESPACE" rollout status "statefulset/$1" --timeout=5m >/dev/null || return 1
+			kubectl_ -n "$HEARTBEAT_NAMESPACE" rollout status "statefulset/$1" --timeout=4m >/dev/null || return 1
 	fi
 	grep -vx "$1" "$work/outages" >"$work/outages.new" || true
 	mv "$work/outages.new" "$work/outages"

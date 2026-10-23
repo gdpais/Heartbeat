@@ -137,8 +137,8 @@ func TestHostAgentFailuresEndTheRun(t *testing.T) {
 	if time.Since(began) > time.Second {
 		t.Fatal("a detached agent's run waited for it")
 	}
-	if st, _ := r.Status(); st.State != StateError && st.State != StateStopped {
-		t.Fatalf("run %s", st.State)
+	if st, _ := r.Status(); st.State != StateStopped || !strings.Contains(st.Error, ErrNoAgent.Error()) {
+		t.Fatalf("run %s %q, want stopped, with the detached agent named", st.State, st.Error)
 	}
 }
 

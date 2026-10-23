@@ -30,8 +30,10 @@ steps:
   - name: after
     duration: 1m
 signals:
-  # HeartbeatServiceDown needs 2 minutes down (for: 2m); a restart is back
-  # within one.
+  # HeartbeatServiceDown needs 2 minutes of up == 0 (for: 2m); the OTel
+  # Collector's restart is back within one. It covers only the OTel
+  # Collector here: the db-collector has no scrape target at all while its
+  # pod is gone (collector-outage), and Loki is not in the rule.
   - name: no-service-down
     alert: HeartbeatServiceDown
     state: resolved
