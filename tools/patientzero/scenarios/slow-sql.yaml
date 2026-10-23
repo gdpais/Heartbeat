@@ -23,14 +23,15 @@ steps:
         jitter: 1s
 signals:
   # Preconditions. The alerts start quiet, so the run sees them go from
-  # resolved to firing. The slowed requests are about 60% of all requests,
-  # and the burn-rate windows reach back 1 and 6 hours: with at most 15,000
-  # requests (about 35 minutes of steady load) in the hour before, the
-  # 1-hour slow ratio passes 14.4% within 12 minutes, and with at most 45,000
-  # in the 6 hours before, the 6-hour one passes 6% within 11 minutes and
-  # stays above it for the slow burn's 15. A run right after another
-  # slow-sql fails here: wait for its slow burn to resolve (about 50
-  # minutes).
+  # resolved to firing. The slowed requests are about 60% of all requests
+  # (about 270 a minute), and the burn-rate windows reach back 1 and 6
+  # hours: with at most 12,000 requests (about 30 minutes of steady load) in
+  # the hour before, the 1-hour slow ratio passes 14.4% within 10 minutes, so
+  # the fast burn fires during the fault (on kind, 13 minutes in after 14,400
+  # requests); with at most 45,000 in the 6 hours before, the 6-hour one
+  # passes 6% within 11 minutes and stays above it for the slow burn's 15
+  # (22 minutes in after 41,800). A run right after another slow-sql fails
+  # here: wait for its slow burn to resolve (about 50 minutes).
   - name: fast-burn-quiet-before
     alert: OutSystemsLatencyBudgetBurnFast
     labels: {application: PatientZero}
@@ -49,7 +50,7 @@ signals:
     promql: >-
       sum(increase(heartbeat_outsystems_operations_total{application="PatientZero",log_type=~"screen|mobile_request|integration"}[1h]))
       or vector(0)
-    condition: "< 15000"
+    condition: "< 12000"
     step: baseline
     within: 30s
   - name: history-leaves-room-for-the-slow-burn
@@ -88,16 +89,18 @@ signals:
     within: 5m
 
   # The alerts, as Alertmanager has them. The fast burn needs 2 minutes over
-  # its threshold (for: 2m) on both its windows; it resolves once the 5-minute
-  # window no longer holds the slow requests. The slow burn needs 15 minutes
-  # (for: 15m); it resolves only once the slow requests leave its 30-minute
-  # window, after the run.
+  # its threshold (for: 2m) on both its windows, and must fire during the
+  # fault, or fast-burn-resolves, which opens at its end, would pass without
+  # having seen it fire; it resolves once the 5-minute window no longer
+  # holds the slow requests. The slow burn needs 15 minutes (for: 15m); it
+  # resolves only once the slow requests leave its 30-minute window, after
+  # the run.
   - name: fast-burn-fires
     alert: OutSystemsLatencyBudgetBurnFast
     labels: {application: PatientZero, severity: critical}
     state: firing
     step: slow
-    within: 16m
+    within: 15m
   - name: fast-burn-resolves
     alert: OutSystemsLatencyBudgetBurnFast
     labels: {application: PatientZero}
@@ -122,4 +125,4 @@ signals:
     labels: {application: PatientZero, severity: warning}
     state: firing
     step: slow
-    within: 28m
+    within: 30m
