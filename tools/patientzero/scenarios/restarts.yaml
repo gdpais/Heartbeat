@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=scenario.schema.json
+version: 1
+name: restarts
+description: >-
+  The db-collector, the OTel Collector and Loki are restarted one after the
+  other while the load runs: each pod is deleted and its StatefulSet starts
+  a new one. The db-collector resumes from the watermarks it saved, the OTel
+  Collector sends the request its queue kept on disk first, and while Loki
+  is away the collector waits instead of failing. Loki ends with every row
+  PatientZero committed, once, and no restart is long enough to alert.
+load: steady
+steps:
+  - name: before
+    duration: 1m
+  - name: db-collector
+    duration: 2m
+    fault:
+      type: restart
+      params: {workload: db-collector}
+  - name: otel-collector
+    duration: 2m
+    fault:
+      type: restart
+      params: {workload: otel-collector}
+  - name: loki
+    duration: 2m
+    fault:
+      type: restart
+      params: {workload: loki}
+  - name: after
+    duration: 1m
+signals:
+  # HeartbeatServiceDown needs 2 minutes down (for: 2m); a restart is back
+  # within one.
+  - name: no-service-down
+    alert: HeartbeatServiceDown
+    state: resolved
+    step: before
+    mode: always
+    within: 8m
+  - name: loki-discards-nothing
+    alert: LokiDiscardingLogs
+    state: resolved
+    step: before
+    mode: always
+    within: 8m
+  - name: every-row-once
+    delivery:
+      log_types: [screen, mobile_request, integration, general, error]
+    step: after
+    from: end
+    within: 5m
