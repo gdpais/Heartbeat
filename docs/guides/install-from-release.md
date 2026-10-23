@@ -1,0 +1,293 @@
+# Installing a Release
+
+How to install, upgrade and remove Heartbeat from a published
+[GitHub release](https://github.com/gdpais/Heartbeat/releases), with Helm and
+no source checkout. Each release publishes:
+
+| Artifact | Where |
+| --- | --- |
+| Helm chart | `oci://ghcr.io/gdpais/charts/heartbeat`, version `X.Y.Z` |
+| DB collector image | `ghcr.io/gdpais/heartbeat/db-collector:X.Y.Z`, for `linux/amd64` and `linux/arm64` |
+
+Both are public: no registry login is needed. The release notes list each
+artifact's digest. The chart also installs pinned Prometheus, Alertmanager,
+Grafana, Loki and OpenTelemetry Collector from their own registries
+([what the chart deploys](kubernetes-local.md#what-the-chart-deploys)).
+
+To work on Heartbeat itself, use [local development](local-development.md)
+instead. Production deploys the same chart from ECR through Argo CD
+([ADR 0005](../architecture/decisions/0005-production-delivery-and-operations-defaults.md)).
+
+## What you need
+
+- A Kubernetes cluster. CI tests Kubernetes 1.36 on kind.
+- Helm 4.2 and kubectl. The chart also renders with Helm 3, but installs are
+  tested with Helm 4.
+- A default StorageClass. The release asks for five volumes, 20.25 GiB in all
+  (listed under [Uninstall](#uninstall)).
+- Memory: the pods request about 0.8 GiB, and their limits add up to about
+  3.3 GiB.
+- A CNI that enforces NetworkPolicy (kindnet, Calico, Cilium, Amazon VPC CNI
+  with network policy on). Without one the chart's policies are accepted and
+  drop nothing.
+
+The commands below use the namespace `heartbeat` and the release name
+`heartbeat`. Any names work, but install one release per namespace: the
+object names are fixed.
+
+```bash
+VERSION=X.Y.Z   # the release to install, without the v
+```
+
+## 1. Create the namespace and Secrets
+
+The chart never creates Secrets
+([ADR 0005](../architecture/decisions/0005-production-delivery-and-operations-defaults.md)),
+so create these two first. Without them the collector and Grafana pods wait in
+`CreateContainerConfigError`.
+
+```bash
+kubectl create namespace heartbeat
+# Bearer token for the collector's admin endpoints.
+kubectl -n heartbeat create secret generic heartbeat-runtime \
+  --from-env-file=<(printf 'admin-token=%s\n' "$(openssl rand -hex 32)")
+# Grafana's admin login.
+kubectl -n heartbeat create secret generic grafana-admin \
+  --from-env-file=<(printf 'admin-user=admin\nadmin-password=%s\n' "$(openssl rand -base64 24)")
+```
+
+The values reach `kubectl` through a pipe, not its command line. To read one
+back: `kubectl -n heartbeat get secret grafana-admin -o jsonpath='{.data.admin-password}' | base64 -d`.
+[Kubernetes delivery](kubernetes-local.md#secrets) lists every Secret the
+chart reads and where kind and production get them.
+
+## 2. Pin the release
+
+Put your values in a file and keep it: every `helm upgrade` passes it again.
+Start with the image digest from the release notes' *Published artifacts*
+table:
+
+```yaml
+# heartbeat.yaml
+dbCollector:
+  image:
+    # The sha256 after the @ in the db-collector row of the release notes.
+    digest: sha256:<digest>
+```
+
+Without it the chart runs `ghcr.io/gdpais/heartbeat/db-collector:X.Y.Z`, the
+image of its own version. The digest names exactly the build the release
+lists; a digest wins over a tag.
+
+## 3. Install
+
+```bash
+helm install heartbeat oci://ghcr.io/gdpais/charts/heartbeat --version "$VERSION" \
+  --namespace heartbeat -f heartbeat.yaml --wait --timeout 10m
+```
+
+Helm prints `Pulled: ghcr.io/gdpais/charts/heartbeat:X.Y.Z` and a
+`Digest: sha256:...`; check it against the chart row of the release notes.
+It then prints the chart's notes: the Secrets it needs, how to check the
+install and how to reach Grafana. `helm show readme oci://ghcr.io/gdpais/charts/heartbeat --version "$VERSION"`
+prints the chart's README.
+
+If a value was wrong, fix it in `heartbeat.yaml` and upgrade with it:
+
+```bash
+helm upgrade heartbeat oci://ghcr.io/gdpais/charts/heartbeat --version "$VERSION" \
+  --namespace heartbeat -f heartbeat.yaml --wait --timeout 10m
+```
+
+A collector pod that never became Ready is replaced by that upgrade; there is
+no pod to delete by hand.
+
+## 4. Check that it works
+
+```bash
+kubectl -n heartbeat get pods   # every pod Running, every container ready
+kubectl -n heartbeat port-forward svc/db-collector 8082:8082 &
+curl -s localhost:8082/readyz   # {"status":"ready"}
+HEARTBEAT_ADMIN_TOKEN=$(kubectl -n heartbeat get secret heartbeat-runtime -o jsonpath='{.data.admin-token}' | base64 -d)
+# The header goes to curl on stdin, so the token stays off its command line.
+printf 'Authorization: Bearer %s\n' "$HEARTBEAT_ADMIN_TOKEN" | curl -s -H @- localhost:8082/admin/config |
+  jq '{version, status: .readiness.status, warnings}'
+kubectl -n heartbeat port-forward svc/grafana 3000:3000 &
+# later: kill %1 %2 stops both port-forwards
+```
+
+The admin call prints `version`, the SHA-256 of the active config, the
+readiness `status`, and `warnings`, empty unless an insecure setting is on:
+
+```json
+{
+  "version": "<64 hex characters>",
+  "status": "ready",
+  "warnings": []
+}
+```
+
+Use free local ports. If something on your machine already holds
+`127.0.0.1:8082` or `:3000`, `kubectl port-forward` listens on `[::1]` only,
+without an error, and `localhost` may reach the other program. Then forward
+another port, for example `18082:8082`, and use it in the URLs.
+
+Then open http://localhost:3000 and log in with the `grafana-admin` Secret's
+user and password. The *Heartbeat* folder holds the dashboards. They show
+data once a SQL Server target is added (next step).
+
+`/readyz` says whether the collector itself works, not the databases: it
+stays ready while every SQL Server target fails
+([endpoints](../reference/metrics-and-endpoints.md#db-collector-8082)).
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `CreateContainerConfigError` on `db-collector-0` or the Grafana pod | A Secret from step 1 is missing or lacks a key; `kubectl -n heartbeat describe pod <pod>` names it. Create it; the pod then starts by itself |
+| `ImagePullBackOff` or `ErrImagePull` | The digest in `heartbeat.yaml` is wrong, or the cluster cannot reach `ghcr.io` (or Docker Hub, `quay.io` for the engines) |
+| Pods `Pending` with an unbound claim | No default StorageClass. Make one the default, or name a class for each claim in the values |
+| `values don't meet the specifications of the schema` | A value is misspelt or out of range; the message gives its path. Unknown top-level keys are rejected too |
+
+## 5. Add a SQL Server target
+
+[Onboarding SQL Server targets](database-targets.md) is the reference: the
+login and its grants, with the T-SQL to create it (step 1), the target entry
+(step 2) and the credential (step 3). With a release install:
+
+```bash
+SQL_LOGIN=heartbeat_collector   # the login the DBAs created
+# Its password, not echoed. The Secret key comes from credential_ref: env/finance-prod.
+read -rs SQL_PASSWORD
+kubectl -n heartbeat create secret generic heartbeat-sqlserver-credentials \
+  --from-env-file=<(printf 'HEARTBEAT_CREDENTIAL_ENV_FINANCE_PROD=%s:%s\n' "$SQL_LOGIN" "$SQL_PASSWORD")
+unset SQL_PASSWORD
+```
+
+In a second values file, `targets.yaml`, name that Secret and write the whole
+`integrations.collectors` list as in
+[step 2](database-targets.md#2-add-the-target), with the target under
+`targets`. Lists replace rather than merge, so the list must be complete.
+
+```yaml
+# targets.yaml
+dbCollector:
+  credentials:
+    existingSecret: heartbeat-sqlserver-credentials
+integrations:
+  collectors:
+    - id: sqlserver-default
+      # ... as in step 2 of the onboarding guide
+```
+
+Apply it with every values file, in the same order each time:
+
+```bash
+helm upgrade heartbeat oci://ghcr.io/gdpais/charts/heartbeat --version "$VERSION" \
+  --namespace heartbeat -f heartbeat.yaml -f targets.yaml --wait --timeout 10m
+```
+
+Naming the Secret for the first time restarts the collector, which ends the
+step 4 port-forward (`error: lost connection to pod`): start it again. A later
+change to the target list hot-reloads without a restart; a change to the
+Secret's contents needs `kubectl -n heartbeat rollout restart statefulset/db-collector`.
+Then check the target as in [step 5](database-targets.md#5-verify).
+
+The collector verifies the server's TLS certificate. SQL Server's default
+self-signed certificate fails with `x509: certificate is not valid for any
+names`, and a certificate from a private CA cannot be trusted yet
+([certificates](database-targets.md#certificates)).
+
+## Upgrade
+
+Read the release notes first, and set the new digest in `heartbeat.yaml`.
+Check that your values pass the new chart's schema, which touches nothing in
+the cluster, then upgrade:
+
+```bash
+VERSION=X.Y.Z
+helm template heartbeat oci://ghcr.io/gdpais/charts/heartbeat --version "$VERSION" \
+  --namespace heartbeat -f heartbeat.yaml -f targets.yaml >/dev/null
+helm upgrade heartbeat oci://ghcr.io/gdpais/charts/heartbeat --version "$VERSION" \
+  --namespace heartbeat -f heartbeat.yaml -f targets.yaml --wait --timeout 10m --rollback-on-failure
+```
+
+Pass every values file you have, in the same order each time (`targets.yaml`
+exists once you have done step 5), rather than `--reuse-values`, so the new
+chart's defaults apply to everything you did not set.
+
+`--rollback-on-failure` (`--atomic` in Helm 3) rolls a failed upgrade back to
+the last revision that worked: Helm applies that revision's objects again and
+deletes the ones the failed upgrade added. Without it, a failed upgrade is
+left half done. Helm applies every object it can, keeps the objects the new
+version removes, and marks the revision `failed`. Fix the cause and upgrade
+again, or go back with `helm rollback heartbeat`.
+
+**From 0.1.0.** Do these once, before the first upgrade, in this order:
+
+1. Update your values files. The release notes list the values renamed or
+   removed since 0.1.0. Remove `otelGateway`: the OTel gateway is gone
+   ([ADR 0009](../architecture/decisions/0009-remove-the-otel-gateway.md)),
+   and unknown top-level values now fail. The `helm template` check above
+   must pass before the next step, so that the upgrade cannot fail on the
+   values after it.
+2. Delete the collector's StatefulSet, leaving its pod running:
+
+   ```bash
+   kubectl -n heartbeat delete statefulset db-collector --cascade=orphan
+   ```
+
+   It now uses `podManagementPolicy: Parallel`, so it can replace a pod that
+   never became Ready, and Kubernetes cannot change that field on an existing
+   StatefulSet.
+3. Run the upgrade above. It creates the StatefulSet again; the new
+   StatefulSet adopts the running pod and replaces it with the new version.
+   If it fails and rolls back, the rollback brings back the 0.1.0
+   StatefulSet: repeat step 2 before the next attempt.
+
+An upgrade attempted without step 2 fails with
+`StatefulSet.apps "db-collector" is invalid: spec: Forbidden`. With
+`--rollback-on-failure`, Helm then returns to 0.1.0; do steps 2 and 3. Without
+it, Helm has applied everything else and removed nothing:
+
+- the ConfigMaps are the new ones, `integrations.yaml` included;
+- Grafana and Loki run the new version, and their pods restarted;
+- the new NetworkPolicies, the `db-collector-state` and `otel-collector-queue`
+  claims and the new OTel Collector StatefulSet exist, beside the old OTel
+  Collector Deployment and the OTel gateway, which still run.
+
+The 0.1.0 collector rejects the new config (`invalid candidate config` in
+its log) and keeps collecting with its old one. Do not restart it: it reads
+the new file at startup and would exit. Do steps 2 and 3. The second upgrade
+completes the change and removes the old objects.
+
+## Uninstall
+
+```bash
+helm uninstall heartbeat --namespace heartbeat
+```
+
+This deletes every object the release created, but not the claims Kubernetes
+created for the StatefulSets' volume templates, nor what you created
+yourself:
+
+| Left behind | Size | Holds |
+| --- | --- | --- |
+| `PersistentVolumeClaim/storage-loki-0` | 10 GiB | The logs in Loki |
+| `PersistentVolumeClaim/storage-alertmanager-0` | 1 GiB | Alertmanager's silences and notification log |
+| `Secret/heartbeat-runtime`, `Secret/grafana-admin` and your credentials Secret | | Step 1 and step 5 |
+| `Namespace/heartbeat` | | |
+
+The other claims are deleted with the release, and their data with them:
+`prometheus` (8 GiB, the metric history), `db-collector-state` (256 MiB, the
+`outsystems_logs` watermarks) and `otel-collector-queue` (1 GiB). A new
+install in the same namespace reuses the two claims left behind, so Loki and
+Alertmanager start with their old data.
+
+To remove everything:
+
+```bash
+kubectl -n heartbeat delete pvc storage-loki-0 storage-alertmanager-0
+kubectl delete namespace heartbeat   # the Secrets and anything else left in it
+```
+
+With the usual `Delete` reclaim policy, deleting a claim also deletes its
+volume and data.

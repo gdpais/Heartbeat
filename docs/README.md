@@ -46,6 +46,8 @@ which is not committed.
 
 **Operators and SREs**
 
+- [Installing a release](guides/install-from-release.md): install, upgrade
+  and remove the published chart from GHCR, without a source checkout
 - [Onboarding SQL Server targets](guides/database-targets.md)
 - [Configuration reference](reference/configuration.md): `integrations.yaml` and
   environment variables

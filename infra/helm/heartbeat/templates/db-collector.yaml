@@ -15,7 +15,16 @@ metadata:
 spec:
   replicas: 1
   serviceName: db-collector-headless
-  podManagementPolicy: OrderedReady
+  # Parallel, not OrderedReady: with OrderedReady the controller never replaces
+  # a pod that did not become Ready (kubernetes/kubernetes#67250), so after a
+  # bad image or config the corrected upgrade waits forever for it. With one
+  # replica there is no order to keep; the pod name still keeps the old and
+  # new pod from running at once. The field cannot change on an existing
+  # StatefulSet, so an install made with OrderedReady (chart 0.1.0) deletes
+  # the StatefulSet once with --cascade=orphan before it upgrades
+  # (docs/guides/install-from-release.md#upgrade); scripts/kind.sh does that
+  # for kind.
+  podManagementPolicy: Parallel
   updateStrategy:
     type: RollingUpdate
   selector:

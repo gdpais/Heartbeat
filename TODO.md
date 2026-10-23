@@ -88,7 +88,10 @@ the rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Tag ruleset on all tags (not only `v*`, so later component tags are covered): no updates or deletions
 - [ ] Right after the release app exists: add a second tag ruleset on all tags, `Heartbeat-tag-creation`, with only *Restrict creations* and the release app in its bypass list, so the app can create tags but not move or delete them ([setup](CONTRIBUTING.md#releases))
 - [x] First release, `v0.1.0`: tag the phase 1 merge commit `64ac1b6`, run the `release` workflow by hand for it, check the release notes list three digests
-- [ ] Make the GHCR packages public: `heartbeat/db-collector`, `charts/heartbeat`, and `heartbeat/otel-gateway`, which only `v0.1.0` uses
+- [x] Make the GHCR packages public: `heartbeat/db-collector`, `charts/heartbeat`, and `heartbeat/otel-gateway`, which only `v0.1.0` uses. Checked 2026-10-23 without credentials: an anonymous token from `ghcr.io/token` pulls each `0.1.0` manifest (HTTP 200; 403 for a package that does not exist)
+- [x] Make the published release installable (usability test of `v0.1.0`, 2026-10-22): the chart defaults to the GHCR image, kept in step with `release.yml` by a test; `NOTES.txt` names the Secrets the chart needs and how to check the install; a chart README for `helm show readme`; the [install guide](docs/guides/install-from-release.md) covers the Secrets, image digests, SQL Server targets through `helm upgrade`, upgrades and what `helm uninstall` leaves behind; T-SQL for the collector login
+- [x] Collector StatefulSet on `podManagementPolicy: Parallel`, so a corrected upgrade replaces a pod that never became Ready; an install from `0.1.0` deletes the StatefulSet once with `--cascade=orphan` ([upgrade](docs/guides/install-from-release.md#upgrade); `scripts/kind.sh` does it on kind); `make kind-e2e` checks both
+- [x] Chart schema rejects unknown top-level values, so a misspelt key fails instead of being ignored
 
 ---
 

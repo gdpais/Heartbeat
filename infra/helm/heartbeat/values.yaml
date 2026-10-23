@@ -18,7 +18,8 @@ dbCollector:
   # The collector is a singleton: replicas are fixed at 1 until replicas can
   # share targets safely (ADR 0003). There is deliberately no replicas value.
   image:
-    repository: heartbeat/db-collector
+    # Where the release workflow publishes it (tests/chart_release_test.go).
+    repository: ghcr.io/gdpais/heartbeat/db-collector
     # Defaults to the chart appVersion. Production pins a digest instead.
     tag: ""
     digest: ""

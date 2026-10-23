@@ -66,6 +66,9 @@ type chartProfile struct {
 	// wantError, when set, is part of the error helm must fail with; nothing
 	// else is checked.
 	wantError string
+	// notes are lines the NOTES.txt that helm install prints must contain,
+	// and notesAbsent text it must not.
+	notes, notesAbsent []string
 }
 
 // bundledPrometheusPeer is the bundled Prometheus server as a NetworkPolicy
@@ -133,6 +136,17 @@ var chartProfiles = []chartProfile{
 		present:         []string{"StatefulSet/db-collector", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "StatefulSet/loki", "StatefulSet/otel-collector", "PersistentVolumeClaim/otel-collector-queue", "NetworkPolicy/db-collector"},
 		collectorPeers:  []string{bundledPrometheusPeer},
 		backendPolicies: defaultBackendPolicies,
+		notes: []string{
+			"- heartbeat-runtime (key admin-token)",
+			"- grafana-admin (keys admin-user, admin-password)",
+			"kubectl -n heartbeat get secret heartbeat-runtime grafana-admin\n",
+			"kubectl -n heartbeat rollout status statefulset/db-collector",
+			"kubectl -n heartbeat port-forward svc/grafana 3000:3000",
+			"No SQL Server target is configured yet",
+			"https://github.com/gdpais/heartbeat/blob/v",
+			"/docs/guides/install-from-release.md",
+		},
+		notesAbsent: []string{"HEARTBEAT_CREDENTIAL_", "WARNING"},
 	},
 	{
 		name:    "kind",
@@ -156,6 +170,12 @@ var chartProfiles = []chartProfile{
 		values:         []string{"kind.yaml", "sqlserver-dev.yaml"},
 		present:        []string{"StatefulSet/db-collector", "NetworkPolicy/db-collector"},
 		collectorPeers: []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
+		notes: []string{
+			"- heartbeat-sqlserver-dev-credentials (a HEARTBEAT_CREDENTIAL_<REF> key per credential_ref)",
+			"get secret heartbeat-runtime heartbeat-sqlserver-dev-credentials grafana-admin\n",
+			"WARNING: dbCollector.sqlserver.trustServerCertificate is true",
+		},
+		notesAbsent: []string{"No SQL Server target"},
 	},
 	{
 		name:            "production-example",
@@ -175,6 +195,9 @@ var chartProfiles = []chartProfile{
 		present:        []string{"StatefulSet/db-collector", "NetworkPolicy/db-collector"},
 		absent:         []string{"Deployment/prometheus", "Deployment/grafana"},
 		collectorPeers: []string{"ns{kubernetes.io/metadata.name=monitoring} pods{app.kubernetes.io/name=prometheus}"},
+		// Without the bundled Grafana its Secret and port-forward are not listed.
+		notes:       []string{"kubectl -n heartbeat get secret heartbeat-runtime\n"},
+		notesAbsent: []string{"grafana"},
 		backendPolicies: withPairs(withoutPeers(defaultBackendPolicies, bundledPrometheusPeer, grafanaPeer), nil,
 			"prometheus", "alertmanager"),
 	},
@@ -375,6 +398,21 @@ var chartProfiles = []chartProfile{
 		wantError: "values don't meet the specifications of the schema",
 	},
 	{
+		// A misspelt top-level key fails instead of being ignored (v0.1.0
+		// deployed the collector anyway).
+		name:      "unknown-top-level-key",
+		set:       []string{"dbColector.enabled=false"},
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		// Helm's global values still reach the subcharts, for example a
+		// registry mirror.
+		name:           "global-values",
+		set:            []string{"global.imageRegistry=registry.example.internal"},
+		present:        []string{"StatefulSet/db-collector", "Deployment/grafana"},
+		collectorPeers: []string{bundledPrometheusPeer},
+	},
+	{
 		// The reload alert is turned off with a value, not by editing rule
 		// files; every other rule stays.
 		name:                 "config-reload-alert-disabled",
@@ -423,12 +461,19 @@ func helmTemplate(t *testing.T, profile chartProfile) []byte {
 // runHelmTemplate renders profile and returns stdout, stderr and the error.
 func runHelmTemplate(t *testing.T, profile chartProfile) ([]byte, string, error) {
 	t.Helper()
+	return runHelm(t, profile, "template")
+}
+
+// runHelm runs a helm command (template, or install --dry-run=client) on the
+// chart with profile's values and returns stdout, stderr and the error.
+func runHelm(t *testing.T, profile chartProfile, command ...string) ([]byte, string, error) {
+	t.Helper()
 	root := repoRoot(t)
 	helm := os.Getenv("HELM")
 	if helm == "" {
 		helm = "helm"
 	}
-	args := []string{"template", "heartbeat", filepath.Join(root, "infra/helm/heartbeat"), "--namespace", "heartbeat"}
+	args := slices.Concat(command, []string{"heartbeat", filepath.Join(root, "infra/helm/heartbeat"), "--namespace", "heartbeat"})
 	for _, file := range profile.values {
 		args = append(args, "-f", filepath.Join(root, "infra/helm/values", file))
 	}
@@ -444,12 +489,32 @@ func runHelmTemplate(t *testing.T, profile chartProfile) ([]byte, string, error)
 	}
 	var stderr bytes.Buffer
 	cmd := exec.Command(helm, args...)
+	// An empty kubeconfig: no command here may reach a cluster.
+	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
+	if err := os.WriteFile(kubeconfig, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Env = append(os.Environ(), "KUBECONFIG="+kubeconfig)
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
 		err = fmt.Errorf("%s %s: %w", helm, strings.Join(args, " "), err)
 	}
 	return out, stderr.String(), err
+}
+
+// isHelm3 reports whether HELM (or helm) is Helm 3.
+func isHelm3(t *testing.T) bool {
+	t.Helper()
+	helm := os.Getenv("HELM")
+	if helm == "" {
+		helm = "helm"
+	}
+	out, err := exec.Command(helm, "version", "--short").Output()
+	if err != nil {
+		t.Fatalf("%s version: %v", helm, err)
+	}
+	return strings.HasPrefix(strings.TrimSpace(string(out)), "v3.")
 }
 
 func parseObjects(t *testing.T, rendered []byte) map[string]object {
@@ -518,6 +583,7 @@ func TestChartProfiles(t *testing.T) {
 
 			checkIntegrations(t, objects)
 			checkCollectorSingleton(t, objects)
+			checkStatefulSetPolicies(t, objects)
 			checkCollectorGoMemLimit(t, objects, profile.goMemLimit)
 			checkInClusterEndpoints(t, objects)
 			checkCollectorNetworkPolicy(t, objects, profile.collectorPeers)
@@ -529,8 +595,45 @@ func TestChartProfiles(t *testing.T) {
 			checkLogIdentifiers(t, objects)
 			checkLokiLabelPolicy(t, objects)
 			checkGrafanaGzip(t, objects)
+			checkNotes(t, profile)
 			checkConfigReloadAlert(t, objects, profile.configReloadAlertOff)
 		})
+	}
+}
+
+// helm install prints NOTES.txt. It must name the Secrets the release needs,
+// which the chart never creates (ADR 0005), and how to check the install:
+// v0.1.0 printed nothing, and a first install sat in
+// CreateContainerConfigError with no hint why. helm template does not render
+// NOTES, so this is a client-side dry run, which contacts no cluster.
+func checkNotes(t *testing.T, profile chartProfile) {
+	t.Helper()
+	if len(profile.notes) == 0 && len(profile.notesAbsent) == 0 {
+		return
+	}
+	out, stderr, err := runHelm(t, profile, "install", "--dry-run=client")
+	if err != nil && strings.Contains(stderr, "cluster unreachable") && isHelm3(t) {
+		// Helm 3 may look for a cluster even in a client-side dry run; the
+		// Helm 4 run checks the notes.
+		t.Log("NOTES not checked: Helm 3 cannot render them without a cluster")
+		return
+	}
+	if err != nil {
+		t.Fatalf("helm install --dry-run=client: %v\n%s", err, stderr)
+	}
+	_, notes, ok := strings.Cut(string(out), "\nNOTES:\n")
+	if !ok {
+		t.Fatalf("helm install printed no NOTES:\n%s", out)
+	}
+	for _, want := range profile.notes {
+		if !strings.Contains(notes, want) {
+			t.Errorf("NOTES do not contain %q:\n%s", want, notes)
+		}
+	}
+	for _, unwanted := range profile.notesAbsent {
+		if strings.Contains(notes, unwanted) {
+			t.Errorf("NOTES contain %q:\n%s", unwanted, notes)
+		}
 	}
 }
 
@@ -613,6 +716,36 @@ func checkCollectorSingleton(t *testing.T, objects map[string]object) {
 	}
 	if image := spec.Template.Spec.Containers[0].Image; strings.HasSuffix(image, ":") {
 		t.Errorf("db-collector image %q has no tag", image)
+	}
+}
+
+// The one-replica StatefulSets must use the Parallel pod management policy.
+// With OrderedReady the controller never replaces a pod that did not become
+// Ready (kubernetes/kubernetes#67250): after a bad image or config, the
+// corrected upgrade waits for the broken pod forever and needs a manual pod
+// delete. Alertmanager's chart has no setting for it and keeps OrderedReady.
+func checkStatefulSetPolicies(t *testing.T, objects map[string]object) {
+	t.Helper()
+	for _, name := range []string{"db-collector", "otel-collector", "loki"} {
+		sts, ok := objects["StatefulSet/"+name]
+		if !ok {
+			continue
+		}
+		var spec struct {
+			PodManagementPolicy string `yaml:"podManagementPolicy"`
+			UpdateStrategy      struct {
+				Type string `yaml:"type"`
+			} `yaml:"updateStrategy"`
+		}
+		if err := sts.Spec.Decode(&spec); err != nil {
+			t.Fatal(err)
+		}
+		if spec.PodManagementPolicy != "Parallel" {
+			t.Errorf("StatefulSet/%s podManagementPolicy = %q, want Parallel", name, spec.PodManagementPolicy)
+		}
+		if spec.UpdateStrategy.Type != "" && spec.UpdateStrategy.Type != "RollingUpdate" {
+			t.Errorf("StatefulSet/%s updateStrategy = %q, want RollingUpdate", name, spec.UpdateStrategy.Type)
+		}
 	}
 }
 

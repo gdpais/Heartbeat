@@ -33,7 +33,7 @@ until a service uses them (ADR 0003).
 | --- | --- | --- |
 | `GET /metrics` | none | Prometheus exposition: probe metrics and self-observability |
 | `GET /healthz` (alias `/healthcheck`) | none | Liveness only; 200 while the process serves HTTP |
-| `GET /readyz` | none | 503 until every collector finishes its first cycle, when a collector is failed or crash-looping, when a collector has not completed a cycle within 2× its interval + 10s, or when the runtime diverged after a failed rollback. A monitored database being down does **not** make it unready. The body is only `{"status":"ready"}` or `{"status":"not_ready"}`; the reasons are in `GET /admin/config`. |
+| `GET /readyz` | none | 503 until every collector finishes its first cycle, when a collector is failed or crash-looping, when a collector has not completed a cycle within 2× its interval + 10s, or when the runtime diverged after a failed rollback. A monitored database being down does **not** make it unready, even when every target fails: readiness says whether the collector itself works, so a database outage never takes it out of its Service or fails a `helm upgrade --wait`. Target health is `heartbeat_collector_target_up` and the target states below. The body is only `{"status":"ready"}` or `{"status":"not_ready"}`; the reasons are in `GET /admin/config`. |
 | `GET /admin/config` | `Authorization: Bearer $HEARTBEAT_ADMIN_TOKEN` | Diagnostics, see below |
 | `POST /admin/config/reload` | `Authorization: Bearer $HEARTBEAT_ADMIN_TOKEN` | 400 invalid config, 500 apply failure, 503 before the first reconcile or while another reload holds the lock. The body includes the error text and the readiness report |
 

@@ -148,6 +148,19 @@ replacement_ready() {
 	[ "$(collector_pod_uid)" != "$1" ] &&
 		[ "$(k -n "$NAMESPACE" get pod db-collector-0 -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" = True ]
 }
+collector_waiting_on() {
+	[ "$(k -n "$NAMESPACE" get pod db-collector-0 -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}')" = "$1" ]
+}
+collector_image() { k -n "$NAMESPACE" get pod db-collector-0 -o jsonpath='{.status.containerStatuses[0].image}'; }
+collector_policy() { k -n "$NAMESPACE" get statefulset db-collector -o jsonpath='{.spec.podManagementPolicy}'; }
+# True when db-collector-0 is Ready, not terminating, and on the StatefulSet's
+# update revision. kubectl rollout status can report a new StatefulSet done
+# while it still has to replace an adopted pod.
+collector_on_update_revision() {
+	update=$(k -n "$NAMESPACE" get statefulset db-collector -o jsonpath='{.status.updateRevision}')
+	[ -n "$update" ] && [ "$(k -n "$NAMESPACE" get pod db-collector-0 \
+		-o jsonpath='{.metadata.labels.controller-revision-hash}/{.status.conditions[?(@.type=="Ready")].status}/{.metadata.deletionTimestamp}')" = "$update/True/" ]
+}
 prometheus_answers() { [ -n "$(prom_value prometheus_tsdb_lowest_timestamp_seconds)" ]; }
 # Prints the type Prometheus scraped for a metric (counter, gauge, ...).
 metric_type() { svc_get prometheus:9090 "/api/v1/metadata?metric=$1" | jq -r --arg m "$1" '.data[$m][0].type // empty'; }
@@ -608,6 +621,48 @@ printf '      rollout %ss, collection gap %ss, max running collectors %s, max co
 [ "$max_pods" -le 1 ] || fail "$max_pods collector pods ran at once"
 [ "$max_sql" -le 2 ] || fail "$max_sql collector sessions on SQL Server: two collectors overlapped"
 pass "singleton update: never more than one collector"
+
+# ----------------------------------------------------------------------------
+step "a deploy replaces a collector pod that never became Ready"
+# A first install with a wrong image, then the corrected deploy. With the
+# OrderedReady policy the StatefulSet would wait for the broken pod forever
+# (kubernetes/kubernetes#67250) and the deploy would time out; with Parallel
+# the controller replaces it.
+helm --kube-context "$CONTEXT" -n "$NAMESPACE" upgrade heartbeat infra/helm/heartbeat \
+	--reuse-values --set dbCollector.image.tag=missing >/dev/null
+wait_for 120 "collector pod stuck on a missing image" collector_waiting_on ErrImageNeverPull
+start=$(date +%s)
+EXTRA_VALUES="$WORK/e2e-reload.yaml $base_values" scripts/kind.sh deploy >/dev/null
+case "$(collector_image)" in
+*"heartbeat/db-collector:$DB_COLLECTOR_TAG") ;;
+*) fail "db-collector runs $(collector_image) after the corrected deploy, expected tag $DB_COLLECTOR_TAG" ;;
+esac
+pass "the corrected deploy replaced the stuck pod in $(($(date +%s) - start))s, with no manual pod delete"
+
+step "a StatefulSet created with OrderedReady moves to Parallel without a restart"
+# Chart 0.1.0 created the StatefulSet with OrderedReady, which cannot change
+# in place. Recreate it that way, as Helm rendered it, and deploy: kind.sh
+# deletes it once with --cascade=orphan, the documented upgrade step, and the
+# new StatefulSet adopts the running pod. The earlier rollout restarts left a
+# restartedAt annotation that Helm does not render; the recreated template
+# drops it, so its rollout runs first and the deploy changes no template.
+k -n "$NAMESPACE" get statefulset db-collector -o json |
+	jq '.spec.podManagementPolicy = "OrderedReady" | del(.status) | .metadata |= {name, namespace, labels, annotations} |
+		del(.spec.template.metadata.annotations["kubectl.kubernetes.io/restartedAt"])' >"$WORK/statefulset-ordered.json"
+k -n "$NAMESPACE" delete statefulset db-collector --cascade=orphan --wait >/dev/null
+k -n "$NAMESPACE" create -f "$WORK/statefulset-ordered.json" >/dev/null
+[ "$(collector_policy)" = OrderedReady ] || fail "could not recreate the StatefulSet with OrderedReady"
+wait_for 180 "collector on the OrderedReady StatefulSet's revision" collector_on_update_revision
+uid_before=$(collector_pod_uid)
+k -n "$NAMESPACE" get statefulset db-collector -o json | jq -S .spec.template >"$WORK/template-before.json"
+EXTRA_VALUES="$WORK/e2e-reload.yaml $base_values" scripts/kind.sh deploy >/dev/null
+[ "$(collector_policy)" = Parallel ] || fail "db-collector StatefulSet is $(collector_policy) after the deploy, not Parallel"
+if [ "$(collector_pod_uid)" != "$uid_before" ]; then
+	k -n "$NAMESPACE" get statefulset db-collector -o json | jq -S .spec.template >"$WORK/template-after.json"
+	diff "$WORK/template-before.json" "$WORK/template-after.json" || true
+	fail "the collector pod was replaced by the policy change (pod template diff above, before -> after)"
+fi
+pass "recreated as Parallel; the collector pod kept running"
 
 # ----------------------------------------------------------------------------
 step "stateful restarts keep persistent data"

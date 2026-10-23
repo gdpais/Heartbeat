@@ -1,11 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Heartbeat chart values",
-  "description": "Validates the embedded integrations.yaml, the db-collector and backend NetworkPolicies, the db-collector state volume settings, and the OTel Collector export queue volume. properties.integrations is a copy of packages/config-schema/src/integrations.schema.json (without $schema); tests/chart_schema_test.go fails when they differ.",
+  "description": "Validates the embedded integrations.yaml, the db-collector and backend NetworkPolicies, the db-collector state volume settings, and the OTel Collector export queue volume. properties.integrations is a copy of packages/config-schema/src/integrations.schema.json (without $schema); tests/chart_schema_test.go fails when they differ. Unknown top-level keys are rejected, so a misspelt value such as dbColector fails instead of being ignored; every key values.yaml sets must be listed here (tests/chart_schema_test.go).",
   "type": "object",
   "required": [
     "integrations"
   ],
+  "additionalProperties": false,
   "properties": {
     "dbCollector": {
       "type": "object",
@@ -184,6 +185,12 @@
         }
       }
     },
+    "podSecurityContext": {
+      "type": "object"
+    },
+    "containerSecurityContext": {
+      "type": "object"
+    },
     "prometheusRules": {
       "description": "Heartbeat's Prometheus rule files, in the heartbeat-prometheus-rules ConfigMap.",
       "type": "object",
@@ -203,6 +210,29 @@
           }
         }
       }
+    },
+    "grafanaDashboards": {
+      "type": "object"
+    },
+    "global": {
+      "description": "Helm's global values, passed to every subchart.",
+      "type": "object"
+    },
+    "prometheus": {
+      "description": "Values of the prometheus subchart (Prometheus and Alertmanager), checked by its own schema.",
+      "type": "object"
+    },
+    "grafana": {
+      "description": "Values of the grafana subchart.",
+      "type": "object"
+    },
+    "loki": {
+      "description": "Values of the loki subchart, checked by its own schema.",
+      "type": "object"
+    },
+    "otelCollector": {
+      "description": "Values of the opentelemetry-collector subchart (alias otelCollector), checked by its own schema.",
+      "type": "object"
     },
     "integrations": {
       "$id": "https://heartbeat.local/schemas/integrations.schema.json",

@@ -8,8 +8,11 @@
 
 dbCollector:
   image:
-    # Loaded into the node with `kind load`; never pulled. scripts/kind.sh sets
-    # a content-derived tag, so a stale image cannot hide a code change.
+    # The image scripts/kind.sh builds, not the release image the chart
+    # defaults to. Loaded into the node with `kind load`; never pulled.
+    # scripts/kind.sh sets a content-derived tag, so a stale image cannot hide
+    # a code change.
+    repository: heartbeat/db-collector
     pullPolicy: Never
   service:
     type: NodePort

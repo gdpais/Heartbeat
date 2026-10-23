@@ -135,22 +135,22 @@ helm_upgrade() {
 		--wait --timeout 10m
 }
 
-# With the OrderedReady policy a StatefulSet does not replace a pod that never
-# became Ready (kubernetes/kubernetes#67250), so a collector crash-looping on an
-# old image keeps the new template from rolling out and helm --wait fails. The
-# policy cannot change on an existing StatefulSet, so this deletes such a pod
-# once and the controller recreates it from the new template. Returns 1 when
-# db-collector-0 is missing, Ready, terminating or already on the new revision.
-replace_stuck_collector() {
-	update=$(kubectl_ -n "$NAMESPACE" get statefulset db-collector --ignore-not-found -o jsonpath='{.status.updateRevision}')
-	[ -n "$update" ] || return 1
-	state=$(kubectl_ -n "$NAMESPACE" get pod db-collector-0 --ignore-not-found \
-		-o jsonpath='{.metadata.labels.controller-revision-hash}/{.status.conditions[?(@.type=="Ready")].status}/{.metadata.deletionTimestamp}')
-	case "$state" in
-	"" | /* | "$update"/* | */True/* | */*/?*) return 1 ;;
+# podManagementPolicy cannot change on an existing StatefulSet, and the chart
+# moved the collector from OrderedReady to Parallel. A cluster deployed before
+# that deletes the StatefulSet once and leaves its pod running
+# (--cascade=orphan); the upgrade creates it again and the new StatefulSet
+# adopts the pod, so the collector restarts only if its template changed.
+# The values are rendered first, so a deploy that would fail on them leaves
+# the StatefulSet alone. Takes helm_upgrade's arguments.
+migrate_collector_policy() {
+	policy=$(kubectl_ -n "$NAMESPACE" get statefulset db-collector --ignore-not-found -o jsonpath='{.spec.podManagementPolicy}')
+	case "$policy" in
+	"" | Parallel) return 0 ;;
 	esac
-	log "db-collector-0 is not Ready on revision ${state%%/*}, not $update; replacing it"
-	kubectl_ -n "$NAMESPACE" delete pod db-collector-0 --timeout 2m >/dev/null
+	helm template "$RELEASE" "$CHART" --namespace "$NAMESPACE" "$@" \
+		--set "dbCollector.image.tag=$DB_COLLECTOR_TAG" >/dev/null
+	log "recreating StatefulSet db-collector with podManagementPolicy Parallel (was $policy); its pod keeps running until the deploy replaces it"
+	kubectl_ -n "$NAMESPACE" delete statefulset db-collector --cascade=orphan --wait >/dev/null
 }
 
 cmd_deploy() {
@@ -180,12 +180,9 @@ cmd_deploy() {
 	for file in $EXTRA_VALUES; do
 		set -- "$@" -f "$file"
 	done
+	migrate_collector_policy "$@"
 	log "deploying release $RELEASE ($PROFILE) to $CONTEXT/$NAMESPACE"
-	if ! helm_upgrade "$@"; then
-		replace_stuck_collector || die "helm upgrade failed"
-		log "deploying release $RELEASE again"
-		helm_upgrade "$@"
-	fi
+	helm_upgrade "$@"
 	cmd_status
 }
 
