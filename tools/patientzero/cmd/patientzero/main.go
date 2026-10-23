@@ -153,6 +153,14 @@ func (c config) dsn(database string) string {
 	return u.String()
 }
 
+// ledgerCounts reads the ledger for the delivery checks.
+type ledgerCounts struct{ l *oslog.Ledger }
+
+func (c ledgerCounts) Count(_ context.Context, logType string, from, to time.Time, heldOver time.Duration) (rows, held int64, err error) {
+	n := c.l.Count(logType, from, to, heldOver)
+	return n.Rows, n.Held, nil
+}
+
 func run(log *slog.Logger) error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -197,9 +205,15 @@ func run(log *slog.Logger) error {
 	}()
 
 	// The scenario runner: the scenarios built into the binary, the
-	// in-process faults, and the admin endpoints that start them.
-	faults := &inject.Injector{}
+	// in-process faults, and the admin endpoints that start them. The
+	// ledger counts the committed log rows, the known answer of the
+	// delivery checks.
+	writer := &oslog.SQLWriter{DB: logging, Schema: oslog.NewSchema(types)}
+	ledger := &oslog.Ledger{}
+	faults := &inject.Injector{Rotator: writer}
 	counter := &traffic.Counter{}
+	cfg.sources.Application = app.Application
+	cfg.sources.Ledger = ledgerCounts{ledger}
 	registry := scenario.NewRegistry()
 	inject.Register(registry, faults, app.Modules)
 	list, err := scenario.LoadDir(scenarios.FS, ".", registry)
@@ -222,7 +236,8 @@ func run(log *slog.Logger) error {
 		Traffic:  counter,
 		Admin:    scenarioRunner.Handler(cfg.adminToken),
 		Store:    &shop.SQLStore{DB: business},
-		Logs:     &oslog.SQLWriter{DB: logging, Schema: oslog.NewSchema(types)},
+		Logs:     writer,
+		Ledger:   ledger,
 		Schema:   oslog.NewSchema(types),
 		FrontEnd: cfg.frontEnd,
 		SlowSQL:  app.DefaultSlowSQL,

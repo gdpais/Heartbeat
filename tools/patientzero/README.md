@@ -13,9 +13,11 @@ the Heartbeat module, chart, images or releases.
 
 > **Status:** first slice [16.5]: the service, its two databases on the
 > sandbox SQL Server, three entry points, k6 load, and the scenario runner
-> with its run journal, four in-process faults and the SLO scenarios. The
-> ingest scenarios, timers, extension calls, the fake REST partner and the
-> compressed calendar come later. The logging schema is the collector
+> with its run journal, seven in-process faults, delivery checks, the SLO
+> scenarios and the in-process ingest scenarios. The restart and outage
+> scenarios with their host-side runner, the backfill, timers, extension
+> calls, the fake REST partner and the rest of the compressed calendar come
+> later. The logging schema is the collector
 > fixtures', the DDL of a surveyed OutSystems 11 logging database.
 
 ## Run it on kind
@@ -155,11 +157,16 @@ make patientzero-scenario                        # list them
 make patientzero-scenario NAME=checkout-errors   # run one with its load; exits 0 if every signal showed
 make patientzero-scenario NAME=bad-deploy        # the error budget alerts, in Alertmanager (about 19 minutes)
 make patientzero-scenario NAME=slow-sql          # the latency budget alerts (about 25 minutes)
+make patientzero-scenario NAME=rotation          # the weekly rotation; Loki must hold every row
 ```
 
-The journal is saved to `.tmp/patientzero-scenarios/<run>.jsonl`. Faults
-that act on other workloads (restarts, outages) run in a host-side runner
-that comes with the ingest scenarios.
+The journal is saved to `.tmp/patientzero-scenarios/<run>.jsonl`. The
+ingest scenarios (`rotation`, `log-backlog`, `late-commits`, `log-growth`)
+check that Loki holds exactly the rows PatientZero committed, which it
+counts as it writes them
+([delivery checks](scenarios/README.md#delivery-checks)). Faults that act
+on other workloads (restarts, outages) run in a host-side runner that comes
+next.
 
 ## Production-sized logging database
 

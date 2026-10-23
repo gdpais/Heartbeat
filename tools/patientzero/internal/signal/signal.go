@@ -1,7 +1,8 @@
 // Package signal evaluates a scenario's expected signals: PromQL against
-// Prometheus, LogQL against Loki, and alerts against Alertmanager, at the
-// base URLs it is given. One evaluation is one query; the runner repeats it
-// over the signal's window.
+// Prometheus, LogQL against Loki, alerts against Alertmanager, and delivery
+// checks against Loki and the Ledger of the rows PatientZero committed, at
+// the base URLs it is given. One evaluation is one query (one per log type
+// for a delivery check); the runner repeats it over the signal's window.
 package signal
 
 import (
@@ -31,6 +32,36 @@ type Sources struct {
 	Alertmanager string
 	// Client makes the requests; one with a 10s timeout when nil.
 	Client *http.Client
+	// Application is the service_name a delivery check counts rows of in
+	// Loki, and Ledger what PatientZero committed; a delivery check needs
+	// both.
+	Application string
+	Ledger      Ledger
+}
+
+// Ledger is what PatientZero committed: the rows of one log type with an
+// Instant in (from, to], and how many of them a commit-delay fault held
+// back longer than heldOver.
+type Ledger interface {
+	Count(ctx context.Context, logType string, from, to time.Time, heldOver time.Duration) (rows, held int64, err error)
+}
+
+// Window is a delivery check's rows: those with an Instant in (From, To],
+// widened to whole seconds.
+type Window struct {
+	From time.Time
+	To   time.Time
+}
+
+// DeliveryCount is one log type's result of a delivery check.
+type DeliveryCount struct {
+	LogType string `json:"log_type"`
+	// Expected is the rows Loki must hold: those written, less those held
+	// back longer than the check's lost_after.
+	Expected int64 `json:"expected"`
+	Loki     int64 `json:"loki"`
+	Written  int64 `json:"written"`
+	Lost     int64 `json:"lost"`
 }
 
 // URLFor is the base URL of the source a signal kind reads.
@@ -38,7 +69,7 @@ func (s Sources) URLFor(kind string) string {
 	switch kind {
 	case scenario.KindPromQL:
 		return s.Prometheus
-	case scenario.KindLogQL:
+	case scenario.KindLogQL, scenario.KindDelivery:
 		return s.Loki
 	case scenario.KindAlert:
 		return s.Alertmanager
@@ -56,6 +87,71 @@ type Result struct {
 	Values []float64 `json:"values"`
 	// Series is how many values the query returned before the cut.
 	Series int `json:"series"`
+	// Delivery is a delivery check's count per log type.
+	Delivery []DeliveryCount `json:"delivery,omitempty"`
+}
+
+// EvaluateDelivery runs a delivery check once: for each of its log types,
+// the lines Loki holds of the Application with a timestamp in the window
+// (one instant count_over_time query at w.To), against what the Ledger
+// counted. It passes when they are equal for every log type, and at least
+// one row was written: a missing row or a row stored twice changes the
+// count, and a window with no rows checks nothing. The window is widened to whole
+// seconds, From down and To up, the same on both sides. Values are Loki's
+// counts, in the check's log type order.
+func (s Sources) EvaluateDelivery(ctx context.Context, sig scenario.Signal, w Window) (Result, error) {
+	d := sig.Delivery
+	if d == nil {
+		return Result{}, errors.New("not a delivery check")
+	}
+	if s.Loki == "" || s.Ledger == nil || s.Application == "" {
+		return Result{}, errors.New("a delivery check needs a Loki URL, the Ledger and the application")
+	}
+	if !w.To.After(w.From) {
+		return Result{}, fmt.Errorf("the rows' window %s to %s is empty", w.From.Format(time.RFC3339Nano), w.To.Format(time.RFC3339Nano))
+	}
+	from, to := w.From.Truncate(time.Second), w.To.Truncate(time.Second)
+	if to.Before(w.To) {
+		to = to.Add(time.Second)
+	}
+	seconds := int64(to.Sub(from) / time.Second)
+	r := Result{Pass: true}
+	for _, logType := range d.LogTypes {
+		var written, lost int64
+		var err error
+		if d.LostAfter > 0 {
+			written, lost, err = s.Ledger.Count(ctx, logType, from, to, d.LostAfter.D())
+		} else {
+			written, _, err = s.Ledger.Count(ctx, logType, from, to, 0)
+		}
+		if err != nil {
+			return Result{}, fmt.Errorf("ledger: %w", err)
+		}
+		query := fmt.Sprintf("sum(count_over_time({service_name=%s, outsystems_log_type=%s} [%ds]))",
+			strconv.Quote(s.Application), strconv.Quote(logType), seconds)
+		values, err := s.lokiQuery(ctx, s.Loki, query, to)
+		if err != nil {
+			return Result{}, fmt.Errorf("%s: %w", logType, err)
+		}
+		var lines int64
+		if len(values) > 0 {
+			lines = int64(values[0])
+		}
+		c := DeliveryCount{LogType: logType, Expected: written - lost, Loki: lines, Written: written, Lost: lost}
+		r.Pass = r.Pass && c.Loki == c.Expected
+		r.Delivery = append(r.Delivery, c)
+		r.Values = append(r.Values, float64(lines))
+	}
+	r.Series = len(r.Values)
+	var written int64
+	for _, c := range r.Delivery {
+		written += c.Written
+	}
+	if written == 0 {
+		r.Pass = false
+		return r, errors.New("PatientZero committed no rows in the window: is the load running?")
+	}
+	return r, nil
 }
 
 const maxValues = 20
@@ -67,6 +163,8 @@ func (s Sources) Evaluate(ctx context.Context, sig scenario.Signal, at time.Time
 		return Result{}, fmt.Errorf("no %s URL is configured", sourceName(sig.Kind()))
 	}
 	switch sig.Kind() {
+	case scenario.KindDelivery:
+		return Result{}, errors.New("a delivery check is evaluated over its rows' window: EvaluateDelivery")
 	case scenario.KindAlert:
 		n, err := s.activeAlerts(ctx, base, sig)
 		if err != nil {
@@ -105,7 +203,7 @@ func sourceName(kind string) string {
 	switch kind {
 	case scenario.KindPromQL:
 		return "Prometheus"
-	case scenario.KindLogQL:
+	case scenario.KindLogQL, scenario.KindDelivery:
 		return "Loki"
 	default:
 		return "Alertmanager"

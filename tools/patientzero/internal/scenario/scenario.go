@@ -69,10 +69,31 @@ type FaultSpec struct {
 
 // Signal kinds: which source a signal is read from.
 const (
-	KindPromQL = "promql"
-	KindLogQL  = "logql"
-	KindAlert  = "alert"
+	KindPromQL   = "promql"
+	KindLogQL    = "logql"
+	KindAlert    = "alert"
+	KindDelivery = "delivery"
 )
+
+// MaxDeliveryReach is how far back from the end of its window a delivery
+// check may count rows: the Ledger keeps its counts longer than this.
+const MaxDeliveryReach = 6 * time.Hour
+
+// LogTypes are the OutSystems log types a delivery check can count, as the
+// collector's outsystems_log_type label names them.
+var LogTypes = []string{"cyclic_job", "error", "extension", "general", "integration", "mobile_request", "request_event", "screen"}
+
+// Delivery is a delivery check: Loki must hold exactly the log rows
+// PatientZero committed, of each log type, with an Instant from the start
+// of step FromStep to the end of step ToStep, except the rows a
+// commit-delay fault held back longer than LostAfter, which must be
+// missing: committed past the collector's lag, they are never read.
+type Delivery struct {
+	LogTypes  []string `yaml:"log_types" json:"log_types"`
+	FromStep  string   `yaml:"from_step,omitempty" json:"from_step"`
+	ToStep    string   `yaml:"to_step,omitempty" json:"to_step"`
+	LostAfter Duration `yaml:"lost_after,omitempty" json:"lost_after,omitempty"`
+}
 
 // Anchors: whether a signal's window opens at the start or the end of its
 // step.
@@ -103,6 +124,7 @@ type Signal struct {
 	PromQL    string            `yaml:"promql,omitempty" json:"promql,omitempty"`
 	LogQL     string            `yaml:"logql,omitempty" json:"logql,omitempty"`
 	Alert     string            `yaml:"alert,omitempty" json:"alert,omitempty"`
+	Delivery  *Delivery         `yaml:"delivery,omitempty" json:"delivery,omitempty"`
 	Labels    map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 	State     string            `yaml:"state,omitempty" json:"state,omitempty"`
 	Condition string            `yaml:"condition,omitempty" json:"condition,omitempty"`
@@ -112,25 +134,35 @@ type Signal struct {
 	Mode      string            `yaml:"mode,omitempty" json:"mode,omitempty"`
 }
 
-// Kind is the signal's source: promql, logql or alert.
+// Kind is the signal's source: promql, logql, alert or delivery.
 func (s Signal) Kind() string {
 	switch {
 	case s.PromQL != "":
 		return KindPromQL
 	case s.LogQL != "":
 		return KindLogQL
+	case s.Delivery != nil:
+		return KindDelivery
 	default:
 		return KindAlert
 	}
 }
 
-// Query is the signal's expression, or the alert name.
+// Query is the signal's expression, the alert name, or what a delivery
+// check counts.
 func (s Signal) Query() string {
 	switch s.Kind() {
 	case KindPromQL:
 		return s.PromQL
 	case KindLogQL:
 		return s.LogQL
+	case KindDelivery:
+		d := s.Delivery
+		q := fmt.Sprintf("%s rows from the start of %s to the end of %s", strings.Join(d.LogTypes, ", "), d.FromStep, d.ToStep)
+		if d.LostAfter > 0 {
+			q += fmt.Sprintf(", but those committed more than %s late", d.LostAfter)
+		}
+		return q
 	default:
 		return s.Alert
 	}
@@ -292,6 +324,14 @@ func (s *Scenario) defaults() {
 		if sig.Step == "" {
 			sig.Step = anchor
 		}
+		if d := sig.Delivery; d != nil && len(s.Steps) > 0 {
+			if d.FromStep == "" {
+				d.FromStep = s.Steps[0].Name
+			}
+			if d.ToStep == "" {
+				d.ToStep = s.Steps[len(s.Steps)-1].Name
+			}
+		}
 		if sig.From == "" {
 			sig.From = FromStart
 		}
@@ -358,10 +398,15 @@ func (s *Scenario) Validate(reg *Registry) error {
 				sources++
 			}
 		}
+		if sig.Delivery != nil {
+			sources++
+		}
 		if sources != 1 {
-			add("%s: give exactly one of promql, logql or alert", where)
+			add("%s: give exactly one of promql, logql, alert or delivery", where)
 		}
 		switch sig.Kind() {
+		case KindDelivery:
+			s.validateDelivery(&sig, where, add)
 		case KindAlert:
 			if sig.State != StateFiring && sig.State != StateResolved {
 				add("%s: an alert signal needs state firing or resolved", where)
@@ -399,6 +444,65 @@ func (s *Scenario) Validate(reg *Registry) error {
 }
 
 var labelName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// validateDelivery checks a delivery signal: known log types, each once; its
+// row window's steps, in order; and a window that opens once the rows'
+// window has closed, so every row it counts has been written.
+func (s *Scenario) validateDelivery(sig *Signal, where string, add func(string, ...any)) {
+	d := sig.Delivery
+	if len(d.LogTypes) == 0 {
+		add("%s: delivery needs log_types", where)
+	}
+	seen := map[string]bool{}
+	for _, t := range d.LogTypes {
+		if !contains(LogTypes, t) {
+			add("%s: log type %q is not one of %s", where, t, strings.Join(LogTypes, ", "))
+		} else if seen[t] {
+			add("%s: log type %q is listed twice", where, t)
+		}
+		seen[t] = true
+	}
+	from, okFrom := s.StepIndex(d.FromStep)
+	to, okTo := s.StepIndex(d.ToStep)
+	if !okFrom {
+		add("%s: from_step %q is not a step of this scenario", where, d.FromStep)
+	}
+	if !okTo {
+		add("%s: to_step %q is not a step of this scenario", where, d.ToStep)
+	}
+	if okFrom && okTo && from > to {
+		add("%s: from_step %q comes after to_step %q", where, d.FromStep, d.ToStep)
+	}
+	if d.LostAfter < 0 || d.LostAfter.D() > MaxStepDuration {
+		add("%s: lost_after must be a positive duration of at most %s", where, MaxStepDuration)
+	}
+	if okTo {
+		if end, _ := s.StepStart(d.ToStep); s.Anchor(*sig) < end+s.Steps[to].Duration.D() {
+			add("%s: a delivery check's window opens at or after the end of its to_step %q", where, d.ToStep)
+		}
+	}
+	if okFrom {
+		if start, _ := s.StepStart(d.FromStep); s.Anchor(*sig)+sig.Within.D()-start > MaxDeliveryReach {
+			add("%s: a delivery check counts rows at most %s back from the end of its window", where, MaxDeliveryReach)
+		}
+	}
+	if sig.Mode == ModeAlways {
+		add("%s: a delivery check waits for Loki to catch up: mode eventually, not always", where)
+	}
+	if sig.Condition != "" || sig.State != "" || len(sig.Labels) > 0 {
+		add("%s: a delivery check has no condition, state or labels", where)
+	}
+}
+
+// StepIndex is the index of the step called name.
+func (s *Scenario) StepIndex(name string) (int, bool) {
+	for i, st := range s.Steps {
+		if st.Name == name {
+			return i, true
+		}
+	}
+	return 0, false
+}
 
 // StepStart is when step name starts, from the start of the run.
 func (s *Scenario) StepStart(name string) (time.Duration, bool) {

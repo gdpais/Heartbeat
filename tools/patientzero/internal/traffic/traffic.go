@@ -42,12 +42,15 @@ type EntryPoint struct {
 
 // Summary is the traffic between From and To.
 type Summary struct {
-	From           time.Time             `json:"from"`
-	To             time.Time             `json:"to"`
-	Requests       int64                 `json:"requests"`
-	Failed         int64                 `json:"failed"`
-	Injected       int64                 `json:"injected"`
-	SlowSQL        int64                 `json:"slow_sql"`
+	From     time.Time `json:"from"`
+	To       time.Time `json:"to"`
+	Requests int64     `json:"requests"`
+	Failed   int64     `json:"failed"`
+	Injected int64     `json:"injected"`
+	SlowSQL  int64     `json:"slow_sql"`
+	// Rows are the log rows committed in the interval, per log type, held
+	// ones when they were committed.
+	Rows           map[string]int64      `json:"rows"`
 	Users          int                   `json:"users"`
 	Sessions       int                   `json:"sessions"`
 	UsersCapped    bool                  `json:"users_capped,omitempty"`
@@ -66,7 +69,7 @@ type window struct {
 func newWindow(from time.Time, limit int) *window {
 	return &window{
 		from: from, limit: limit,
-		sum:      Summary{From: from, EntryPoints: map[string]EntryPoint{}},
+		sum:      Summary{From: from, EntryPoints: map[string]EntryPoint{}, Rows: map[string]int64{}},
 		users:    map[string]struct{}{},
 		sessions: map[string]struct{}{},
 	}
@@ -146,6 +149,22 @@ func (c *Counter) Observe(r Request) {
 	c.run.add(r)
 }
 
+// Committed counts log rows committed, per log type, if a run is active.
+func (c *Counter) Committed(rows map[string]int64) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.active {
+		return
+	}
+	for t, n := range rows {
+		c.interval.sum.Rows[t] += n
+		c.run.sum.Rows[t] += n
+	}
+}
+
 // Begin starts counting a run at now, forgetting any earlier one.
 func (c *Counter) Begin(now time.Time) {
 	c.mu.Lock()
@@ -160,7 +179,7 @@ func (c *Counter) Flush(now time.Time) Summary {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.active {
-		return Summary{From: now, To: now, EntryPoints: map[string]EntryPoint{}}
+		return Summary{From: now, To: now, EntryPoints: map[string]EntryPoint{}, Rows: map[string]int64{}}
 	}
 	s := c.interval.close(now)
 	c.interval = newWindow(now, MaxDistinctPerInterval)
@@ -173,7 +192,7 @@ func (c *Counter) End(now time.Time) (last, run Summary) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.active {
-		empty := Summary{From: now, To: now, EntryPoints: map[string]EntryPoint{}}
+		empty := Summary{From: now, To: now, EntryPoints: map[string]EntryPoint{}, Rows: map[string]int64{}}
 		return empty, empty
 	}
 	last, run = c.interval.close(now), c.run.close(now)
