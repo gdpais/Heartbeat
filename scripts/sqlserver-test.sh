@@ -15,9 +15,11 @@
 #
 # Environment:
 #   SQLSERVER_IMAGE  SQL Server image [mcr.microsoft.com/mssql/server:2022-latest]
+#   SQLSERVER_MEMORY_LIMIT_MB  SQL Server's memory cap in MB, at least 2048 [2048]
 set -eu
 
 SQLSERVER_IMAGE=${SQLSERVER_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
+SQLSERVER_MEMORY_LIMIT_MB=${SQLSERVER_MEMORY_LIMIT_MB:-2048}
 CONTAINER=heartbeat-sqlserver-test-$$
 
 log() { printf '%s\n' "$*" >&2; }
@@ -26,16 +28,24 @@ die() { log "error: $*"; exit 1; }
 cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
 
+# SQL Server does not start with less than about 2 GB.
+case "$SQLSERVER_MEMORY_LIMIT_MB" in
+"" | *[!0-9]*) die "SQLSERVER_MEMORY_LIMIT_MB must be a number of MB, not $SQLSERVER_MEMORY_LIMIT_MB" ;;
+esac
+[ "$SQLSERVER_MEMORY_LIMIT_MB" -ge 2048 ] || die "SQLSERVER_MEMORY_LIMIT_MB must be at least 2048 (SQL Server needs 2 GB), not $SQLSERVER_MEMORY_LIMIT_MB"
+
 password="Test-$(openssl rand -hex 16)"
 collector_login=heartbeat_collector
 collector_password="Test-$(openssl rand -hex 16)"
 control_password="Test-$(openssl rand -hex 16)"
 oslog_password="Test-$(openssl rand -hex 16)"
-log "starting $CONTAINER ($SQLSERVER_IMAGE)"
-# The password goes in through the environment, not the command line.
-MSSQL_SA_PASSWORD=$password docker run -d --name "$CONTAINER" \
+log "starting $CONTAINER ($SQLSERVER_IMAGE, memory capped at $SQLSERVER_MEMORY_LIMIT_MB MB)"
+# The password goes in through the environment, not the command line. The
+# cap keeps SQL Server from sizing itself to 80% of the Docker VM, next to
+# the kind clusters (scripts/kind.sh).
+MSSQL_SA_PASSWORD=$password MSSQL_MEMORY_LIMIT_MB=$SQLSERVER_MEMORY_LIMIT_MB docker run -d --name "$CONTAINER" \
 	--platform linux/amd64 -p 127.0.0.1::1433 \
-	-e ACCEPT_EULA=Y -e MSSQL_PID=Developer -e MSSQL_SA_PASSWORD \
+	-e ACCEPT_EULA=Y -e MSSQL_PID=Developer -e MSSQL_SA_PASSWORD -e MSSQL_MEMORY_LIMIT_MB \
 	--health-cmd 'SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -Q "SELECT 1" >/dev/null 2>&1 || exit 1' \
 	--health-interval 5s --health-timeout 5s --health-retries 40 --health-start-period 20s \
 	"$SQLSERVER_IMAGE" >/dev/null
@@ -47,6 +57,16 @@ until [ "$(docker inspect -f '{{.State.Health.Status}}' "$CONTAINER")" = healthy
 	[ "$i" -le 60 ] || die "$CONTAINER did not become healthy"
 	sleep 5
 done
+
+# SQL Server reports the cap as its physical memory when it applies it.
+memory_mb=$(SQLCMDPASSWORD=$password docker exec -e SQLCMDPASSWORD "$CONTAINER" \
+	/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -h -1 -W \
+	-Q "SET NOCOUNT ON; SELECT physical_memory_kb / 1024 FROM sys.dm_os_sys_info") ||
+	die "could not read SQL Server's memory from $CONTAINER"
+memory_mb=$(printf '%s' "$memory_mb" | tr -d '[:space:]')
+[ "$memory_mb" -le "$SQLSERVER_MEMORY_LIMIT_MB" ] ||
+	die "SQL Server in $CONTAINER sees $memory_mb MB, not the $SQLSERVER_MEMORY_LIMIT_MB MB cap"
+log "SQL Server sees $memory_mb MB (cap $SQLSERVER_MEMORY_LIMIT_MB MB)"
 
 log "creating the least-privilege login $collector_login"
 MSSQL_SA_PASSWORD=$password HEARTBEAT_COLLECTOR_LOGIN=$collector_login HEARTBEAT_COLLECTOR_PASSWORD=$collector_password \
