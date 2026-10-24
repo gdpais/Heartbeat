@@ -310,17 +310,20 @@ func TestLiveSlowSQL(t *testing.T) {
 		done <- w.Code
 	}()
 	// What the sessions probe counts: a session running a request, here
-	// one waiting in the business database.
-	var status, wait string
+	// one waiting in the business database. Caught before or after its
+	// WAITFOR, the request runs with no wait type (NULL), so this polls
+	// until it is seen waiting.
+	var status string
+	var wait sql.NullString
 	deadline := time.Now().Add(1500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		err := root.QueryRow(`SELECT TOP (1) s.status, r.wait_type
 			FROM sys.dm_exec_requests AS r JOIN sys.dm_exec_sessions AS s ON s.session_id = r.session_id
 			WHERE r.database_id = DB_ID(@p1) AND r.session_id <> @@SPID`, database).Scan(&status, &wait)
-		if err == nil {
+		if err == nil && wait.String == "WAITFOR" {
 			break
 		}
-		if !errors.Is(err, sql.ErrNoRows) {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			t.Fatal(err)
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -328,8 +331,8 @@ func TestLiveSlowSQL(t *testing.T) {
 	if code := <-done; code != http.StatusOK {
 		t.Fatalf("OrderList answered %d", code)
 	}
-	if status != "running" || wait != "WAITFOR" {
-		t.Fatalf("SQL Server showed the slowed request as session %q waiting %q, want running and WAITFOR", status, wait)
+	if status != "running" || wait.String != "WAITFOR" {
+		t.Fatalf("SQL Server showed the slowed request as session %q waiting %q, want running and WAITFOR", status, wait.String)
 	}
 
 	var slow []map[string]any
