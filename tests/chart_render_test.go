@@ -431,6 +431,14 @@ var chartProfiles = []chartProfile{
 		collectorPeers: []string{bundledPrometheusPeer},
 	},
 	{
+		// Under another job name absent(up{job="db-collector"}) matches
+		// nothing, so the rule is left out too.
+		name:           "collector-job-renamed",
+		set:            []string{"prometheus.scrapeConfigs.db-collector.job_name=heartbeat-collector"},
+		present:        []string{"StatefulSet/db-collector", "ConfigMap/heartbeat-prometheus-rules"},
+		collectorPeers: []string{bundledPrometheusPeer},
+	},
+	{
 		name:      "config-reload-alert-misspelled",
 		inline:    "prometheusRules: {configReloadAlrt: {enabled: false}}",
 		wantError: "values don't meet the specifications of the schema",

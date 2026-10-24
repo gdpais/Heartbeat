@@ -20,8 +20,10 @@ steps:
   - name: after
     duration: 2m
 signals:
+  # No series at all, not up == 0: what HeartbeatServiceDown's absent()
+  # rule fires on.
   - name: collector-target-gone
-    promql: up{job="db-collector"} == 1
+    promql: up{job="db-collector"}
     condition: absent
     step: down
     within: 2m
