@@ -2,18 +2,18 @@
 version: 1
 name: collector-outage
 description: >-
-  The db-collector is down for 3 minutes while the load runs (its StatefulSet
+  The db-collector is down for 4 minutes while the load runs (its StatefulSet
   scaled to 0). Prometheus finds it through its headless Service, so with no
-  pod it has no target at all: up has no series and HeartbeatServiceDown,
-  which needs up == 0, does not fire. Once it is back it reads the 3 minutes
-  it missed from the watermarks it saved, and Loki ends with every row
-  PatientZero committed, once.
+  pod it has no target at all: up has no series, and HeartbeatServiceDown
+  fires for the missing series after 2 minutes. Once it is back the alert
+  resolves, the collector reads the 4 minutes it missed from the watermarks
+  it saved, and Loki ends with every row PatientZero committed, once.
 load: steady
 steps:
   - name: before
     duration: 1m
   - name: down
-    duration: 3m
+    duration: 4m
     fault:
       type: outage
       params: {workload: db-collector}
@@ -25,6 +25,19 @@ signals:
     condition: absent
     step: down
     within: 2m
+  - name: collector-down-fires
+    alert: HeartbeatServiceDown
+    labels: {job: db-collector}
+    state: firing
+    step: down
+    within: 4m
+  - name: collector-down-resolves
+    alert: HeartbeatServiceDown
+    labels: {job: db-collector}
+    state: resolved
+    step: down
+    from: end
+    within: 3m
   - name: collector-back
     promql: max(up{job="db-collector"})
     condition: "== 1"

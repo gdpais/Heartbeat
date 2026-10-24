@@ -33,10 +33,10 @@ scenario with cluster faults it is also the run's host agent, which needs
 | [`log-backlog`](log-backlog.yaml) | Every request's log rows committed 10 s late for 4 minutes, within the collector's 15 s lag | Extraction keeps up; Loki holds every row of the run, once | about 8 minutes |
 | [`late-commits`](late-commits.yaml) | Every request's log rows committed 90 s late for 3 minutes, past every log type's lag | The extracted rows stop, then return; Loki holds every row of the run but the late ones, once | about 9 minutes |
 | [`log-growth`](log-growth.yaml) | 20 extra general rows of 2,000 characters per request for 5 minutes, about 100 MB | The SQL Server storage probe sees `patientzero_log`'s data file grow; extraction keeps up; Loki discards nothing and holds every row, once | about 9 minutes |
-| [`restarts`](restarts.yaml) | The db-collector, the OTel Collector and Loki restarted one after the other | No `HeartbeatServiceDown` for the OTel Collector, no discarded rows; Loki holds every row of the run, once | about 9 minutes |
-| [`loki-outage`](loki-outage.yaml) | Loki down for 3 minutes | `heartbeat_outsystems_export_blocked` 1 while the target stays up; extraction catches up; Loki holds every row, once | about 7 minutes |
-| [`otel-outage`](otel-outage.yaml) | The OTel Collector down for 4 minutes | `HeartbeatServiceDown` for it firing, then resolved; extraction catches up; Loki holds every row, once | about 8 minutes |
-| [`collector-outage`](collector-outage.yaml) | The db-collector down for 3 minutes | Its scrape target gone, then back; extraction catches up; Loki holds every row, once | about 7 minutes |
+| [`restarts`](restarts.yaml) | The db-collector, the OTel Collector and Loki restarted one after the other | No `HeartbeatServiceDown` or `OutSystemsLogExportBlocked`, no discarded rows; Loki holds every row of the run, once | about 9 minutes |
+| [`loki-outage`](loki-outage.yaml) | Loki down for 4 minutes | `heartbeat_outsystems_export_blocked` 1 while the target stays up; `OutSystemsLogExportBlocked` and `HeartbeatServiceDown` for Loki firing, then resolved; extraction catches up; Loki holds every row, once | about 8 minutes |
+| [`otel-outage`](otel-outage.yaml) | The OTel Collector down for 4 minutes | `HeartbeatServiceDown` for it and `OutSystemsLogExportBlocked` firing, then resolved; extraction catches up; Loki holds every row, once | about 8 minutes |
+| [`collector-outage`](collector-outage.yaml) | The db-collector down for 4 minutes | Its scrape target gone and `HeartbeatServiceDown` for it firing, then both back; extraction catches up; Loki holds every row, once | about 8 minutes |
 | [`sqlserver-outage`](sqlserver-outage.yaml) | The sandbox SQL Server stopped for 2 minutes | Both collector targets down, then up again; Loki holds every row PatientZero could write, once | about 7 minutes |
 
 The last five have cluster faults: `make patientzero-scenario` applies them
