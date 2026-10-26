@@ -23,7 +23,7 @@ func screenAt(t time.Time) Row { return Row{Type: "screen", Columns: map[string]
 // in that second.
 func TestLedgerCountsByStoredSecond(t *testing.T) {
 	base := time.Date(2026, 10, 23, 10, 0, 0, 0, time.UTC)
-	var l Ledger
+	l := Ledger{Now: func() time.Time { return base }}
 	l.Add([]Row{
 		screenAt(base), // (09:59:59, 10:00:00]
 		screenAt(base.Add(400 * time.Microsecond)),  // stored as 10:00:00.000
@@ -57,7 +57,7 @@ func TestLedgerCountsByStoredSecond(t *testing.T) {
 // held longer than its lost_after.
 func TestLedgerCountsHeldRowsByDelay(t *testing.T) {
 	base := time.Date(2026, 10, 23, 10, 0, 0, 0, time.UTC)
-	var l Ledger
+	l := Ledger{Now: func() time.Time { return base }}
 	l.Add([]Row{screenAt(base.Add(time.Second))}, 0)
 	l.Add([]Row{screenAt(base.Add(time.Second)), screenAt(base.Add(2 * time.Second))}, 10*time.Second)
 	l.Add([]Row{screenAt(base.Add(3 * time.Second))}, 90*time.Second)
