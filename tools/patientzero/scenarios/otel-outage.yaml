@@ -5,9 +5,10 @@ description: >-
   The OTel Collector is down for 4 minutes while the load runs (its
   StatefulSet scaled to 0). Prometheus cannot scrape it, so
   HeartbeatServiceDown fires for it after 2 minutes and resolves once it is
-  back. The db-collector's exports fail meanwhile and are retried from the
-  same watermark, so once the Collector is back the backlog drains and Loki
-  ends with every row PatientZero committed, once.
+  back. The db-collector's exports fail meanwhile and are retried in the
+  background until the Collector takes them, so OutSystemsLogExportBlocked
+  fires too. Once the Collector is back the backlog drains and Loki ends
+  with every row PatientZero committed, once.
 load: steady
 steps:
   - name: before
@@ -29,6 +30,19 @@ signals:
   - name: collector-down-resolves
     alert: HeartbeatServiceDown
     labels: {job: otel-collector}
+    state: resolved
+    step: down
+    from: end
+    within: 3m
+  - name: export-blocked-fires
+    alert: OutSystemsLogExportBlocked
+    labels: {collector: patientzero}
+    state: firing
+    step: down
+    within: 4m
+  - name: export-blocked-resolves
+    alert: OutSystemsLogExportBlocked
+    labels: {collector: patientzero}
     state: resolved
     step: down
     from: end

@@ -9,6 +9,9 @@ Core delivery order: **DB collector → OutSystems ingest → API/control plane 
 after foundations and schema prerequisites (sections 2–5). Later-service
 integrations are explicitly identified below; they do not block independent
 stage work, but they do block end-to-end completion of the dependent feature.
+Stage 3 does not wait for stage 2's release: its decisions are recorded
+(ADRs 0013–0015) and its prerequisites are done, so it starts while the
+release waits for the release app [0.5].
 
 Test each implementation action as it lands. Section 16 is a shared validation
 inventory used throughout delivery, not a final testing stage. Remaining
@@ -69,7 +72,7 @@ Production delivery is section 18.
 - [x] Retire the platform Compose definition and the Kustomize bundle
 - [ ] Install the Renovate GitHub App on the repository (config is in `renovate.json`)
 - [ ] Agree the local loop's time and resource budget (measured: about 2.0 GiB RAM for the full profile)
-- [ ] Cap the sandbox SQL Server's memory (`MSSQL_MEMORY_LIMIT_MB` in `scripts/kind.sh` and `scripts/sqlserver-test.sh`), so that a load flood or a second cluster slows it down instead of getting it killed; on 2026-10-22 it was killed twice on an 8 GB Docker host, once under a PatientZero load flood and once when a second cluster started
+- [x] Cap the sandbox SQL Server's memory (`MSSQL_MEMORY_LIMIT_MB` in `scripts/kind.sh` and `scripts/sqlserver-test.sh`), so that a load flood or a second cluster slows it down instead of getting it killed; on 2026-10-22 it was killed twice on an 8 GB Docker host, once under a PatientZero load flood and once when a second cluster started. 2048 MB by default, SQL Server's minimum (`SQLSERVER_MEMORY_LIMIT_MB`); an existing container keeps the cap it was created with, and `make sqlserver-dev-up` warns when it differs ([sandbox](docs/guides/local-development.md#sql-server-sandbox))
 - [ ] Reject unknown keys inside each component's chart values (`dbCollector.enabeld` is ignored today)
 
 ### 0.5 Development workflow and releases
@@ -264,6 +267,14 @@ inventory exists; API-managed onboarding [4.4, 10.1] follows in stage 3.
 Generic source expansion [3.4] remains later work. Grafana dashboards [10.4]
 follow the ingest path.
 
+Remaining work, in order: the signal gaps the PatientZero scenarios found
+[3.3, 9.1] → the scheduled scenario run [16.5] → this stage's validation →
+the release [0.5]. Not part of this exit, and done alongside stage 3 before
+the first production deploy [18]: per-probe failure isolation and a series
+budget [2.6], collector egress and exposure [2.7], unknown keys in component
+values [0.4], Alertmanager's rollout policy [9.4] and PatientZero's hardening
+[16.5].
+
 - [ ] Validate this stage: every log-type query against a SQL Server fixture with the `oslog_*` tables, extraction → OTel Collector → Loki and derived metrics → Prometheus on kind, restarts and outages without gaps [16.1–16.2]; Tempo and request traces are not part of this exit [3.6]
 
 ### 3.1 OTel gateway bootstrap (service removed, [ADR 0009](docs/architecture/decisions/0009-remove-the-otel-gateway.md))
@@ -298,7 +309,7 @@ follow the ingest path.
 - [x] Persistent sending queue for the logs exporter (`file_storage` on a volume), so a Collector restart loses nothing the db-collector counted delivered; a kind test restarts the Collector during a backlog and compares Loki with the rows read. The stage validation's "restarts without gaps" needs it. The queue is on the `otel-collector-queue` claim and the Collector is a one-replica StatefulSet; `make kind-e2e` restarts it with Loki down and 6,000 queued rows, and Loki ends with each of them once ([why](docs/architecture/application-observability.md)). A 64 MiB queue sent the batches it was sending at a restart last, out of order (1,297 of 6,000 rows over three hours lost in kind); the next item closes it
 - [x] Keep the order across a Collector restart: the logs exporter's queue holds one request and the receiver waits for room in it, so nothing queues behind the request being sent. The db-collector waits for the Collector without failing the target: the export runs in the background outside the probe deadline, retried until accepted; the log type reads nothing more meanwhile, its target stays up and `heartbeat_outsystems_export_blocked` is 1; nothing is held on SQL Server and at most 64 MiB of row data in memory. `make kind-e2e` restarts the Collector during 45-minute and three-hour backlogs with Loki down, and Loki ends with every row of both, once ([why](docs/architecture/application-observability.md))
 - [x] Decide the OTel gateway's future: removed with its JSON event endpoint and alert sink; Alertmanager's default receiver has no integrations; push sources go to the OTel Collector over OTLP, mapped with OTTL ([ADR 0009](docs/architecture/decisions/0009-remove-the-otel-gateway.md))
-- [ ] Alert on `heartbeat_outsystems_export_blocked`: it is 1 from the first minute of a Loki outage, but only `OutSystemsLogExtractionBehind` fires, about 40 minutes in
+- [x] Alert on `heartbeat_outsystems_export_blocked`: it is 1 from the first minute of a Loki outage, but only `OutSystemsLogExtractionBehind` fired, about 40 minutes in. `OutSystemsLogExportBlocked` (warning, one per target) fires after 2 minutes; PatientZero's `loki-outage` and `otel-outage` scenarios check it fires and resolves, `restarts` that a restart does not
 - [ ] Show rows committed past the `lag`: ADR 0008 accepts that the extractor skips them, but nothing says it happened; only the derived request rate drops (PatientZero's `late-commits` scenario loses exactly the rows it held back)
 - [ ] `heartbeat_outsystems_log_delay_seconds` only reflects delays between the `lag` and the `lag` plus the poll interval, so it cannot show the log service falling behind, although ADR 0008 says it does: fix the metric or the ADR
 
@@ -563,7 +574,7 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Add SQL Server recording rules
 - [x] Add alert rule output path (`rules/generated/`, loaded by Prometheus; nothing renders into it yet)
 - [x] Add an `alerting` block so Prometheus sends alerts to Alertmanager (plus an always-firing Watchdog routed to a dead-man's switch)
-- [ ] `HeartbeatServiceDown` cannot fire for a missing db-collector: Prometheus finds it through DNS on its headless Service, so with no pod there is no `up` series (seen in PatientZero's `collector-outage` scenario). Alert on the missing series too, and add Loki, which the alert does not cover
+- [x] `HeartbeatServiceDown` could not fire for a missing db-collector: Prometheus finds it through DNS on its headless Service, so with no pod there is no `up` series (seen in PatientZero's `collector-outage` scenario). It now fires on `absent(up{job="db-collector"})` too, in a rule file the chart includes only when the bundled Prometheus scrapes that job, and covers Loki; `collector-outage` and `loki-outage` check it fires and resolves
 
 ### 9.2 Loki
 - [x] Provision Loki for app logs
@@ -791,9 +802,9 @@ First slice, with phase 2:
 - [x] First entry points: a Traditional screen, a Reactive server action and an exposed REST API; each request runs business SQL and writes its log rows under one `Request_Key`, with the caller's session, user and client IP
 - [x] k6 load: virtual users with stable identities; smoke, steady, peak, soak and day profiles, run as a Job on kind (`make patientzero-load`); the mix in `load/traffic.js` takes the survey's aggregates
 - [x] Scenario runner: scenario files (fault, duration, expected PromQL/LogQL/alert signals), an admin endpoint to start them, and a run journal (JSONL: users, sessions, requests, and each fault with its start and end); in-process `latency` and `errors` faults, `make patientzero-scenario` ([scenarios](tools/patientzero/scenarios/README.md)). Cluster faults (restarts, outages) need the host-side runner the format leaves room for
-- [ ] Ingest scenarios: `rotation` (weekly rotation on demand), `log-backlog`, `log-growth`, backfill within Loki's 168h limit, commits held back past the `lag`, and restarts and outages of the db-collector, the OTel Collector, Loki and SQL Server; the collector's clock is never changed; the restarts and outages are cluster faults, applied on the host with the kubeconfig and Docker ([cluster faults](tools/patientzero/scenarios/README.md#cluster-faults)). Done: `rotation`, `log-backlog` (commits late within the `lag`), `late-commits` (held back past it: those rows are lost, as ADR 0008 accepts), `log-growth`, `restarts`, and the `loki-outage`, `otel-outage`, `collector-outage` and `sqlserver-outage`, each checked against the rows PatientZero committed ([delivery checks](tools/patientzero/scenarios/README.md#delivery-checks)); the restarts and outages are applied by `make patientzero-scenario` as the run's host agent. Left: the backfill within Loki's 168h limit as a scenario (`make patientzero-scale-collect` and `-check` backfill a generated log)
+- [x] Ingest scenarios: `rotation` (weekly rotation on demand), `log-backlog`, `log-growth`, backfill within Loki's 168h limit, commits held back past the `lag`, and restarts and outages of the db-collector, the OTel Collector, Loki and SQL Server; the collector's clock is never changed; the restarts and outages are cluster faults, applied on the host with the kubeconfig and Docker ([cluster faults](tools/patientzero/scenarios/README.md#cluster-faults)). Done: `rotation`, `log-backlog` (commits late within the `lag`), `late-commits` (held back past it: those rows are lost, as ADR 0008 accepts), `log-growth`, `restarts`, and the `loki-outage`, `otel-outage`, `collector-outage` and `sqlserver-outage`, each checked against the rows PatientZero committed ([delivery checks](tools/patientzero/scenarios/README.md#delivery-checks)); the restarts and outages are applied by `make patientzero-scenario` as the run's host agent. The backfill within Loki's 168h limit is not a scenario (2026-10-25): `make patientzero-scale-collect` and `-check` backfill a 48 h generated log through the same extractor, Collector and Loki, and every hour matches its known answer [10.4]
 - [x] SLO scenarios: `bad-deploy` and `slow-sql` fire the existing burn-rate alerts in Alertmanager, end to end, with the rules' real windows (`make patientzero-scenario NAME=bad-deploy`, `NAME=slow-sql`); new `deploy` and `sql-latency` faults, and PatientZero logs slow SQL as the platform does ([SLO scenarios](tools/patientzero/scenarios/README.md#slo-scenarios))
-- [ ] `make kind-e2e` runs the scenarios against PatientZero and checks their signals; replace the hand-run load in the [live demo](docs/guides/live-demo.md) with them [16.2, 16.3]
+- [ ] A scheduled CI workflow, nightly on `master` and on demand, runs every scenario against PatientZero on kind and checks their signals; its green run is this stage's validation evidence [3]. Not in `make kind-e2e`: the thirteen scenarios take over two hours and would gate every pull request on them. Replace the hand-run load in the [live demo](docs/guides/live-demo.md) with them [16.2, 16.3]
 
 Later, each with the phase that needs it:
 - [ ] Phases 3–4: onboard PatientZero through the API and the UI as the reference application [16.3]

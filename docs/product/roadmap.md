@@ -10,8 +10,8 @@ shared validation inventory [16] throughout rather than as a final stage.
 | --- | --- | --- |
 | 0 | Foundations, including kind + Helm delivery | Done |
 | 1 | DB collector (SQL Server) | Done |
-| 2 | OutSystems ingest (OutSystems 11 log extraction) | In progress: extraction to Loki, derived metrics, SLO alerts and dashboards built ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)); real-database survey, query review and production-sized measurement done; persistent export queue done; PatientZero has k6 load, a scenario runner, the SLO scenarios and the ingest scenarios, restarts and outages included; a backfill scenario pending |
-| 3 | API / control plane | Not started; decisions recorded in ADRs [0013](../architecture/decisions/0013-api-design-and-subsystem-boundaries.md)–[0015](../architecture/decisions/0015-postgresql-and-redis-delivery.md) |
+| 2 | OutSystems ingest (OutSystems 11 log extraction) | Near its exit: everything it builds is done ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)), and PatientZero's ingest, outage and SLO scenarios pass on kind. Left: the signal gaps those scenarios found, a scheduled CI run of the scenarios, the stage validation and the release |
+| 3 | API / control plane | Not started; decisions recorded in ADRs [0013](../architecture/decisions/0013-api-design-and-subsystem-boundaries.md)–[0015](../architecture/decisions/0015-postgresql-and-redis-delivery.md); starts without waiting for phase 2's release |
 | 4 | Web UI | Not started |
 | 5 | Production delivery (EKS + Argo CD) | Not started; decisions recorded |
 | 6 | Complete application and database product workflows | Not started |
@@ -34,9 +34,10 @@ logging database, which is only read.
 
 - k6 load with virtual users of stable identity, in steady, peak, soak and
   day profiles
-- Named fault scenarios (blocking, a bad deploy, a slow partner, slow SQL,
-  late timers, a bad front-end, log growth and backlog, weekly rotation),
-  each with the signals it must produce, checked by `make kind-e2e`
+- Named fault scenarios, each with the signals it must produce, run by
+  `make patientzero-scenario`: weekly rotation, log backlog and growth, late
+  commits, restarts and outages, a bad deploy and slow SQL now; blocking, a
+  slow partner, late timers and a bad front end with phase 7
 - A compressed calendar for the extractor: rotation on demand, backfill,
   late commits and time zones, without touching the collector's clock
 - A journal of every run: the known answer for investigations and reports
@@ -52,14 +53,17 @@ phases 3 and 4, investigations, alerts and reports in phase 7.
 - PostgreSQL schema migrations and tests ([data model](../architecture/data-model.md)) [1]
 - Prometheus, Loki, Grafana, Alertmanager and OTel Collector provisioning;
   Prometheus sends alerts to Alertmanager with a Watchdog route [9]
-- Shared config manager with validation, versioning and hot reload [8]
+- Shared config manager with validation, versioning and hot reload; reload
+  results exported as metrics and a rejected reload alerted on [8]
 - One Helm chart for kind, CI and production; acceptance checks run on kind in
   CI; platform Compose and the Kustomize bundle retired
   ([ADR 0003](../architecture/decisions/0003-helm-on-kind-and-production.md)) [0.4]
+- Trunk-based development and tagged releases: `v0.1.0` is public on GHCR
+  and installs from the [install guide](../guides/install-from-release.md)
+  ([ADR 0006](../architecture/decisions/0006-trunk-based-development-and-tagged-releases.md)) [0.5]
 
 Open housekeeping: install the Renovate app and agree the local loop's time and
-resource budget [0.4]; make the `v0.1.0` packages on GHCR public [0.5]. The
-release GitHub App and the tag-creation ruleset wait for the end of phase 2
+resource budget [0.4]. The release GitHub App and the tag-creation ruleset wait for the end of phase 2
 ([ADR 0006](../architecture/decisions/0006-trunk-based-development-and-tagged-releases.md)) [0.5].
 
 ## Phase 1 — DB collector (done)
@@ -103,9 +107,13 @@ design in [application observability](../architecture/application-observability.
 - PatientZero's first slice: the logging-database survey, its schema and
   traffic profile, the business and logging
   databases on the sandbox, k6 load, and the scenario runner with the ingest
-  and SLO scenarios (rotation, backlog, log growth, restarts and outages, a
-  bad deploy, slow SQL), which are part of this phase's exit checks; the other
-  scenarios come with phase 7 [16.5]
+  and SLO scenarios (rotation, backlog, late commits, log growth, restarts and
+  outages, a bad deploy, slow SQL), which are part of this phase's exit
+  checks; each ingest scenario compares Loki with the rows PatientZero
+  committed. The other scenarios come with phase 7 [16.5]
+- A persistent, ordered export queue in the OTel Collector: a Collector
+  restart or a Loki outage during a backlog loses and reorders nothing; the
+  db-collector waits for the Collector without failing its target [3.3]
 - One reviewed `.sql` query per log type (error, screen, integration, ...),
   watermarked incremental reads, OTLP to the OTel Collector and Loki with
   OutSystems field names kept [3.3]
@@ -125,9 +133,27 @@ design in [application observability](../architecture/application-observability.
 Exit: every query tested against a SQL Server fixture with the `oslog_*`
 tables; logging database → collector → Loki and Prometheus → Grafana on kind,
 including restarts and outages without gaps, shown by the PatientZero
-scenarios; the SLO scenarios fire the burn-rate alerts. The phase ends with its release:
-the release GitHub App is created then, and release-please cuts the release
-from the commits since `v0.1.0` [0.5].
+scenarios in a scheduled CI run; the SLO scenarios fire the burn-rate alerts;
+a 48-hour backfill matches its known answer in Loki. The phase ends with its
+release: the release GitHub App is created then, and release-please cuts the
+release from the commits since `v0.1.0` [0.5].
+
+Left before the exit, in order:
+
+1. The signal gaps the outage scenarios found: an alert when the log export
+   is blocked, `HeartbeatServiceDown` for a missing db-collector or Loki
+   [3.3, 9.1], a signal for rows committed past the `lag`, and a log delay
+   metric that shows the log service falling behind, as ADR 0008 says it
+   does [3.3]
+2. A nightly CI workflow that runs every scenario on kind; the scenarios take
+   over two hours, so they stay out of the per-PR `make kind-e2e` [16.5]
+3. The stage validation, with that run as its evidence [3]
+4. The release [0.5]
+
+Not in the exit, and done alongside phase 3 before the first production
+deploy: per-probe failure isolation and a series budget [2.6], collector
+egress and exposure [2.7], unknown keys in component values [0.4],
+Alertmanager's rollout policy [9.4] and PatientZero's hardening [16.5].
 
 ## Phase 3 — API / control plane
 
@@ -136,6 +162,8 @@ Decisions: API design and the frozen subsystem boundaries
 probe assignments as pull requests to the config repository
 ([ADR 0014](../architecture/decisions/0014-probe-assignments-to-runtime-config.md)), PostgreSQL
 and Redis delivery ([ADR 0015](../architecture/decisions/0015-postgresql-and-redis-delivery.md)).
+Its prerequisites are done, so it starts while phase 2's release waits for
+the release app.
 
 - Bootstrap, local auth with minimal roles, PostgreSQL and Redis (added to the
   chart here) [4.1–4.2]

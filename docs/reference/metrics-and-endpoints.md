@@ -249,7 +249,7 @@ the target as before.
 | `heartbeat_outsystems_extract_rows_total` | counter | Rows extracted and accepted by the OTel Collector |
 | `heartbeat_outsystems_extract_lag_seconds` | gauge | How far the watermark trails now, in real time: about the lag (the collector's, or the log type's own) plus the poll interval when extraction keeps up; it grows while extraction fails or falls behind |
 | `heartbeat_outsystems_export_failures_total` | counter | Batches the OTel Collector rejected for good (a 4xx status other than 429). Network errors, timeouts, 429 and 5xx are retried with backoff (up to 5 s apart, 10 s per attempt) until the Collector accepts the batch. The watermark stays, so the rows are read again |
-| `heartbeat_outsystems_export_blocked` | gauge | 1 while the log type waits for the OTel Collector to accept a batch, past the probe execution that read it: its extraction is paused, but its target is up. 0 otherwise. While it is 1, the lag grows, and `OutSystemsLogExtractionBehind` fires once it has been above 30 minutes for 10 |
+| `heartbeat_outsystems_export_blocked` | gauge | 1 while the log type waits for the OTel Collector to accept a batch, past the probe execution that read it: its extraction is paused, but its target is up. 0 otherwise. `OutSystemsLogExportBlocked` fires once it has been 1 for 2 minutes; meanwhile the lag grows, and `OutSystemsLogExtractionBehind` fires once it has been above 30 minutes for 10 |
 | `heartbeat_outsystems_extract_stuck_batches_total` | counter | Cycles that failed because every row of a full batch had the same `Instant`. The log type does not move until `batch_limit` is raised |
 | `heartbeat_outsystems_log_delay_seconds` | gauge | Now minus the newest `Instant` extracted, set when rows arrive: how far behind OutSystems' own log service is. Absent until the first row |
 
@@ -293,8 +293,10 @@ pod even while it is unready, so the collector's failure metrics are still
 scraped. Prometheus sends alerts to `alertmanager:9093`.
 
 Rules ([`heartbeat.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules/heartbeat.rules.yml),
-and [`heartbeat-config-reload.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules/heartbeat-config-reload.rules.yml)
-for the config reload alert):
+[`heartbeat-config-reload.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules/heartbeat-config-reload.rules.yml)
+for the config reload alert, and
+[`heartbeat-collector-missing.rules.yml`](../../infra/helm/heartbeat/files/prometheus/rules/heartbeat-collector-missing.rules.yml)
+for a db-collector with no pod):
 
 | Rule | Type |
 | --- | --- |
@@ -308,7 +310,8 @@ for the config reload alert):
 | `OutSystemsErrorBudgetBurnFast`, `OutSystemsLatencyBudgetBurnFast` | Alert (critical): 14.4× burn of a 99.9% availability or 99%-within-2-s objective over 1h and 5m, for applications with at least five (availability) or one (latency) requests a minute |
 | `OutSystemsErrorBudgetBurnSlow`, `OutSystemsLatencyBudgetBurnSlow` | Alert (warning): 6× burn over 6h and 30m |
 | `OutSystemsLogExtractionBehind` | Alert (warning): a log type's extraction lag above 30 minutes for 10m; the OutSystems metrics and SLO alerts of that target are stale |
-| `HeartbeatServiceDown` | Alert: `up == 0` for the DB collector or OTel Collector |
+| `OutSystemsLogExportBlocked` | Alert (warning): `heartbeat_outsystems_export_blocked` 1 for 2m, one alert per target: the OTel Collector has not taken a batch, so its log types read nothing more, usually because Loki is down or slow. Nothing is lost while the rows are still in the logging database's views |
+| `HeartbeatServiceDown` | Alert (warning): `up == 0` for 2m for the DB collector, the OTel Collector or Loki; and no `up` series at all for the DB collector, whose DNS discovery finds no target while it has no pod (`absent(up{job="db-collector"})`) |
 | `LokiDiscardingLogs` | Alert (warning): Loki discarded log rows in the last 10 minutes for a reason other than its rate limit (`loki_discarded_samples_total`); those rows are lost |
 | `HeartbeatCollectorLoginElevated` | Alert (warning): `heartbeat_collector_target_login_sysadmin == 1` for 15m, the collector's login for a target is sysadmin-equivalent |
 | `HeartbeatCollectorConfigReloadFailed` | Alert (warning): `heartbeat_collector_config_last_reload_successful == 0` for 2m, the collector rejected or could not apply its last config change and still runs the last good config. The reason is `last_reload_err` in `GET /admin/config` and the `config reload rejected` or `config reload failed` line in the pod log. Clears on the next successful reload. On by default; `prometheusRules.configReloadAlert.enabled: false` leaves it out |
@@ -320,7 +323,12 @@ in the `heartbeat-prometheus-rules` ConfigMap. An alert that can be turned off
 has a rule file of its own, which the chart leaves out of the ConfigMap when
 its value is false, so operators do not edit rule files:
 `prometheusRules.configReloadAlert.enabled` for
-`heartbeat-config-reload.rules.yml`. `prometheusRules.enabled: false` leaves
+`heartbeat-config-reload.rules.yml`. `heartbeat-collector-missing.rules.yml`
+is in it only when the release has the db-collector and the bundled Prometheus
+scrapes it as job `db-collector` (not disabled, no `job_name` override):
+`absent()` fires wherever nothing matches. A shared Prometheus never gets it,
+even one that loads this ConfigMap and scrapes the collector as `db-collector`;
+it needs its own copy of the rule, for its own job name. `prometheusRules.enabled: false` leaves
 out every rule. `make rules-check` validates the
 rules and runs their promtool unit tests (`files/prometheus/rules/tests/`). A Go
 test fails if a rule, rule test, dashboard, script or metrics doc names a SQL

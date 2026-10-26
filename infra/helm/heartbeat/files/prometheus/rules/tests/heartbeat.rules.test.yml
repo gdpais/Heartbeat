@@ -2,6 +2,7 @@
 rule_files:
   - ../heartbeat.rules.yml
   - ../heartbeat-config-reload.rules.yml
+  - ../heartbeat-collector-missing.rules.yml
 
 evaluation_interval: 1m
 
@@ -280,4 +281,87 @@ tests:
               description: "Loki discarded log rows in the last 10 minutes for too_far_behind; they are not in Loki and will not be sent again. too_far_behind means rows arrived more than an hour behind their stream: check that the OTel Collector's logs exporter keeps one consumer and a queue of one request, which keep its batches in order, across restarts too."
       - alertname: LokiDiscardingLogs
         eval_time: 20m
+        exp_alerts: []
+
+  - name: OutSystems log export blocked fires once per target after 2 minutes, not for a restart
+    interval: 1m
+    input_series:
+      # Both log types of logging-db wait on the Collector for 5 minutes;
+      # other-db's for one, as during a Loki restart.
+      - series: 'heartbeat_outsystems_export_blocked{collector="oslogs",environment="prod",target="logging-db",log_type="screen",job="db-collector",instance="10.0.0.1:8082"}'
+        values: '0 1 1 1 1 1 0 0 0'
+      - series: 'heartbeat_outsystems_export_blocked{collector="oslogs",environment="prod",target="logging-db",log_type="error",job="db-collector",instance="10.0.0.1:8082"}'
+        values: '0 1 1 1 1 1 0 0 0'
+      - series: 'heartbeat_outsystems_export_blocked{collector="oslogs",environment="prod",target="other-db",log_type="screen",job="db-collector",instance="10.0.0.1:8082"}'
+        values: '0 1 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - alertname: OutSystemsLogExportBlocked
+        eval_time: 2m
+        exp_alerts: []
+      - alertname: OutSystemsLogExportBlocked
+        eval_time: 4m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              collector: oslogs
+              environment: prod
+              target: logging-db
+            exp_annotations:
+              summary: "OutSystems log export of prod/logging-db is blocked"
+              description: "The oslogs collector has waited more than 2 minutes for the OTel Collector to accept a batch of logs, and reads nothing more until it does: logs, derived metrics and the OutSystems SLO alerts for this target go stale. Nothing is lost while the rows are still in the logging database's views (the current and the previous week). Usually Loki is down or slow; HeartbeatServiceDown says whether Loki or the OTel Collector is down, and GET /admin/config shows what each log type waits for."
+      - alertname: OutSystemsLogExportBlocked
+        eval_time: 7m
+        exp_alerts: []
+
+  - name: Heartbeat service down fires for Loki, not for a service that answers
+    interval: 1m
+    input_series:
+      - series: 'up{job="loki",instance="loki:3100"}'
+        values: '1 0 0 0 0 1 1'
+      - series: 'up{job="otel-collector",instance="otel-collector:8889"}'
+        values: '1x6'
+      - series: 'up{job="db-collector",instance="10.0.0.1:8082"}'
+        values: '1x6'
+    alert_rule_test:
+      - alertname: HeartbeatServiceDown
+        eval_time: 2m
+        exp_alerts: []
+      - alertname: HeartbeatServiceDown
+        eval_time: 4m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: loki
+              instance: loki:3100
+            exp_annotations:
+              summary: "Heartbeat service loki is down"
+              description: "Prometheus has not scraped loki successfully for at least 2 minutes."
+      - alertname: HeartbeatServiceDown
+        eval_time: 6m
+        exp_alerts: []
+
+  - name: Heartbeat service down fires for a db-collector with no pod to scrape
+    interval: 1m
+    input_series:
+      # The pod is gone from 2m to 5m: DNS discovery drops its target, so
+      # its up series goes stale instead of reporting 0.
+      - series: 'up{job="db-collector",instance="10.0.0.1:8082"}'
+        values: '1 1 stale _x3 1x4'
+      - series: 'up{job="otel-collector",instance="otel-collector:8889"}'
+        values: '1x10'
+    alert_rule_test:
+      - alertname: HeartbeatServiceDown
+        eval_time: 3m
+        exp_alerts: []
+      - alertname: HeartbeatServiceDown
+        eval_time: 5m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: db-collector
+            exp_annotations:
+              summary: "Heartbeat service db-collector is down"
+              description: "Prometheus has found no db-collector pod to scrape for at least 2 minutes: its StatefulSet runs no pod. Nothing is collected from SQL Server or the OutSystems logging databases meanwhile; once it is back, the OutSystems log types resume from their saved watermarks."
+      - alertname: HeartbeatServiceDown
+        eval_time: 7m
         exp_alerts: []
