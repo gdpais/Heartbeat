@@ -108,22 +108,55 @@ type Server struct {
 	// Module_Name SLOWSQL and the Message "<statement> took <n> ms". Zero
 	// logs none.
 	SlowSQL time.Duration
+	// MaxInFlight bounds how many database-backed entry-point requests
+	// (OrderList, PlaceOrder, GetOrders) run at once. Beyond it the server
+	// sheds load with 503 and a Retry-After header instead of opening more
+	// connections and cascading 500s when the database cannot keep up. Zero
+	// or less means no limit (the health and admin endpoints are never
+	// limited).
+	MaxInFlight int
 }
 
-// Handler routes the health endpoints and the entry points.
+// Handler routes the health endpoints and the entry points. The three
+// database-backed entry points run behind the in-flight limiter (MaxInFlight).
 func (s *Server) Handler() http.Handler {
+	limit := s.limiter()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("GET /readyz", s.readyz)
-	mux.HandleFunc("GET "+PathOrderList, s.orderList)
-	mux.HandleFunc("POST "+PathPlaceOrder, s.placeOrder)
-	mux.HandleFunc("GET "+PathAPIOrders, s.apiOrders)
+	mux.HandleFunc("GET "+PathOrderList, limit(s.orderList))
+	mux.HandleFunc("POST "+PathPlaceOrder, limit(s.placeOrder))
+	mux.HandleFunc("GET "+PathAPIOrders, limit(s.apiOrders))
 	if s.Admin != nil {
 		mux.Handle("/admin/", s.Admin)
 	}
 	return mux
+}
+
+// limiter returns a middleware that admits at most MaxInFlight requests at
+// once, shedding the rest with 503 and Retry-After. With MaxInFlight <= 0 it
+// is a pass-through, so existing callers and tests are unaffected unless they
+// set it. The token pool is created once, so every handler it wraps shares the
+// one budget.
+func (s *Server) limiter() func(http.HandlerFunc) http.HandlerFunc {
+	if s.MaxInFlight <= 0 {
+		return func(next http.HandlerFunc) http.HandlerFunc { return next }
+	}
+	tokens := make(chan struct{}, s.MaxInFlight)
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case tokens <- struct{}{}:
+				defer func() { <-tokens }()
+				next(w, r)
+			default:
+				w.Header().Set("Retry-After", "1")
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "overloaded"})
+			}
+		}
+	}
 }
 
 func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
@@ -554,12 +587,17 @@ func (s *Server) apiOrders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, orders)
 }
 
+// writeServerActionError answers a failed server action. A refused order
+// (shop.ErrInvalid) is a 400 with a fixed client message; any other error is a
+// 500 with a generic message, so internal error text (JSON-decoder messages,
+// raw SQL Server/driver errors) is never reflected to the caller. The detail
+// still reaches the OutSystems error log row the handler writes.
 func writeServerActionError(w http.ResponseWriter, err error) {
-	status := http.StatusInternalServerError
+	status, message := http.StatusInternalServerError, "Internal Server Error"
 	if errors.Is(err, shop.ErrInvalid) {
-		status = http.StatusBadRequest
+		status, message = http.StatusBadRequest, "The request could not be processed."
 	}
-	writeJSON(w, status, map[string]any{"exception": map[string]string{"name": "ServerException", "message": err.Error()}})
+	writeJSON(w, status, map[string]any{"exception": map[string]string{"name": "ServerException", "message": message}})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
