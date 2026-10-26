@@ -254,17 +254,18 @@ the target as before.
 | `heartbeat_outsystems_log_delay_seconds` | gauge | Now minus the newest `Instant` extracted, set when rows arrive: about the lag plus the poll interval while extraction keeps up. A row is read only once it is older than the lag, so this cannot show OutSystems' log service falling behind; `heartbeat_outsystems_late_rows_total` does. Absent until the first row |
 | `heartbeat_outsystems_late_rows_total` | counter | Rows the recount found in the logging database behind the watermark that were never read: committed later than the lag after their `Instant`. They are not in Loki and are not sent ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)). `OutSystemsLateLogRows` fires on any |
 | `heartbeat_outsystems_duplicate_rows_total` | counter | Rows the recount found delivered more often than the logging database holds them: sent twice. Always 0 unless the extraction has a defect. `OutSystemsDuplicateLogRows` fires on any |
+| `heartbeat_outsystems_recounts_total` | counter | Recounts run, failed ones included: one in each minute that has a poll |
 | `heartbeat_outsystems_recount_failures_total` | counter | Recounts that failed (query error, more than 1,000,000 rows in the window). Late and duplicate rows are not counted meanwhile; extraction goes on |
 
-**The recount.** Once a minute, each log type counts again, per minute of
+**The recount.** Once a minute (in each minute that has a poll), each log type counts again, per minute of
 `Instant`, the rows its query returns in the `recount_window` (default 10
 minutes, [configuration](configuration.md#outsystems_logs-collectors)) behind
 its watermark, and compares them with the rows it delivered in each minute.
 Each minute's difference is counted once, however many recounts cover it.
 The count wraps the log type's own query, so it reads what extraction reads,
-from the `Instant` index. The delivered counts are in memory: after a
-restart only the minutes after the new process's first watermark are
-compared. A row committed more than about the window after its `Instant`
+from the `Instant` index. The delivered counts are in memory and start again after the current
+watermark after a restart, and when a reload changes `recount_window` or the
+query: only the minutes after it are compared. A row committed more than about the window after its `Instant`
 goes uncounted.
 
 The counters and `heartbeat_outsystems_export_blocked` are created at 0 when
@@ -327,7 +328,7 @@ for a db-collector with no pod):
 | `OutSystemsLogExportBlocked` | Alert (warning): `heartbeat_outsystems_export_blocked` 1 for 2m, one alert per target: the OTel Collector has not taken a batch, so its log types read nothing more, usually because Loki is down or slow. Nothing is lost while the rows are still in the logging database's views |
 | `OutSystemsLateLogRows` | Alert (warning): `heartbeat_outsystems_late_rows_total` grew in the last 15 minutes, per log type: rows committed later than the lag, not in Loki. Raise the log type's `lag` |
 | `OutSystemsDuplicateLogRows` | Alert (warning): `heartbeat_outsystems_duplicate_rows_total` grew in the last 15 minutes: rows sent twice, a defect of the extraction |
-| `OutSystemsLogRecountFailing` | Alert (warning): 10 or more failed recounts of a log type in 15 minutes (it recounts once a minute); the reason is in the collector's log |
+| `OutSystemsLogRecountFailing` | Alert (warning): more than half of a log type's recounts failed in the last 15 minutes, of three or more, whatever the poll interval; the reason is in the collector's log |
 | `HeartbeatServiceDown` | Alert (warning): `up == 0` for 2m for the DB collector, the OTel Collector or Loki; and no `up` series at all for the DB collector, whose DNS discovery finds no target while it has no pod (`absent(up{job="db-collector"})`) |
 | `LokiDiscardingLogs` | Alert (warning): Loki discarded log rows in the last 10 minutes for a reason other than its rate limit (`loki_discarded_samples_total`); those rows are lost |
 | `HeartbeatCollectorLoginElevated` | Alert (warning): `heartbeat_collector_target_login_sysadmin == 1` for 15m, the collector's login for a target is sysadmin-equivalent |

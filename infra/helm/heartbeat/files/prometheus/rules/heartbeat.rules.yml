@@ -179,10 +179,15 @@ groups:
         annotations:
           summary: "OutSystems {{ $labels.log_type }} log rows of {{ $labels.environment }}/{{ $labels.target }} were sent twice"
           description: "The {{ $labels.collector }} collector's recount found about {{ $value | printf \"%.0f\" }} {{ $labels.log_type }} rows in the last 15 minutes that it delivered more often than the logging database holds them: Loki holds them twice, and the derived metrics count them twice. This is a defect of the extraction; report it with the collector's log, which names the minutes."
-      # A log type recounts once a minute; most of them failing for 15
-      # minutes means late and duplicate rows go uncounted.
+      # Most recounts of the last 15 minutes failed: late and duplicate rows
+      # go uncounted. A ratio, since how many recounts run depends on the
+      # poll interval (one a minute at most), over three or more, so one
+      # failure just after a start is not most of them.
       - alert: OutSystemsLogRecountFailing
-        expr: sum by (collector, environment, target, log_type) (increase(heartbeat_outsystems_recount_failures_total[15m])) >= 10
+        expr: >-
+          sum by (collector, environment, target, log_type) (increase(heartbeat_outsystems_recount_failures_total[15m]))
+          / sum by (collector, environment, target, log_type) (increase(heartbeat_outsystems_recounts_total[15m])) > 0.5
+          and sum by (collector, environment, target, log_type) (increase(heartbeat_outsystems_recounts_total[15m])) >= 3
         labels:
           severity: warning
         annotations:

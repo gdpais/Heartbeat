@@ -416,17 +416,22 @@ tests:
               summary: "OutSystems general log rows of prod/logging-db were sent twice"
               description: "The oslogs collector's recount found about 2 general rows in the last 15 minutes that it delivered more often than the logging database holds them: Loki holds them twice, and the derived metrics count them twice. This is a defect of the extraction; report it with the collector's log, which names the minutes."
 
-  - name: OutSystems log recount failing fires when most recounts fail, not for one
+  - name: OutSystems log recount failing fires when most recounts fail, not for one, at any poll interval
     interval: 1m
     input_series:
-      # screen fails once a minute from 1m; error fails once.
+      # screen recounts every 3 minutes and every one fails; error recounts
+      # every minute and fails once.
+      - series: 'heartbeat_outsystems_recounts_total{collector="oslogs",environment="prod",target="logging-db",log_type="screen",job="db-collector",instance="10.0.0.1:8082"}'
+        values: '0 0 0 1 1 1 2 2 2 3 3 3 4 4 4 5 5 5 6 6 6'
       - series: 'heartbeat_outsystems_recount_failures_total{collector="oslogs",environment="prod",target="logging-db",log_type="screen",job="db-collector",instance="10.0.0.1:8082"}'
+        values: '0 0 0 1 1 1 2 2 2 3 3 3 4 4 4 5 5 5 6 6 6'
+      - series: 'heartbeat_outsystems_recounts_total{collector="oslogs",environment="prod",target="logging-db",log_type="error",job="db-collector",instance="10.0.0.1:8082"}'
         values: '0+1x20'
       - series: 'heartbeat_outsystems_recount_failures_total{collector="oslogs",environment="prod",target="logging-db",log_type="error",job="db-collector",instance="10.0.0.1:8082"}'
         values: '0 1x20'
     alert_rule_test:
       - alertname: OutSystemsLogRecountFailing
-        eval_time: 5m
+        eval_time: 1m
         exp_alerts: []
       - alertname: OutSystemsLogRecountFailing
         eval_time: 15m

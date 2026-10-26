@@ -95,7 +95,8 @@ Considered and not chosen:
   which is never newer than the lag: it shows how fresh extraction is, not
   how far behind the log service is, so it cannot warn of late commits; the
   late-row counter does.
-- The recount's delivered counts are in memory. After a restart it compares
-  only the minutes after the first watermark of the new process. A
+- The recount's delivered counts are in memory. After a restart, or a reload
+  that changes `recount_window` or the query, it compares only the minutes
+  after the watermark it starts again at. A
   `query_template` must be a query a derived table holds (no `WITH`,
   `OPTION` or `FOR XML`), or the collector sets `recount_window: 0s`.

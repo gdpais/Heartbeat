@@ -165,8 +165,10 @@ func (e *Executor) RunProbe(ctx context.Context, item collectormetadata.Schedule
 		return nil, nil, e.blocked(item, key, location, err)
 	}
 	watermark := e.watermark(key, item, location)
-	if item.OutSystemsLogs.RecountWindow > 0 {
-		e.recounts.start(key, watermark)
+	if window := item.OutSystemsLogs.RecountWindow; window > 0 {
+		e.recounts.start(key, watermark, window, query)
+	} else {
+		e.recounts.forget(key)
 	}
 	for batch := 1; ; batch++ {
 		started := time.Now()
@@ -180,7 +182,7 @@ func (e *Executor) RunProbe(ctx context.Context, item collectormetadata.Schedule
 			return nil, nil, e.blocked(item, key, location, err)
 		}
 		if !full || batch >= e.maxBatches() || !timeLeft(ctx, time.Since(started)) {
-			e.recount(ctx, item, key, query)
+			e.recount(ctx, item, key)
 			return nil, nil, nil
 		}
 	}

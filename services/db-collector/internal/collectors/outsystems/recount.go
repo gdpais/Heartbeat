@@ -16,9 +16,12 @@ package outsystems
 //
 // A minute is (end − 1m, end], the bounds the query contract filters with,
 // so the window (lo, hi], both whole minutes, holds whole minutes only.  The
-// delivered counts live in memory: after a restart, or once the watermark
-// belongs to another database, only the minutes after the first watermark
-// of the process are compared, which no earlier process delivered into.
+// delivered counts live in memory and start again, after the watermark the
+// call starts at, whenever they could no longer be compared: after a
+// restart, once the watermark belongs to another database or moved back,
+// and when a reload changes the recount_window or the query.  Only the
+// minutes after that watermark are compared, which no earlier process or
+// setting delivered into.  A log type with the recount off keeps no counts.
 //
 // The count wraps the log type's own query, query_template included, as a
 // derived table, so it counts what extraction reads, with the same filters
@@ -35,7 +38,8 @@ import (
 	collectormetadata "heartbeat/services/db-collector/internal/metadata"
 )
 
-// recountEvery is how often a log type is recounted.
+// recountEvery is how often a log type is recounted: once in each minute of
+// the clock that has a poll, whatever the poll interval.
 const recountEvery = time.Minute
 
 // RecountLimit bounds the rows one recount counts (its @limit).  A window
@@ -86,11 +90,14 @@ type recountLog struct {
 	floor time.Time
 	// high is the furthest watermark seen; one behind it starts again.
 	high time.Time
+	// window and query are the settings the counts were taken with; others
+	// start them again.
+	window time.Duration
 	// delivered, late and duplicate count rows by the end of their minute;
 	// late and duplicate are what earlier recounts found there.
 	delivered, late, duplicate map[time.Time]int64
-	// last is when the last recount was due to run; warned when its last
-	// failure was logged.
+	// last is the minute of the last recount; warned when its last failure
+	// was logged.
 	last, warned time.Time
 	// query and statement cache the log type's query as a derived table,
 	// or why it cannot be one (statementErr).
@@ -98,29 +105,40 @@ type recountLog struct {
 	statementErr     error
 }
 
-// start keeps key's counts for a call that starts at watermark, or starts
-// them again when there are none, they are of another database, or the
-// watermark moved back.
-func (s *recountState) start(key WatermarkKey, watermark Watermark) {
+// start keeps key's counts for a call that starts at watermark with window
+// and query, or starts them again when there are none, they are of another
+// database, the watermark moved back, or window or query changed.  It runs
+// only once no export of key is pending, so every row up to watermark was
+// counted under the settings before.
+func (s *recountState) start(key WatermarkKey, watermark Watermark, window time.Duration, query string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.logs == nil {
 		s.logs = map[WatermarkKey]*recountLog{}
 	}
 	log := s.logs[key]
-	if log != nil && log.source == watermark.Source && !watermark.Instant.Before(log.high) {
+	if log != nil && log.source == watermark.Source && !watermark.Instant.Before(log.high) &&
+		log.window == window && log.query == query {
 		log.high = watermark.Instant
 		return
 	}
 	s.logs[key] = &recountLog{
 		source: watermark.Source, floor: minuteEnd(watermark.Instant), high: watermark.Instant,
+		window: window, query: query,
 		delivered: map[time.Time]int64{}, late: map[time.Time]int64{}, duplicate: map[time.Time]int64{},
 	}
 }
 
+// forget drops key's counts: its recount is off.
+func (s *recountState) forget(key WatermarkKey) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.logs, key)
+}
+
 // delivered counts instants, delivered to the Collector, and drops the
-// counts that fell out of window behind the newest.
-func (s *recountState) delivered(key WatermarkKey, instants []time.Time, window time.Duration) {
+// counts that fell out of the window behind the newest.
+func (s *recountState) delivered(key WatermarkKey, instants []time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	log := s.logs[key]
@@ -130,7 +148,7 @@ func (s *recountState) delivered(key WatermarkKey, instants []time.Time, window 
 	for _, instant := range instants {
 		log.delivered[minuteEnd(instant)]++
 	}
-	log.prune(minuteEnd(instants[len(instants)-1]).Add(-window - time.Minute))
+	log.prune(minuteEnd(instants[len(instants)-1]).Add(-log.window - time.Minute))
 }
 
 // prune drops the counts of the minutes ending at or before oldest.
@@ -144,15 +162,17 @@ func (l *recountLog) prune(oldest time.Time) {
 	}
 }
 
-// due reports whether key is due a recount at now, and if so takes it.
+// due reports whether key is due a recount at now, its first in now's
+// minute, and if so takes it.
 func (s *recountState) due(key WatermarkKey, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	minute := now.Truncate(recountEvery)
 	log := s.logs[key]
-	if log == nil || now.Sub(log.last) < recountEvery {
+	if log == nil || !minute.After(log.last) {
 		return false
 	}
-	log.last = now
+	log.last = minute
 	return true
 }
 
@@ -197,17 +217,16 @@ func (s *recountState) compare(key WatermarkKey, lo, hi time.Time, counts map[in
 	return late, duplicate
 }
 
-// statement returns query as a derived table, cached for key.
-func (s *recountState) statement(key WatermarkKey, query string) (string, error) {
+// statement returns key's query as a derived table, cached.
+func (s *recountState) statement(key WatermarkKey) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	log := s.logs[key]
 	if log == nil {
 		return "", errors.New("no counts")
 	}
-	if log.query != query || (log.statement == "" && log.statementErr == nil) {
-		log.query = query
-		log.statement, log.statementErr = collectorconfig.DerivedTable(query)
+	if log.statement == "" && log.statementErr == nil {
+		log.statement, log.statementErr = collectorconfig.DerivedTable(log.query)
 	}
 	return log.statement, log.statementErr
 }
@@ -229,14 +248,15 @@ func (s *recountState) warn(key WatermarkKey, now time.Time) bool {
 // with what it delivered there, when it is due and the deadline leaves time.
 // A failure fails only the recount: it is counted and logged, and the
 // extraction goes on.
-func (e *Executor) recount(ctx context.Context, item collectormetadata.ScheduledProbe, key WatermarkKey, query string) {
+func (e *Executor) recount(ctx context.Context, item collectormetadata.ScheduledProbe, key WatermarkKey) {
 	window := item.OutSystemsLogs.RecountWindow
 	recounter, ok := e.Source.(Recounter)
 	// A second at least: the count reads the Instant index of the window.
 	if window <= 0 || !ok || !timeLeft(ctx, time.Second) || !e.recounts.due(key, e.clock()) {
 		return
 	}
-	err := e.runRecount(ctx, item, key, query, window, recounter)
+	e.Metrics.recountRan(item)
+	err := e.runRecount(ctx, item, key, window, recounter)
 	if err == nil {
 		return
 	}
@@ -247,7 +267,7 @@ func (e *Executor) recount(ctx context.Context, item collectormetadata.Scheduled
 	}
 }
 
-func (e *Executor) runRecount(ctx context.Context, item collectormetadata.ScheduledProbe, key WatermarkKey, query string, window time.Duration, recounter Recounter) error {
+func (e *Executor) runRecount(ctx context.Context, item collectormetadata.ScheduledProbe, key WatermarkKey, window time.Duration, recounter Recounter) error {
 	watermark, found, err := e.Store.Load(key)
 	if err != nil || !found {
 		// Nothing delivered or saved yet: nothing to compare.
@@ -257,7 +277,7 @@ func (e *Executor) runRecount(ctx context.Context, item collectormetadata.Schedu
 	if !ok {
 		return nil
 	}
-	statement, err := e.recounts.statement(key, query)
+	statement, err := e.recounts.statement(key)
 	if err != nil {
 		return fmt.Errorf("the query cannot be counted: it %w; set recount_window: 0s for this collector", err)
 	}

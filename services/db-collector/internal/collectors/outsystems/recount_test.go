@@ -15,11 +15,13 @@ import (
 
 // recountSource is a fakeSource that also recounts: the rows in (From, To],
 // at most Limit of them in Instant order, by the minute that ends at From
-// plus k minutes.
+// plus k minutes.  Rows whose key is in filtered are left out, as a
+// query_template with a filter would.
 type recountSource struct {
 	*fakeSource
 	recounts int
 	err      error
+	filtered map[string]bool
 }
 
 func (s *recountSource) Recount(_ context.Context, _ collectormetadata.DatabaseTarget, query string, params QueryParams) (map[int64]int64, error) {
@@ -34,6 +36,9 @@ func (s *recountSource) Recount(_ context.Context, _ collectormetadata.DatabaseT
 	}
 	var instants []time.Time
 	for _, row := range s.rows {
+		if s.filtered[row.key] {
+			continue
+		}
 		if row.instant.After(params.From) && !row.instant.After(params.To) {
 			instants = append(instants, row.instant)
 		}
@@ -196,8 +201,8 @@ func TestRecountOff(t *testing.T) {
 func TestRecountCompare(t *testing.T) {
 	var s recountState
 	key := WatermarkKey{Collector: "c", Target: "t", LogType: "error"}
-	s.start(key, Watermark{Instant: at(0), Source: "db"})
-	s.delivered(key, []time.Time{at(30 * time.Second), at(time.Minute), at(90 * time.Second), at(90 * time.Second)}, 10*time.Minute)
+	s.start(key, Watermark{Instant: at(0), Source: "db"}, 10*time.Minute, "SELECT 1")
+	s.delivered(key, []time.Time{at(30 * time.Second), at(time.Minute), at(90 * time.Second), at(90 * time.Second)})
 	// Minute 1 is (t0, t0+1m], minute 2 (t0+1m, t0+2m].
 	lo, hi, ok := s.window(key, at(2*time.Minute+10*time.Second), 10*time.Minute)
 	if !ok || !lo.Equal(at(0)) || !hi.Equal(at(2*time.Minute)) {
@@ -213,7 +218,7 @@ func TestRecountCompare(t *testing.T) {
 		t.Fatalf("one more late, one fewer: %d late, %d duplicate, want 1 and 1", late, duplicate)
 	}
 	// Another database starts the counts again, from its watermark.
-	s.start(key, Watermark{Instant: at(5 * time.Minute), Source: "other"})
+	s.start(key, Watermark{Instant: at(5 * time.Minute), Source: "other"}, 10*time.Minute, "SELECT 1")
 	if _, _, ok := s.window(key, at(5*time.Minute+50*time.Second), 10*time.Minute); ok {
 		t.Fatal("a window before the new floor")
 	}
@@ -243,5 +248,75 @@ func TestBuiltInQueriesCanBeRecounted(t *testing.T) {
 		if strings.HasSuffix(strings.TrimSpace(statement), ";") || !strings.Contains(recountSQL(statement), statement) {
 			t.Errorf("%s: statement not wrapped as is", name)
 		}
+	}
+}
+
+// cycles runs n cycles a minute apart, a row committed on time each minute,
+// and returns the late and duplicate rows counted.
+func (x *extraction) cycles(n int, key string) (late, duplicate float64) {
+	x.t.Helper()
+	for range n {
+		x.source.insert(key, x.now.Add(-90*time.Second))
+		x.mustRun()
+		x.now = x.now.Add(time.Minute)
+	}
+	return x.counter(x.metrics.lateRows), x.counter(x.metrics.duplicateRows)
+}
+
+// A reload that widens recount_window, turns the recount off and on again,
+// or changes the query starts the counts again after the watermark: the
+// minutes delivered before it are never compared under the new settings.
+func TestRecountStartsAgainWhenItsSettingsChange(t *testing.T) {
+	t.Run("wider window", func(t *testing.T) {
+		x, _ := newRecountExtraction(t, t.TempDir(), 100)
+		x.cycles(20, "row")
+		x.item.OutSystemsLogs.RecountWindow = 30 * time.Minute
+		if late, duplicate := x.cycles(5, "row"); late != 0 || duplicate != 0 {
+			t.Fatalf("after widening the window: %v late, %v duplicate rows, want none", late, duplicate)
+		}
+	})
+	t.Run("off and on again", func(t *testing.T) {
+		x, source := newRecountExtraction(t, t.TempDir(), 100)
+		x.cycles(12, "row")
+		x.item.OutSystemsLogs.RecountWindow = 0
+		before := source.recounts
+		x.cycles(5, "row")
+		if source.recounts != before {
+			t.Fatalf("recounted %d times with the recount off", source.recounts-before)
+		}
+		x.item.OutSystemsLogs.RecountWindow = 10 * time.Minute
+		if late, duplicate := x.cycles(5, "row"); late != 0 || duplicate != 0 {
+			t.Fatalf("after turning it on again: %v late, %v duplicate rows, want none", late, duplicate)
+		}
+	})
+	t.Run("new query", func(t *testing.T) {
+		x, source := newRecountExtraction(t, t.TempDir(), 100)
+		x.cycles(12, "filtered")
+		// The new template filters those rows out; the source still returns
+		// them to extraction, so only the comparison sees the change.
+		x.item.Definition.QueryTemplate = "SELECT TOP (@limit) Instant, Message FROM dbo.oslog_Error WHERE Instant > @from AND Instant <= @to ORDER BY Instant"
+		source.filtered = map[string]bool{"filtered": true}
+		if late, duplicate := x.cycles(5, "kept"); late != 0 || duplicate != 0 {
+			t.Fatalf("after a query change: %v late, %v duplicate rows, want none", late, duplicate)
+		}
+	})
+}
+
+// A log type is recounted once in each minute that has a poll, whatever the
+// poll interval and however long each call takes.
+func TestRecountOncePerMinute(t *testing.T) {
+	x, source := newRecountExtraction(t, t.TempDir(), 100)
+	// 15 minutes of polls on a 30-second ticker; each call takes 0 to 2
+	// seconds, so a recount two polls on is sometimes 58 seconds later.
+	base := x.now.Truncate(time.Minute)
+	for i := range 30 {
+		x.now = base.Add(time.Duration(i)*30*time.Second + []time.Duration{2 * time.Second, 0, time.Second}[i%3])
+		x.mustRun()
+	}
+	if source.recounts < 15 || source.recounts > 16 {
+		t.Fatalf("%d recounts in 15 minutes of 30s polls, want one a minute", source.recounts)
+	}
+	if got := x.counter(x.metrics.recounts); int(got) != source.recounts {
+		t.Fatalf("recounts counter = %v, want %d", got, source.recounts)
 	}
 }

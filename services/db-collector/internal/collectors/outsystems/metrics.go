@@ -41,6 +41,8 @@ const (
 	// MetricDuplicateRows counts rows a recount found delivered more often
 	// than the logging database holds them: sent twice.
 	MetricDuplicateRows = "heartbeat_outsystems_duplicate_rows_total"
+	// MetricRecounts counts the recounts run, failed ones included.
+	MetricRecounts = "heartbeat_outsystems_recounts_total"
 	// MetricRecountFailures counts recounts that failed; meanwhile late and
 	// duplicate rows go uncounted.
 	MetricRecountFailures = "heartbeat_outsystems_recount_failures_total"
@@ -63,6 +65,7 @@ type Metrics struct {
 	logDelay        *prometheus.GaugeVec
 	lateRows        *prometheus.CounterVec
 	duplicateRows   *prometheus.CounterVec
+	recounts        *prometheus.CounterVec
 	recountFailures *prometheus.CounterVec
 	exportBlocked   *prometheus.GaugeVec
 	derived         *derived
@@ -104,13 +107,17 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 			Name: MetricDuplicateRows,
 			Help: "OutSystems log rows a recount found delivered more often than the logging database holds them.",
 		}, metricLabels),
+		recounts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: MetricRecounts,
+			Help: "OutSystems log recounts run, about one a minute per log type, failed ones included.",
+		}, metricLabels),
 		recountFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: MetricRecountFailures,
 			Help: "OutSystems log recounts that failed; late and duplicate rows are not counted meanwhile.",
 		}, metricLabels),
 		derived: newDerived(),
 	}
-	for _, collector := range append([]prometheus.Collector{m.rows, m.lag, m.exportFailures, m.stuck, m.logDelay, m.exportBlocked, m.lateRows, m.duplicateRows, m.recountFailures}, m.derived.collectors()...) {
+	for _, collector := range append([]prometheus.Collector{m.rows, m.lag, m.exportFailures, m.stuck, m.logDelay, m.exportBlocked, m.lateRows, m.duplicateRows, m.recounts, m.recountFailures}, m.derived.collectors()...) {
 		if err := reg.Register(collector); err != nil {
 			return nil, fmt.Errorf("register outsystems metrics: %w", err)
 		}
@@ -136,7 +143,7 @@ func (m *Metrics) initCollector(collector collectorconfig.CollectorRuntimeConfig
 		}
 		for _, probe := range target.Probes {
 			values := []string{collector.ID, target.EnvironmentSlug, target.Name, probe.Name}
-			for _, vec := range []*prometheus.CounterVec{m.rows, m.exportFailures, m.stuck, m.lateRows, m.duplicateRows, m.recountFailures} {
+			for _, vec := range []*prometheus.CounterVec{m.rows, m.exportFailures, m.stuck, m.lateRows, m.duplicateRows, m.recounts, m.recountFailures} {
 				_, _ = vec.GetMetricWithLabelValues(values...)
 			}
 			_, _ = m.exportBlocked.GetMetricWithLabelValues(values...)
@@ -158,6 +165,7 @@ func (m *Metrics) forgetCollector(collectorID string) {
 	m.exportBlocked.DeletePartialMatch(labels)
 	m.lateRows.DeletePartialMatch(labels)
 	m.duplicateRows.DeletePartialMatch(labels)
+	m.recounts.DeletePartialMatch(labels)
 	m.recountFailures.DeletePartialMatch(labels)
 	m.derived.forget(collectorID)
 }
@@ -240,6 +248,15 @@ func (m *Metrics) recounted(item collectormetadata.ScheduledProbe, late, duplica
 		if counter, err := c.vec.GetMetricWithLabelValues(labelValues(item)...); err == nil && c.n > 0 {
 			counter.Add(float64(c.n))
 		}
+	}
+}
+
+func (m *Metrics) recountRan(item collectormetadata.ScheduledProbe) {
+	if m == nil {
+		return
+	}
+	if counter, err := m.recounts.GetMetricWithLabelValues(labelValues(item)...); err == nil {
+		counter.Inc()
 	}
 }
 
