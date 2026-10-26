@@ -127,8 +127,8 @@ branches as `gone`, ready for `git branch -d`.
 | --- | --- |
 | `Detect changes` | Always. Lists the paths the pull request changes; [`scripts/ci-changes.sh`](scripts/ci-changes.sh) decides which of the jobs below they need |
 | `test` | Always: Go tests, race checks, vet, Prometheus rules, docs site, PostgreSQL integration tests |
-| `SQL Server probes` | When `services/db-collector`, its test scripts or `tools/patientzero` change; also runs PatientZero's live test |
-| `Helm chart` | When the chart, its values or its tests change |
+| `SQL Server probes` | When `services/db-collector`, its test scripts or `tools/patientzero` (outside its chart) change; also runs PatientZero's live test |
+| `Helm chart` | When the chart, its values, its tests or PatientZero's chart change; lints and renders PatientZero's chart too |
 | `kind end-to-end` | When a service, the chart or the kind setup changes |
 | `ci-ok` | Always. Passes only if every job did what the change detection asked for; the only required check |
 

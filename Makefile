@@ -32,6 +32,10 @@ DOCSITE_MODULE := tools/docsite
 # PatientZero, the synthetic OutSystems test application (ADR 0010), is its
 # own module too: test code stays out of the product's module and releases.
 PATIENTZERO_MODULE := tools/patientzero
+# Its chart's image tag and SQL host are required and have no default (the
+# install script sets them), so chart-check passes placeholders.
+PATIENTZERO_CHART_DIR := $(PATIENTZERO_MODULE)/chart
+PATIENTZERO_CHART_CHECK_VALUES := --set image.tag=ci --set sql.host=ci
 GOVULNCHECK := GOCACHE=$$(pwd)/.tmp/gocache go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 DOCSITE := GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) run ./cmd/docsite -root ../.. -repo-url $(DOCS_REPO_URL) -ref $(DOCS_REPO_REF)
 
@@ -61,7 +65,7 @@ help:
 		'  make patientzero-scale-down  Drop patientzero_scale and remove its collector' \
 		'  make kind-e2e            Run the acceptance checks on a separate, temporary kind cluster' \
 		'  make chart-deps          Fetch the chart dependencies listed in Chart.lock' \
-		'  make chart-check         Lint and render the chart for every values profile (needs chart-deps)' \
+		'  make chart-check         Lint and render the chart for every values profile (needs chart-deps), and the PatientZero chart' \
 		'  make rules-check         Validate Prometheus rules and run their promtool unit tests (requires Docker)' \
 		'  make test                Run all Go tests without Docker integration tests' \
 		'  make test-integration    Run isolated PostgreSQL integration tests (requires Docker)' \
@@ -181,6 +185,8 @@ chart-deps:
 chart-check:
 	$(HELM) lint --strict $(CHART_DIR) -f infra/helm/values/kind.yaml
 	HELM=$(HELM) GOCACHE=$$(pwd)/.tmp/gocache go test -tags=chart -count=1 -run TestChartProfiles ./tests
+	$(HELM) lint --strict $(PATIENTZERO_CHART_DIR) $(PATIENTZERO_CHART_CHECK_VALUES)
+	$(HELM) template patientzero $(PATIENTZERO_CHART_DIR) $(PATIENTZERO_CHART_CHECK_VALUES) >/dev/null
 
 rules-check:
 	docker run --rm -v "$$(pwd)/infra/helm/heartbeat/files/prometheus/rules:/rules:ro" --entrypoint promtool $(PROMETHEUS_IMAGE) check rules /rules/heartbeat.rules.yml /rules/heartbeat-config-reload.rules.yml /rules/heartbeat-collector-missing.rules.yml /rules/generated/heartbeat-rendered.rules.yml
