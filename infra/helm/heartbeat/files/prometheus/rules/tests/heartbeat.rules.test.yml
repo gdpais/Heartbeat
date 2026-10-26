@@ -365,3 +365,78 @@ tests:
       - alertname: HeartbeatServiceDown
         eval_time: 7m
         exp_alerts: []
+
+  - name: OutSystems late log rows fire while the recount finds them, then clear
+    interval: 1m
+    input_series:
+      # Three late rows at 3m, none after; no other log type finds any.
+      - series: 'heartbeat_outsystems_late_rows_total{collector="oslogs",environment="prod",target="logging-db",log_type="screen",job="db-collector",instance="10.0.0.1:8082"}'
+        values: '0 0 0 3x30'
+      - series: 'heartbeat_outsystems_late_rows_total{collector="oslogs",environment="prod",target="logging-db",log_type="error",job="db-collector",instance="10.0.0.1:8082"}'
+        values: '0x33'
+    alert_rule_test:
+      - alertname: OutSystemsLateLogRows
+        eval_time: 2m
+        exp_alerts: []
+      - alertname: OutSystemsLateLogRows
+        eval_time: 5m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              collector: oslogs
+              environment: prod
+              target: logging-db
+              log_type: screen
+            exp_annotations:
+              summary: "OutSystems screen log rows of prod/logging-db were committed too late to be read"
+              description: "The oslogs collector's recount found about 3 screen rows in the last 15 minutes that the log service committed after the collector had read past their Instant, later than the lag. They are not in Loki, and the derived metrics and SLOs undercount them. Raise this log type's lag (probes[].lag) above how late the log service commits; late commits usually mean it is behind."
+      - alertname: OutSystemsLateLogRows
+        eval_time: 20m
+        exp_alerts: []
+
+  - name: OutSystems duplicate log rows fire when the recount finds any
+    interval: 1m
+    input_series:
+      - series: 'heartbeat_outsystems_duplicate_rows_total{collector="oslogs",environment="prod",target="logging-db",log_type="general",job="db-collector",instance="10.0.0.1:8082"}'
+        values: '0 0 2x20'
+    alert_rule_test:
+      - alertname: OutSystemsDuplicateLogRows
+        eval_time: 1m
+        exp_alerts: []
+      - alertname: OutSystemsDuplicateLogRows
+        eval_time: 4m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              collector: oslogs
+              environment: prod
+              target: logging-db
+              log_type: general
+            exp_annotations:
+              summary: "OutSystems general log rows of prod/logging-db were sent twice"
+              description: "The oslogs collector's recount found about 2 general rows in the last 15 minutes that it delivered more often than the logging database holds them: Loki holds them twice, and the derived metrics count them twice. This is a defect of the extraction; report it with the collector's log, which names the minutes."
+
+  - name: OutSystems log recount failing fires when most recounts fail, not for one
+    interval: 1m
+    input_series:
+      # screen fails once a minute from 1m; error fails once.
+      - series: 'heartbeat_outsystems_recount_failures_total{collector="oslogs",environment="prod",target="logging-db",log_type="screen",job="db-collector",instance="10.0.0.1:8082"}'
+        values: '0+1x20'
+      - series: 'heartbeat_outsystems_recount_failures_total{collector="oslogs",environment="prod",target="logging-db",log_type="error",job="db-collector",instance="10.0.0.1:8082"}'
+        values: '0 1x20'
+    alert_rule_test:
+      - alertname: OutSystemsLogRecountFailing
+        eval_time: 5m
+        exp_alerts: []
+      - alertname: OutSystemsLogRecountFailing
+        eval_time: 15m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              collector: oslogs
+              environment: prod
+              target: logging-db
+              log_type: screen
+            exp_annotations:
+              summary: "OutSystems screen log recount of prod/logging-db is failing"
+              description: "Most recounts of the oslogs collector's screen rows failed in the last 15 minutes, so rows committed past the lag, or sent twice, are not counted. The reason is in the collector's log (\"outsystems_logs recount failed\"); extraction itself goes on."

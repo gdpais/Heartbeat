@@ -128,3 +128,42 @@ func TestValidateReadOnlySelectRejects(t *testing.T) {
 		})
 	}
 }
+
+func TestDerivedTable(t *testing.T) {
+	for _, tc := range []struct {
+		name, query, want string
+	}{
+		{"plain", "SELECT 1 AS x", "SELECT 1 AS x"},
+		{"semicolons and comments around it", ";\n-- the query\nSELECT TOP (@limit) Instant FROM v ORDER BY Instant; -- done\n/* end */ ;",
+			"SELECT TOP (@limit) Instant FROM v ORDER BY Instant"},
+		{"comments inside it stay", "SELECT 1 AS x -- one\nFROM t /* t */ WHERE x > 0", "SELECT 1 AS x -- one\nFROM t /* t */ WHERE x > 0"},
+		{"a trailing string", "SELECT 'a;b' AS s", "SELECT 'a;b' AS s"},
+		{"a quoted name last", "SELECT x FROM [my table]", "SELECT x FROM [my table]"},
+		{"OPTION and FOR inside a subquery", "SELECT x FROM (SELECT TOP (1) x FROM t OPTION_x) AS q WHERE x IN (SELECT y FROM u FOR SYSTEM_TIME AS OF '2026-01-01')",
+			"SELECT x FROM (SELECT TOP (1) x FROM t OPTION_x) AS q WHERE x IN (SELECT y FROM u FOR SYSTEM_TIME AS OF '2026-01-01')"},
+		{"FOR SYSTEM_TIME at the top level", "SELECT y FROM u FOR SYSTEM_TIME AS OF '2026-01-01'", "SELECT y FROM u FOR SYSTEM_TIME AS OF '2026-01-01'"},
+		{"a column named option", "SELECT t.option FROM t", "SELECT t.option FROM t"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DerivedTable(tc.query)
+			if err != nil || got != tc.want {
+				t.Fatalf("DerivedTable(%q) = %q, %v, want %q", tc.query, got, err, tc.want)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name, query, want string
+	}{
+		{"not read-only", "DELETE FROM t", "must start with SELECT"},
+		{"WITH", "WITH a AS (SELECT 1 AS x) SELECT x FROM a", "starts with WITH"},
+		{"OPTION", "SELECT 1 AS x FROM t OPTION (RECOMPILE)", "OPTION clause"},
+		{"FOR XML", "SELECT 1 AS x FOR XML PATH('')", "FOR XML clause"},
+		{"FOR JSON", "SELECT 1 AS x FOR JSON AUTO", "FOR JSON clause"},
+	} {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			if got, err := DerivedTable(tc.query); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("DerivedTable(%q) = %q, %v, want an error containing %q", tc.query, got, err, tc.want)
+			}
+		})
+	}
+}

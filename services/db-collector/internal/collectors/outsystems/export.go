@@ -295,6 +295,9 @@ func (e *Executor) startExport(item collectormetadata.ScheduledProbe, key Waterm
 			err = fmt.Errorf("log type %s: %w", key.LogType, err)
 		} else {
 			now := e.clock()
+			// Counted before the watermark is saved, so a recount that reads
+			// the watermark also sees the rows behind it.
+			e.recounts.delivered(key, instants, item.OutSystemsLogs.RecountWindow)
 			metrics.addRows(item, len(rows))
 			metrics.observeRows(item, batch, rows, instants)
 			metrics.setLogDelay(item, now.Sub(Real(instants[len(instants)-1], location)))

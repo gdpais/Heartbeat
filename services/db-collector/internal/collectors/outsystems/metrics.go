@@ -34,6 +34,16 @@ const (
 	// Collector to accept a batch, past the cycle that read it: its
 	// extraction is paused, but its target is up (export.go).  0 otherwise.
 	MetricExportBlocked = "heartbeat_outsystems_export_blocked"
+	// MetricLateRows counts rows a recount found in the logging database
+	// behind the watermark that the extraction never read: committed later
+	// than the lag (recount.go).  They are not sent.
+	MetricLateRows = "heartbeat_outsystems_late_rows_total"
+	// MetricDuplicateRows counts rows a recount found delivered more often
+	// than the logging database holds them: sent twice.
+	MetricDuplicateRows = "heartbeat_outsystems_duplicate_rows_total"
+	// MetricRecountFailures counts recounts that failed; meanwhile late and
+	// duplicate rows go uncounted.
+	MetricRecountFailures = "heartbeat_outsystems_recount_failures_total"
 )
 
 // metricLabels are the label names of every extraction metric.
@@ -46,13 +56,16 @@ var metricLabels = []string{"collector", "environment", "target", "log_type"}
 // panicking.  A nil *Metrics records nothing.  Metrics is safe for
 // concurrent use.
 type Metrics struct {
-	rows           *prometheus.CounterVec
-	lag            *prometheus.GaugeVec
-	exportFailures *prometheus.CounterVec
-	stuck          *prometheus.CounterVec
-	logDelay       *prometheus.GaugeVec
-	exportBlocked  *prometheus.GaugeVec
-	derived        *derived
+	rows            *prometheus.CounterVec
+	lag             *prometheus.GaugeVec
+	exportFailures  *prometheus.CounterVec
+	stuck           *prometheus.CounterVec
+	logDelay        *prometheus.GaugeVec
+	lateRows        *prometheus.CounterVec
+	duplicateRows   *prometheus.CounterVec
+	recountFailures *prometheus.CounterVec
+	exportBlocked   *prometheus.GaugeVec
+	derived         *derived
 }
 
 // NewMetrics creates the extraction metrics and the derived metrics and
@@ -83,9 +96,21 @@ func NewMetrics(reg prometheus.Registerer) (*Metrics, error) {
 			Name: MetricExportBlocked,
 			Help: "Whether the OutSystems log type waits for the OTel Collector to accept a batch, its extraction paused (1), or not (0).",
 		}, metricLabels),
+		lateRows: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: MetricLateRows,
+			Help: "OutSystems log rows a recount found behind the watermark that were never read: committed later than the lag. They are not sent.",
+		}, metricLabels),
+		duplicateRows: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: MetricDuplicateRows,
+			Help: "OutSystems log rows a recount found delivered more often than the logging database holds them.",
+		}, metricLabels),
+		recountFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: MetricRecountFailures,
+			Help: "OutSystems log recounts that failed; late and duplicate rows are not counted meanwhile.",
+		}, metricLabels),
 		derived: newDerived(),
 	}
-	for _, collector := range append([]prometheus.Collector{m.rows, m.lag, m.exportFailures, m.stuck, m.logDelay, m.exportBlocked}, m.derived.collectors()...) {
+	for _, collector := range append([]prometheus.Collector{m.rows, m.lag, m.exportFailures, m.stuck, m.logDelay, m.exportBlocked, m.lateRows, m.duplicateRows, m.recountFailures}, m.derived.collectors()...) {
 		if err := reg.Register(collector); err != nil {
 			return nil, fmt.Errorf("register outsystems metrics: %w", err)
 		}
@@ -111,7 +136,7 @@ func (m *Metrics) initCollector(collector collectorconfig.CollectorRuntimeConfig
 		}
 		for _, probe := range target.Probes {
 			values := []string{collector.ID, target.EnvironmentSlug, target.Name, probe.Name}
-			for _, vec := range []*prometheus.CounterVec{m.rows, m.exportFailures, m.stuck} {
+			for _, vec := range []*prometheus.CounterVec{m.rows, m.exportFailures, m.stuck, m.lateRows, m.duplicateRows, m.recountFailures} {
 				_, _ = vec.GetMetricWithLabelValues(values...)
 			}
 			_, _ = m.exportBlocked.GetMetricWithLabelValues(values...)
@@ -131,6 +156,9 @@ func (m *Metrics) forgetCollector(collectorID string) {
 	m.stuck.DeletePartialMatch(labels)
 	m.logDelay.DeletePartialMatch(labels)
 	m.exportBlocked.DeletePartialMatch(labels)
+	m.lateRows.DeletePartialMatch(labels)
+	m.duplicateRows.DeletePartialMatch(labels)
+	m.recountFailures.DeletePartialMatch(labels)
 	m.derived.forget(collectorID)
 }
 
@@ -197,5 +225,29 @@ func (m *Metrics) setLogDelay(item collectormetadata.ScheduledProbe, delay time.
 	}
 	if gauge, err := m.logDelay.GetMetricWithLabelValues(labelValues(item)...); err == nil {
 		gauge.Set(delay.Seconds())
+	}
+}
+
+// recounted adds what a recount newly found.
+func (m *Metrics) recounted(item collectormetadata.ScheduledProbe, late, duplicate int64) {
+	if m == nil {
+		return
+	}
+	for _, c := range []struct {
+		vec *prometheus.CounterVec
+		n   int64
+	}{{m.lateRows, late}, {m.duplicateRows, duplicate}} {
+		if counter, err := c.vec.GetMetricWithLabelValues(labelValues(item)...); err == nil && c.n > 0 {
+			counter.Add(float64(c.n))
+		}
+	}
+}
+
+func (m *Metrics) recountFailed(item collectormetadata.ScheduledProbe) {
+	if m == nil {
+		return
+	}
+	if counter, err := m.recountFailures.GetMetricWithLabelValues(labelValues(item)...); err == nil {
+		counter.Inc()
 	}
 }

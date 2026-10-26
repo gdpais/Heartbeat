@@ -729,7 +729,7 @@ func TestLoadRuntimeConfigOutSystemsLogsDefaults(t *testing.T) {
 	got := collectors[0]
 	want := OutSystemsLogsConfig{
 		Lag: time.Minute, BatchLimit: 5000, InitialLookback: 15 * time.Minute,
-		LogTimezone: "UTC", LogsEndpoint: "http://otel-collector:4318",
+		LogTimezone: "UTC", RecountWindow: 10 * time.Minute, LogsEndpoint: "http://otel-collector:4318",
 	}
 	if got.OutSystemsLogs != want {
 		t.Fatalf("settings = %+v, want %+v", got.OutSystemsLogs, want)
@@ -752,14 +752,14 @@ func TestLoadRuntimeConfigOutSystemsLogsDefaults(t *testing.T) {
 
 func TestLoadRuntimeConfigOutSystemsLogsSettings(t *testing.T) {
 	cfg, err := LoadRuntimeConfig(outSystemsLogsConfig(t, otelSection,
-		"      scrape_interval: 10s\n      lag: 2m\n      batch_limit: 50000\n      initial_lookback: 1h\n      log_timezone: Europe/Lisbon\n"))
+		"      scrape_interval: 10s\n      lag: 2m\n      batch_limit: 50000\n      initial_lookback: 1h\n      log_timezone: Europe/Lisbon\n      recount_window: 30m\n"))
 	if err != nil {
 		t.Fatalf("LoadRuntimeConfig: %v", err)
 	}
 	got := cfg.EnabledCollectors(KindOutSystemsLogs)[0]
 	want := OutSystemsLogsConfig{
 		Lag: 2 * time.Minute, BatchLimit: 50000, InitialLookback: time.Hour,
-		LogTimezone: "Europe/Lisbon", LogsEndpoint: "http://otel-collector:4318",
+		LogTimezone: "Europe/Lisbon", RecountWindow: 30 * time.Minute, LogsEndpoint: "http://otel-collector:4318",
 	}
 	if got.OutSystemsLogs != want || got.ScrapeInterval != 10*time.Second {
 		t.Fatalf("settings = %+v every %s, want %+v every 10s", got.OutSystemsLogs, got.ScrapeInterval, want)
@@ -801,6 +801,18 @@ func TestLoadRuntimeConfigRejectsInvalidOutSystemsLogsSettings(t *testing.T) {
 		{name: "batch above the maximum", otel: otelSection, settings: "      batch_limit: 50001\n", wantErr: "batch_limit must be between 1 and 50000"},
 		{name: "unknown time zone", otel: otelSection, settings: "      log_timezone: Mars/Olympus\n", wantErr: `log_timezone "Mars/Olympus" must be an IANA time zone name`},
 		{name: "host time zone", otel: otelSection, settings: "      log_timezone: Local\n", wantErr: `log_timezone "Local" must be an IANA time zone name`},
+		{name: "recount window below 2m", otel: otelSection, settings: "      recount_window: 1m\n", wantErr: "recount_window must be 0s (off) or whole minutes from 2m to 1h0m0s"},
+		{name: "recount window above 1h", otel: otelSection, settings: "      recount_window: 61m\n", wantErr: "recount_window must be 0s (off) or whole minutes from 2m to 1h0m0s"},
+		{name: "recount window not whole minutes", otel: otelSection, settings: "      recount_window: 90s\n", wantErr: "recount_window must be 0s (off) or whole minutes"},
+		{name: "negative recount window", otel: otelSection, settings: "      recount_window: -10m\n", wantErr: "recount_window must be 0s (off)"},
+		{
+			name: "query_template the recount cannot count", otel: otelSection,
+			edit: func(s string) string {
+				return strings.Replace(s, "{name: general, timeout_ms: 20000}",
+					`{name: general, timeout_ms: 20000, query_template: "SELECT TOP (@limit) Instant FROM dbo.oslog_General WHERE Instant > @from AND Instant <= @to ORDER BY Instant OPTION (RECOMPILE)"}`, 1)
+			},
+			wantErr: "probe general query_template cannot be recounted: it has an OPTION clause, which a derived table cannot hold; drop that clause or set recount_window: 0s",
+		},
 		{name: "zero interval", otel: otelSection, settings: "      scrape_interval: 0s\n", wantErr: "must have positive scrape interval"},
 		{name: "no OTLP endpoint", wantErr: "opentelemetry.endpoint is required for outsystems_logs collectors"},
 		{
@@ -855,7 +867,7 @@ func TestLoadRuntimeConfigRejectsInvalidOutSystemsLogsSettings(t *testing.T) {
 // The outsystems_logs settings belong to that kind only; on a SQL Server
 // collector they would be silently ignored.
 func TestLoadRuntimeConfigRejectsOutSystemsLogsSettingsOnOtherKinds(t *testing.T) {
-	for _, setting := range []string{"lag: 1m", "batch_limit: 10", "initial_lookback: 1m", "log_timezone: UTC"} {
+	for _, setting := range []string{"lag: 1m", "batch_limit: 10", "initial_lookback: 1m", "log_timezone: UTC", "recount_window: 10m"} {
 		t.Run(setting, func(t *testing.T) {
 			path := outSystemsLogsConfig(t, otelSection, "")
 			content, _ := os.ReadFile(path)
@@ -1084,5 +1096,16 @@ func TestLoadRuntimeConfigProbeMaxRows(t *testing.T) {
 				t.Fatalf("MaxRows = %d, want %d", got, tc.wantMaxRows)
 			}
 		})
+	}
+}
+
+// recount_window 0s turns the recount off.
+func TestLoadRuntimeConfigOutSystemsLogsRecountOff(t *testing.T) {
+	cfg, err := LoadRuntimeConfig(outSystemsLogsConfig(t, otelSection, "      recount_window: 0s\n"))
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig: %v", err)
+	}
+	if got := cfg.EnabledCollectors(KindOutSystemsLogs)[0].OutSystemsLogs.RecountWindow; got != 0 {
+		t.Fatalf("recount_window = %s, want 0 (off)", got)
 	}
 }

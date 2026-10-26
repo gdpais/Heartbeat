@@ -101,6 +101,38 @@ func (s SQLServerSource) Query(ctx context.Context, target collectormetadata.Dat
 	return batch, nil
 }
 
+// Recount implements [Recounter]: it runs query, a recount query, with
+// params bound as [SQLServerSource.Query] binds them.
+func (s SQLServerSource) Recount(ctx context.Context, target collectormetadata.DatabaseTarget, query string, params QueryParams) (map[int64]int64, error) {
+	db, cleanup, err := s.Manager.Open(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	from, to := any(civil.DateTimeOf(params.From)), any(civil.DateTimeOf(params.To))
+	if params.DateTime {
+		from, to = mssql.DateTime1(params.From), mssql.DateTime1(params.To)
+	}
+	rows, err := db.QueryContext(ctx, connector.WithSessionSettings(query),
+		sql.Named("from", from), sql.Named("to", to), sql.Named("limit", params.Limit))
+	if err != nil {
+		return nil, fmt.Errorf("recount: %w", err)
+	}
+	defer rows.Close()
+	counts := map[int64]int64{}
+	for rows.Next() {
+		var minute, n int64
+		if err := rows.Scan(&minute, &n); err != nil {
+			return nil, fmt.Errorf("recount: scan: %w", err)
+		}
+		counts[minute] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("recount: %w", err)
+	}
+	return counts, nil
+}
+
 // rowReader is the part of [sql.Rows] that readRows uses.
 type rowReader interface {
 	Next() bool

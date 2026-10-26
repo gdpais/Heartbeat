@@ -209,6 +209,7 @@ collectors:
       batch_limit: 5000        # rows per query, 1–50000; default 5000
       initial_lookback: 15m    # where a log type without a watermark starts; default 15m
       log_timezone: UTC        # IANA time zone Instant is stored in; default UTC
+      recount_window: 10m      # recount behind the watermark; default 10m, 0s off
       probes:
         - name: error
         - name: cyclic_job
@@ -227,6 +228,7 @@ collectors:
 | `batch_limit` | `5000` | 1–50000. A full batch is followed at once by the next, up to 10 per cycle. If every row of a full batch has the same `Instant`, the cycle fails and `heartbeat_outsystems_extract_stuck_batches_total` grows: raise `batch_limit`. A batch also ends early at about 8 MiB of row data (below) |
 | `initial_lookback` | `15m` | Go duration, > 0. Also used when the stored watermark is unreadable or belongs to another database |
 | `log_timezone` | `UTC` | IANA name such as `Europe/Lisbon`; `Local` is rejected. With a zone that has daylight saving time, rows logged in the hour that repeats when clocks go back can be missed: `Instant` itself is ambiguous then |
+| `recount_window` | `10m` | `0s` (off), or whole minutes from `2m` to `1h`. Once a minute, each log type counts again the rows in this window behind its watermark, to find rows committed past the `lag` (`heartbeat_outsystems_late_rows_total`) or sent twice ([recount](metrics-and-endpoints.md#outsystems-log-extraction)). A wider window finds later commits and counts more index rows each minute |
 
 Rules:
 
@@ -238,8 +240,13 @@ Rules:
 - A log type of one logging database (same host, port and database name,
   compared case-insensitively) can be extracted by one enabled collector
   only; two would send every row twice.
-- `lag`, `batch_limit`, `initial_lookback`, `log_timezone` and `probes[].lag`
-  are rejected on other kinds, and `probes[].max_rows` on this one.
+- `lag`, `batch_limit`, `initial_lookback`, `log_timezone`, `recount_window`
+  and `probes[].lag` are rejected on other kinds, and `probes[].max_rows` on
+  this one.
+- With the recount on, a `query_template` must be one a derived table holds:
+  no `WITH`, top-level `OPTION`, or `FOR XML`, `JSON` or `BROWSE`, and every
+  column named. The first three are rejected when the file is loaded;
+  otherwise set `recount_window: 0s`.
 - A query reads at most `batch_limit` rows: the collector stops at the first
   row past it and fails the cycle without sending anything, so a
   `query_template` that ignores `@limit` cannot fill the collector's memory.
