@@ -6,10 +6,11 @@ description: >-
   request's log rows are committed a minute and a half after the request.
   That is past the collector's lag (15 seconds; 1 minute for screens), and
   the collector never reads behind its watermark, so those rows never reach
-  Loki: the loss ADR 0008 accepts for rows committed past the lag. What
-  Heartbeat shows is PatientZero's extracted rows stopping while its users
-  are still served. Rows committed on time again, after the fault, all
-  arrive.
+  Loki: the loss ADR 0008 accepts for rows committed past the lag. Its
+  recount finds them: heartbeat_outsystems_late_rows_total grows by exactly
+  the rows held back, OutSystemsLateLogRows fires, and nothing is counted
+  or sent twice. PatientZero's extracted rows stop while its users are
+  still served. Rows committed on time again, after the fault, all arrive.
 load: steady
 steps:
   - name: before
@@ -39,10 +40,26 @@ signals:
   # Loki holds every row of the run except those committed past the lag,
   # which are exactly the rows the fault held: 90 seconds is more than any
   # log type's lag plus its 15-second poll, and 10 seconds would not be.
+  # The recount runs once a minute over the 10 minutes behind the
+  # watermark, so it finds each late row within about a minute of its commit.
+  - name: late-rows-alert
+    alert: OutSystemsLateLogRows
+    labels: {collector: patientzero}
+    state: firing
+    step: behind
+    within: 5m
+  - name: nothing-sent-twice
+    alert: OutSystemsDuplicateLogRows
+    state: resolved
+    step: before
+    mode: always
+    within: 10m
+  # ...and the late-row counter counted exactly those rows, of each log type.
   - name: only-the-late-rows-are-lost
     delivery:
       log_types: [screen, mobile_request, integration, general, error]
       lost_after: 30s
+      late_rows: heartbeat_outsystems_late_rows_total{collector="patientzero"}
     step: after
     from: end
     within: 4m

@@ -242,6 +242,7 @@ signals:
       from_step: hurt
       to_step: hurt
       lost_after: 30s
+      late_rows: heartbeat_outsystems_late_rows_total{collector="pz"}
     step: calm
     within: 3m
 `
@@ -255,8 +256,8 @@ func TestParseDelivery(t *testing.T) {
 	if every.Kind() != KindDelivery || every.Delivery.FromStep != "warm" || every.Delivery.ToStep != "calm" || every.Delivery.LostAfter != 0 {
 		t.Errorf("defaults: %+v, want the rows of every step and none lost", every.Delivery)
 	}
-	if late.Delivery.LostAfter.D() != 30*time.Second || !strings.Contains(late.Query(), "but those committed more than 30s late") {
-		t.Errorf("lost_after: %+v, query %q", late.Delivery, late.Query())
+	if late.Delivery.LostAfter.D() != 30*time.Second || !strings.Contains(late.Query(), "but those committed more than 30s late, which heartbeat_outsystems_late_rows_total{collector=\"pz\"} counts") {
+		t.Errorf("lost_after and late_rows: %+v, query %q", late.Delivery, late.Query())
 	}
 }
 
@@ -269,9 +270,12 @@ func TestParseRejectsBadDelivery(t *testing.T) {
 		{"out of order", "from_step: hurt\n      to_step: hurt", "from_step: calm\n      to_step: hurt", "comes after to_step"},
 		{"window too early", "    step: calm\n    from: end", "    step: hurt\n    from: end", "opens at or after the end of its to_step \"calm\""},
 		{"with a condition", "    step: calm\n    within: 3m", "    step: calm\n    condition: \"> 0\"\n    within: 3m", "no condition, state or labels"},
-		{"with a query", "      lost_after: 30s\n", "      lost_after: 30s\n    promql: sum(up)\n", "exactly one of promql, logql, alert or delivery"},
+		{"with a query", "{collector=\"pz\"}\n", "{collector=\"pz\"}\n    promql: sum(up)\n", "exactly one of promql, logql, alert or delivery"},
 		{"always", "    step: calm\n    from: end", "    step: calm\n    from: end\n    mode: always", "mode eventually, not always"},
 		{"too far back", "    duration: 1m\nsignals:", "    duration: 6h\nsignals:", "at most 6h0m0s back"},
+		{"late_rows without lost_after", "      lost_after: 30s\n", "", "late_rows needs lost_after"},
+		{"late_rows with log_type", `{collector="pz"}`, `{log_type="error"}`, "without log_type"},
+		{"late_rows not a selector", `heartbeat_outsystems_late_rows_total{collector="pz"}`, `sum(x)`, "late_rows must be a counter's name"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if !strings.Contains(withDelivery, c.from) {
