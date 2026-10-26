@@ -10,7 +10,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,8 +67,9 @@ func TestLimiterShedsExcessWith503(t *testing.T) {
 	s.Store = gate
 	s.MaxInFlight = 1
 	s.Admin = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	var log bytes.Buffer
-	s.Log = slog.New(slog.NewTextHandler(&log, nil))
+	var logs syncBuffer
+	s.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	s.shedEvery = 20 * time.Millisecond
 	s.Traffic = &traffic.Counter{}
 	s.Traffic.Begin(t0)
 	handler := s.Handler()
@@ -124,32 +129,92 @@ func TestLimiterShedsExcessWith503(t *testing.T) {
 			t.Errorf("%s: %d shed, want 1", name, got)
 		}
 	}
-	// The first shed request is reported at once; the other two fall within
-	// shedReportEvery of it.
-	if n := strings.Count(log.String(), "shedding requests"); n != 1 || !strings.Contains(log.String(), "shed=1") {
-		t.Errorf("want one shedding line with shed=1, got %d:\n%s", n, log.String())
+	// Every shed request reaches the log, the ones held for the end of an
+	// interval included.
+	deadline := time.Now().Add(5 * time.Second)
+	for shedLogged(t, logs.String()) != 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the log counts %d shed requests, want 3:\n%s", shedLogged(t, logs.String()), logs.String())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
-// The shedding log line comes at most every shedReportEvery, each with how
-// many requests were shed since the line before.
+var shedAttr = regexp.MustCompile(` shed=(\d+)`)
+
+// shedLogged sums the shed counts of the shedding log lines.
+func shedLogged(t *testing.T, logs string) int {
+	t.Helper()
+	sum := 0
+	for _, m := range shedAttr.FindAllStringSubmatch(logs, -1) {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum += n
+	}
+	return sum
+}
+
+// syncBuffer is a bytes.Buffer the shedding log's flush may write from its
+// own goroutine while the test reads it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+// The first shed request is logged at once; the ones shed within the
+// interval after a line are held and logged together when it ends, so a
+// burst is counted in full with at most one line per interval.
 func TestShedReportPaces(t *testing.T) {
-	var p shedReport
-	for _, step := range []struct {
-		at time.Duration
-		n  int
-		ok bool
-	}{
-		{0, 1, true},
-		{time.Second, 0, false},
-		{9 * time.Second, 0, false},
-		{10 * time.Second, 3, true},
-		{11 * time.Second, 0, false},
-	} {
-		if n, ok := p.add(t0.Add(step.at)); n != step.n || ok != step.ok {
-			t.Errorf("at %s: (%d, %v), want (%d, %v)", step.at, n, ok, step.n, step.ok)
+	now := t0
+	var lines []int
+	var waits []time.Duration
+	var flush func()
+	p := newShedReport(10*time.Second, func(shed int) { lines = append(lines, shed) })
+	p.now = func() time.Time { return now }
+	p.after = func(d time.Duration, f func()) { waits, flush = append(waits, d), f }
+	check := func(step string, wantLines []int, wantWaits []time.Duration) {
+		t.Helper()
+		if !slices.Equal(lines, wantLines) || !slices.Equal(waits, wantWaits) {
+			t.Fatalf("%s: lines %v and flushes after %v, want %v and %v", step, lines, waits, wantLines, wantWaits)
 		}
 	}
+
+	p.add()
+	check("first", []int{1}, nil)
+	now = now.Add(time.Second)
+	p.add()
+	now = now.Add(3 * time.Second)
+	p.add()
+	check("within the interval", []int{1}, []time.Duration{9 * time.Second})
+
+	now = t0.Add(10 * time.Second)
+	flush()
+	check("the interval's end", []int{1, 2}, []time.Duration{9 * time.Second})
+
+	now = now.Add(4 * time.Second)
+	p.add()
+	check("within the next interval", []int{1, 2}, []time.Duration{9 * time.Second, 6 * time.Second})
+	now = now.Add(6 * time.Second)
+	flush()
+	check("its end", []int{1, 2, 1}, []time.Duration{9 * time.Second, 6 * time.Second})
+
+	now = now.Add(time.Minute)
+	p.add()
+	check("long after the last line", []int{1, 2, 1, 1}, []time.Duration{9 * time.Second, 6 * time.Second})
 }
 
 // A pool whose every connection is in use counts as answering: Ping must not

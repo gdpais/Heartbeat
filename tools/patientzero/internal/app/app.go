@@ -117,6 +117,9 @@ type Server struct {
 	// or less means no limit (the health and admin endpoints are never
 	// limited).
 	MaxInFlight int
+	// shedEvery is how often, at most, the server logs the requests it
+	// shed; zero means shedReportEvery. Tests shorten it.
+	shedEvery time.Duration
 }
 
 // Handler routes the health endpoints and the entry points. The three
@@ -152,7 +155,14 @@ func (s *Server) limiter() func(name string, next http.HandlerFunc) http.Handler
 		return func(_ string, next http.HandlerFunc) http.HandlerFunc { return next }
 	}
 	tokens := make(chan struct{}, s.MaxInFlight)
-	report := &shedReport{}
+	every := s.shedEvery
+	if every <= 0 {
+		every = shedReportEvery
+	}
+	report := newShedReport(every, func(shed int) {
+		s.logger().Warn("in-flight limit reached; shed requests with 503",
+			"max_in_flight", s.MaxInFlight, "shed", shed)
+	})
 	return func(name string, next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			select {
@@ -163,45 +173,82 @@ func (s *Server) limiter() func(name string, next http.HandlerFunc) http.Handler
 			default:
 			}
 			s.Traffic.Shed(name)
-			if n, ok := report.add(s.now()); ok {
-				s.logger().Warn("in-flight limit reached; shedding requests with 503",
-					"max_in_flight", s.MaxInFlight, "shed", n, "entry_point", name)
-			}
+			report.add()
 			w.Header().Set("Retry-After", "1")
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "overloaded"})
 		}
 	}
 }
 
-// shedReport paces the shedding log lines: the first shed request is
-// reported at once, later ones at most every shedReportEvery, each line with
-// how many were shed since the one before.
+// shedReport paces the shedding log lines. The first shed request is logged
+// at once; those shed within every of a line are held and logged together
+// when that interval ends. So the log has at most one line per interval, and
+// every shed request is counted in one, the last of a burst included.
 type shedReport struct {
-	mu   sync.Mutex
-	last time.Time
-	shed int
+	every time.Duration
+	log   func(shed int)
+	// now and after are time.Now and time.AfterFunc; tests replace them.
+	now   func() time.Time
+	after func(time.Duration, func())
+
+	mu        sync.Mutex
+	last      time.Time // when the last line was logged
+	held      int       // shed since then, not logged yet
+	scheduled bool      // a flush of the held ones is due
 }
 
-// add counts one shed request at now and reports whether to log a line, and
-// with which count.
-func (p *shedReport) add(now time.Time) (int, bool) {
+func newShedReport(every time.Duration, log func(shed int)) *shedReport {
+	return &shedReport{every: every, log: log, now: time.Now,
+		after: func(d time.Duration, f func()) { time.AfterFunc(d, f) }}
+}
+
+// add counts one shed request. It is logged at once when no line was logged
+// within every; otherwise it is held for the flush at the interval's end.
+func (p *shedReport) add() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.shed++
-	if !p.last.IsZero() && now.Sub(p.last) < shedReportEvery {
-		return 0, false
+	p.held++
+	if p.scheduled {
+		p.mu.Unlock()
+		return
 	}
-	n := p.shed
-	p.last, p.shed = now, 0
-	return n, true
+	now := p.now()
+	if wait := p.every - now.Sub(p.last); !p.last.IsZero() && wait > 0 {
+		p.scheduled = true
+		p.mu.Unlock()
+		p.after(wait, p.flush)
+		return
+	}
+	n := p.take(now)
+	p.mu.Unlock()
+	p.log(n)
+}
+
+// flush logs the held shed requests, at the end of an interval.
+func (p *shedReport) flush() {
+	p.mu.Lock()
+	p.scheduled = false
+	n := p.take(p.now())
+	p.mu.Unlock()
+	if n > 0 {
+		p.log(n)
+	}
+}
+
+// take returns the held count and starts a new interval at now. p.mu is held.
+func (p *shedReport) take(now time.Time) int {
+	n := p.held
+	p.held, p.last = 0, now
+	return n
 }
 
 // Ping reports whether db answers, for a Ready func. A pool whose every
 // connection is in use has reached SQL Server already and is not pinged: the
-// ping would
-// wait for a connection to free up, and when SQL Server is slow that wait
-// outlasts the readiness probe, taking the pod out of its Service just when
-// the in-flight limiter is shedding load.
+// ping would wait for a connection to free up, and when SQL Server is slow
+// that wait outlasts the readiness probe, taking the pod out of its Service
+// just when the in-flight limiter is shedding load. A request can take the
+// last free connection between the check and the ping, but while requests
+// queue for a connection the pool stays full and the check holds; without a
+// queue, the ping's wait is short.
 func Ping(ctx context.Context, db *sql.DB) error {
 	if st := db.Stats(); st.MaxOpenConnections > 0 && st.InUse >= st.MaxOpenConnections {
 		return nil
