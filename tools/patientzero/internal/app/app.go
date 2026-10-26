@@ -7,6 +7,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"heartbeat/tools/patientzero/internal/inject"
@@ -126,37 +128,85 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("GET /readyz", s.readyz)
-	mux.HandleFunc("GET "+PathOrderList, limit(s.orderList))
-	mux.HandleFunc("POST "+PathPlaceOrder, limit(s.placeOrder))
-	mux.HandleFunc("GET "+PathAPIOrders, limit(s.apiOrders))
+	mux.HandleFunc("GET "+PathOrderList, limit(EntryOrderList, s.orderList))
+	mux.HandleFunc("POST "+PathPlaceOrder, limit(EntryPlaceOrder, s.placeOrder))
+	mux.HandleFunc("GET "+PathAPIOrders, limit(EntryGetOrders, s.apiOrders))
 	if s.Admin != nil {
 		mux.Handle("/admin/", s.Admin)
 	}
 	return mux
 }
 
+// shedReportEvery is how often, at most, the server logs that it is shedding
+// load, so a flood of requests does not flood the log too.
+const shedReportEvery = 10 * time.Second
+
 // limiter returns a middleware that admits at most MaxInFlight requests at
 // once, shedding the rest with 503 and Retry-After. With MaxInFlight <= 0 it
 // is a pass-through, so existing callers and tests are unaffected unless they
 // set it. The token pool is created once, so every handler it wraps shares the
-// one budget.
-func (s *Server) limiter() func(http.HandlerFunc) http.HandlerFunc {
+// one budget. A shed request writes no log rows; the run's traffic counts it
+// as shed, under the entry point's name, and the server log reports it.
+func (s *Server) limiter() func(name string, next http.HandlerFunc) http.HandlerFunc {
 	if s.MaxInFlight <= 0 {
-		return func(next http.HandlerFunc) http.HandlerFunc { return next }
+		return func(_ string, next http.HandlerFunc) http.HandlerFunc { return next }
 	}
 	tokens := make(chan struct{}, s.MaxInFlight)
-	return func(next http.HandlerFunc) http.HandlerFunc {
+	report := &shedReport{}
+	return func(name string, next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			select {
 			case tokens <- struct{}{}:
 				defer func() { <-tokens }()
 				next(w, r)
+				return
 			default:
-				w.Header().Set("Retry-After", "1")
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "overloaded"})
 			}
+			s.Traffic.Shed(name)
+			if n, ok := report.add(s.now()); ok {
+				s.logger().Warn("in-flight limit reached; shedding requests with 503",
+					"max_in_flight", s.MaxInFlight, "shed", n, "entry_point", name)
+			}
+			w.Header().Set("Retry-After", "1")
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "overloaded"})
 		}
 	}
+}
+
+// shedReport paces the shedding log lines: the first shed request is
+// reported at once, later ones at most every shedReportEvery, each line with
+// how many were shed since the one before.
+type shedReport struct {
+	mu   sync.Mutex
+	last time.Time
+	shed int
+}
+
+// add counts one shed request at now and reports whether to log a line, and
+// with which count.
+func (p *shedReport) add(now time.Time) (int, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.shed++
+	if !p.last.IsZero() && now.Sub(p.last) < shedReportEvery {
+		return 0, false
+	}
+	n := p.shed
+	p.last, p.shed = now, 0
+	return n, true
+}
+
+// Ping reports whether db answers, for a Ready func. A pool whose every
+// connection is in use has reached SQL Server already and is not pinged: the
+// ping would
+// wait for a connection to free up, and when SQL Server is slow that wait
+// outlasts the readiness probe, taking the pod out of its Service just when
+// the in-flight limiter is shedding load.
+func Ping(ctx context.Context, db *sql.DB) error {
+	if st := db.Stats(); st.MaxOpenConnections > 0 && st.InUse >= st.MaxOpenConnections {
+		return nil
+	}
+	return db.PingContext(ctx)
 }
 
 func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {

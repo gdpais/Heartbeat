@@ -17,9 +17,16 @@ sql:
   trustServerCertificate: false
   database: patientzero
   logDatabase: patientzero_log
+  # Connections each pool (business and logging) may open; requests past
+  # it wait for one.
+  maxOpenConns: 20
   # Secret with PATIENTZERO_SQL_CREDENTIAL=<login>:<password>, PatientZero's
   # own login (db_owner of the two databases above, nothing else).
   existingSecret: patientzero-sql
+
+# Entry-point requests served at once; past it PatientZero answers 503 with
+# Retry-After. 0 turns the limit off.
+maxInFlight: 64
 
 # Database role in the logging database that is granted SELECT on the log
 # views; the setup script adds the Heartbeat collector's login to it.

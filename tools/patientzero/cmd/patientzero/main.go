@@ -73,7 +73,8 @@ type config struct {
 	// maxOpenConns bounds each SQL Server pool (business and logging) so a
 	// flood of requests cannot open unbounded connections and exhaust the
 	// database. maxInFlight bounds concurrent database-backed requests; past
-	// it the server sheds load with 503 (see app.Server.MaxInFlight).
+	// it the server sheds load with 503 (see app.Server.MaxInFlight), and 0
+	// means no limit.
 	maxOpenConns, maxInFlight int
 }
 
@@ -129,8 +130,8 @@ func loadConfig() (config, error) {
 	if c.maxOpenConns, err = strconv.Atoi(env("PATIENTZERO_SQL_MAX_OPEN_CONNS", strconv.Itoa(defaultMaxOpenConns))); err != nil || c.maxOpenConns < 1 {
 		return c, errors.New("PATIENTZERO_SQL_MAX_OPEN_CONNS must be a positive integer")
 	}
-	if c.maxInFlight, err = strconv.Atoi(env("PATIENTZERO_MAX_IN_FLIGHT", strconv.Itoa(defaultMaxInFlight))); err != nil || c.maxInFlight < 1 {
-		return c, errors.New("PATIENTZERO_MAX_IN_FLIGHT must be a positive integer")
+	if c.maxInFlight, err = strconv.Atoi(env("PATIENTZERO_MAX_IN_FLIGHT", strconv.Itoa(defaultMaxInFlight))); err != nil || c.maxInFlight < 0 {
+		return c, errors.New("PATIENTZERO_MAX_IN_FLIGHT must be 0 (no limit) or a positive integer")
 	}
 	if c.database == c.logDatabase {
 		return c, errors.New("PATIENTZERO_DATABASE and PATIENTZERO_LOG_DATABASE must differ")
@@ -199,8 +200,9 @@ func run(log *slog.Logger) error {
 	}
 	defer logging.Close()
 	// Bound both pools so a request flood cannot open unbounded connections
-	// and exhaust SQL Server; the in-flight limiter (below) sheds load before
-	// requests pile up on an exhausted pool.
+	// and exhaust SQL Server. Requests past maxOpenConns wait in the pool for
+	// a connection; the in-flight limiter (below) bounds how many can wait,
+	// shedding the rest with 503.
 	for _, db := range []*sql.DB{business, logging} {
 		db.SetMaxOpenConns(cfg.maxOpenConns)
 		db.SetMaxIdleConns(cfg.maxOpenConns)
@@ -263,13 +265,13 @@ func run(log *slog.Logger) error {
 	})
 
 	srv := &app.Server{
-		Faults:   faults,
-		Traffic:  counter,
-		Admin:    scenarioRunner.Handler(cfg.adminToken),
-		Store:    &shop.SQLStore{DB: business},
-		Logs:     writer,
-		Ledger:   ledger,
-		Schema:   oslog.NewSchema(types),
+		Faults:      faults,
+		Traffic:     counter,
+		Admin:       scenarioRunner.Handler(cfg.adminToken),
+		Store:       &shop.SQLStore{DB: business},
+		Logs:        writer,
+		Ledger:      ledger,
+		Schema:      oslog.NewSchema(types),
 		FrontEnd:    cfg.frontEnd,
 		SlowSQL:     app.DefaultSlowSQL,
 		MaxInFlight: cfg.maxInFlight,
@@ -278,10 +280,10 @@ func run(log *slog.Logger) error {
 			if !migrated.Load() {
 				return errors.New("schemas not applied yet")
 			}
-			if err := business.PingContext(ctx); err != nil {
+			if err := app.Ping(ctx, business); err != nil {
 				return err
 			}
-			return logging.PingContext(ctx)
+			return app.Ping(ctx, logging)
 		},
 	}
 	httpServer := &http.Server{

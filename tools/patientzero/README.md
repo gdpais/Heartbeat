@@ -78,7 +78,10 @@ fails `PlaceOrder` with HTTP 400. Every user is a `Customer` row in the
 business database, created on first use; its id is the `User_Id` in the logs.
 
 `GET /healthz` reports that the process runs; `GET /readyz` that both
-databases answer and the schemas are in place.
+databases answer and the schemas are in place. A pool whose every
+connection is in use counts as answering, so a slow SQL Server does not take
+the pod out of its Service while the entry points shed load with `503`
+(`PATIENTZERO_MAX_IN_FLIGHT`).
 
 ## Load
 
@@ -357,12 +360,14 @@ Environment variables (the chart sets them):
 | `PATIENTZERO_SQL_PORT` | `1433` | SQL Server port |
 | `PATIENTZERO_SQL_CREDENTIAL` | required | `<login>:<password>`; never `sa` |
 | `PATIENTZERO_SQL_TRUST_SERVER_CERTIFICATE` | `false` | `true` only for the sandbox's self-signed certificate |
+| `PATIENTZERO_SQL_MAX_OPEN_CONNS` | `20` | Connections each SQL Server pool (business and logging) may open (chart `sql.maxOpenConns`); requests past it wait for one |
 | `PATIENTZERO_DATABASE` | `patientzero` | Business database |
 | `PATIENTZERO_LOG_DATABASE` | `patientzero_log` | Logging database |
 | `PATIENTZERO_SCHEMA_DIR` | `/app/oslog` | The oslog fixtures the logging schema is built from |
 | `PATIENTZERO_LOG_READER_ROLE` | `heartbeat_oslog_reader` | Role granted `SELECT` on the log views; empty for none |
 | `PATIENTZERO_FRONT_END` | the host name (the pod name on kind) | Front-end server in `Executed_By` and `Server` |
 | `PATIENTZERO_LISTEN` | `:8080` | Listen address |
+| `PATIENTZERO_MAX_IN_FLIGHT` | `64` | Entry-point requests served at once (chart `maxInFlight`); past it they get `503` with `Retry-After: 1`, and the journal counts them as `shed`. `0` turns the limit off. The health and admin endpoints are never limited |
 | `PATIENTZERO_ADMIN_TOKEN` | none | Bearer token for the scenario admin endpoints; without it they answer 401. The chart reads it from the `patientzero-admin` Secret (`admin.existingSecret`) |
 | `PATIENTZERO_JOURNAL_DIR` | `/var/lib/patientzero/journal` | Where run journals are written; the chart mounts an `emptyDir` (`journal.sizeLimit`) |
 | `PATIENTZERO_PROMETHEUS_URL`, `PATIENTZERO_LOKI_URL`, `PATIENTZERO_ALERTMANAGER_URL` | none | Where scenario signals are read (chart `signals.*`); a scenario whose signals need a missing one is not runnable |

@@ -58,7 +58,28 @@ func TestDistinctSetsAreCapped(t *testing.T) {
 	}
 }
 
+// A shed request is counted apart from the requests served: it wrote no log
+// rows, so it is not one of the requests Heartbeat reports.
+func TestShedIsCountedApart(t *testing.T) {
+	var c Counter
+	c.Shed("GetOrders") // no run yet: ignored
+	c.Begin(t0)
+	c.Observe(Request{EntryPoint: "GetOrders", Session: "api-1"})
+	c.Shed("GetOrders")
+	c.Shed("PlaceOrder")
+	last, run := c.End(t0.Add(15 * time.Second))
+	c.Shed("GetOrders") // run ended: ignored
+
+	for name, s := range map[string]Summary{"interval": last, "run": run} {
+		get, place := s.EntryPoints["GetOrders"], s.EntryPoints["PlaceOrder"]
+		if s.Requests != 1 || s.Shed != 2 || get.Requests != 1 || get.Shed != 1 || place.Requests != 0 || place.Shed != 1 {
+			t.Errorf("%s: %+v", name, s)
+		}
+	}
+}
+
 func TestNilCounter(t *testing.T) {
 	var c *Counter
 	c.Observe(Request{EntryPoint: "OrderList"})
+	c.Shed("OrderList")
 }
