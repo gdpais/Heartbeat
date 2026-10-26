@@ -159,7 +159,9 @@ curl -s localhost:9090/api/v1/alerts | jq -c '.data.alerts[] | {alertname: .labe
 
 Only `Watchdog` should be firing. Right after the collector pod is replaced,
 `HeartbeatServiceDown` can show `pending` for the old pod's IP for about a
-minute, until Prometheus's DNS discovery drops it. It never reaches `firing`.
+minute, until Prometheus's DNS discovery drops it, or, while no pod runs, for
+the missing `db-collector` job. A replacement is back well within its 2
+minutes, so it never reaches `firing`.
 
 Grafana (`admin`/`admin`): open
 <http://localhost:3001/d/sqlserver-overview?var-target=sqlserver-dev>.

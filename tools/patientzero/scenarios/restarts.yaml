@@ -7,7 +7,8 @@ description: >-
   a new one. The db-collector resumes from the watermarks it saved, the OTel
   Collector sends the request its queue kept on disk first, and while Loki
   is away the collector waits instead of failing. Loki ends with every row
-  PatientZero committed, once, and no restart is long enough to alert.
+  PatientZero committed, once, and no restart is long enough to alert:
+  neither HeartbeatServiceDown nor OutSystemsLogExportBlocked fires.
 load: steady
 steps:
   - name: before
@@ -30,12 +31,17 @@ steps:
   - name: after
     duration: 1m
 signals:
-  # HeartbeatServiceDown needs 2 minutes of up == 0 (for: 2m); the OTel
-  # Collector's restart is back within one. It covers only the OTel
-  # Collector here: the db-collector has no scrape target at all while its
-  # pod is gone (collector-outage), and Loki is not in the rule.
+  # Both alerts need 2 minutes (for: 2m): HeartbeatServiceDown of up == 0,
+  # or of no up series for the db-collector, and OutSystemsLogExportBlocked
+  # of a blocked export. Each restart is back within one.
   - name: no-service-down
     alert: HeartbeatServiceDown
+    state: resolved
+    step: before
+    mode: always
+    within: 8m
+  - name: no-export-blocked
+    alert: OutSystemsLogExportBlocked
     state: resolved
     step: before
     mode: always

@@ -422,6 +422,23 @@ var chartProfiles = []chartProfile{
 		configReloadAlertOff: true,
 	},
 	{
+		// Without the db-collector job the bundled Prometheus has nothing
+		// to find the collector under, so the missing-target alert is left
+		// out instead of firing for good.
+		name:           "collector-scrape-disabled",
+		set:            []string{"prometheus.scrapeConfigs.db-collector.enabled=false"},
+		present:        []string{"StatefulSet/db-collector", "ConfigMap/heartbeat-prometheus-rules"},
+		collectorPeers: []string{bundledPrometheusPeer},
+	},
+	{
+		// Under another job name absent(up{job="db-collector"}) matches
+		// nothing, so the rule is left out too.
+		name:           "collector-job-renamed",
+		set:            []string{"prometheus.scrapeConfigs.db-collector.job_name=heartbeat-collector"},
+		present:        []string{"StatefulSet/db-collector", "ConfigMap/heartbeat-prometheus-rules"},
+		collectorPeers: []string{bundledPrometheusPeer},
+	},
+	{
 		name:      "config-reload-alert-misspelled",
 		inline:    "prometheusRules: {configReloadAlrt: {enabled: false}}",
 		wantError: "values don't meet the specifications of the schema",
@@ -597,6 +614,7 @@ func TestChartProfiles(t *testing.T) {
 			checkGrafanaGzip(t, objects)
 			checkNotes(t, profile)
 			checkConfigReloadAlert(t, objects, profile.configReloadAlertOff)
+			checkCollectorMissingAlert(t, objects)
 		})
 	}
 }
@@ -672,6 +690,41 @@ func checkConfigReloadAlert(t *testing.T, objects map[string]object, off bool) {
 	}
 	if !alerts["HeartbeatServiceDown"] || !alerts["Watchdog"] {
 		t.Errorf("rules ConfigMap lost the chart's other alerts: %v", alerts)
+	}
+}
+
+// checkCollectorMissingAlert checks that the rules ConfigMap holds the
+// db-collector's missing-target alert exactly when the profile renders the
+// db-collector and the bundled Prometheus scrapes it as job db-collector:
+// absent() fires for good wherever nothing matches.
+func checkCollectorMissingAlert(t *testing.T, objects map[string]object) {
+	t.Helper()
+	const file = "heartbeat-collector-missing.rules.yml"
+	rules, ok := objects["ConfigMap/heartbeat-prometheus-rules"]
+	if !ok {
+		return
+	}
+	scraped := false
+	if cm, ok := objects["ConfigMap/prometheus"]; ok {
+		var prom struct {
+			ScrapeConfigs []struct {
+				JobName string `yaml:"job_name"`
+			} `yaml:"scrape_configs"`
+		}
+		mustUnmarshal(t, cm.Data["prometheus.yml"], &prom)
+		for _, job := range prom.ScrapeConfigs {
+			scraped = scraped || job.JobName == "db-collector"
+		}
+	}
+	_, collector := objects["StatefulSet/db-collector"]
+	want := collector && scraped
+	content, got := rules.Data[file]
+	if got != want {
+		t.Fatalf("rules ConfigMap holds %s: %v, want %v (db-collector rendered: %v, scraped by the bundled Prometheus: %v)",
+			file, got, want, collector, scraped)
+	}
+	if got && !strings.Contains(content, `absent(up{job="db-collector"})`) {
+		t.Errorf("%s does not alert on absent(up{job=\"db-collector\"}):\n%s", file, content)
 	}
 }
 

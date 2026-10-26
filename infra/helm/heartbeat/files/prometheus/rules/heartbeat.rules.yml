@@ -146,6 +146,20 @@ groups:
         annotations:
           summary: "OutSystems {{ $labels.log_type }} logs of {{ $labels.environment }}/{{ $labels.target }} are {{ $value | humanizeDuration }} behind"
           description: "The {{ $labels.collector }} collector has not extracted {{ $labels.log_type }} rows for more than 30 minutes. Logs, derived metrics and the OutSystems SLO alerts for this target are stale. Check the collector's probe errors and OTLP export failures, and heartbeat_outsystems_export_blocked: at 1 the OTel Collector holds the rows back, usually because Loki is down or slow."
+      # The OTel Collector holds the batch it was given, so the log types
+      # read nothing more: 1 from the first minute Loki or the Collector stops
+      # taking rows, while the lag above takes 40 minutes to alert. One alert
+      # per target, as every log type of it waits on the same Collector. A
+      # restart of Loki or the Collector is back well within the 2 minutes
+      # (PatientZero's restarts scenario).
+      - alert: OutSystemsLogExportBlocked
+        expr: max by (collector, environment, target) (heartbeat_outsystems_export_blocked) == 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "OutSystems log export of {{ $labels.environment }}/{{ $labels.target }} is blocked"
+          description: "The {{ $labels.collector }} collector has waited more than 2 minutes for the OTel Collector to accept a batch of logs, and reads nothing more until it does: logs, derived metrics and the OutSystems SLO alerts for this target go stale. Nothing is lost while the rows are still in the logging database's views (the current and the previous week). Usually Loki is down or slow; HeartbeatServiceDown says whether Loki or the OTel Collector is down, and GET /admin/config shows what each log type waits for."
 
   - name: heartbeat-alerts
     rules:
@@ -159,8 +173,12 @@ groups:
         annotations:
           summary: "Heartbeat alerting pipeline is alive"
           description: "Always firing. If the dead-man's switch stops receiving it, Heartbeat alerting is down."
+      # Loki and the OTel Collector are static targets, so down they report
+      # up == 0. The db-collector is found through DNS and has no target at
+      # all while its pod is gone: heartbeat-collector-missing.rules.yml
+      # covers that.
       - alert: HeartbeatServiceDown
-        expr: up{job=~"db-collector|otel-collector"} == 0
+        expr: up{job=~"db-collector|otel-collector|loki"} == 0
         for: 2m
         labels:
           severity: warning

@@ -65,7 +65,7 @@ Data path for self-managed OutSystems 11:
    treating it as a failure: the export runs in the background, outside the
    probe deadline, and is retried until the Collector accepts it; meanwhile
    the log type reads nothing more, and `heartbeat_outsystems_export_blocked`
-   is 1. The target stays up and does not back off, so it resumes as soon
+   is 1 (`OutSystemsLogExportBlocked` fires after 2 minutes). The target stays up and does not back off, so it resumes as soon
    as the Collector accepts the batch. The rows were read and the query
    closed before the export started, so nothing is held on the logging
    database while it waits, and the batches held in memory are bounded
@@ -218,7 +218,9 @@ left out so a handful of failures cannot page: the availability alerts need
 five requests a minute over the long window, so a fast burn takes at least 5
 failed requests in the hour; the latency alerts need one. Because the
 SLIs go quiet, not red, when extraction stops, `OutSystemsLogExtractionBehind`
-fires when a log type's extraction lag passes 30 minutes. These are
+fires when a log type's extraction lag passes 30 minutes, and
+`OutSystemsLogExportBlocked` sooner, 2 minutes after the OTel Collector stops
+taking batches, as it does while Loki is down. These are
 guardrails; per-application objectives and adaptive baselines come in
 phase 7.
 
