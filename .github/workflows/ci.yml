@@ -9,6 +9,11 @@ name: ci
 # the change detection asked for (scripts/ci-gate.sh), so a job skipped by
 # mistake cannot pass as green.
 #
+# The release pull request also runs every PatientZero scenario
+# (scenarios.yml, about two and a half hours), so no release is tagged while
+# one fails. It is chosen by its branch, not its paths, so pushes to master
+# and manual runs of this workflow leave it out; scenarios.yml runs it nightly.
+#
 # Do not add `paths:` filters to these triggers: a required check whose
 # workflow never starts is never reported, and the pull request waits forever.
 # To add a job: give it `needs: changes` and an `if:` on a flag (add the flag
@@ -39,6 +44,8 @@ jobs:
       db_collector: ${{ steps.detect.outputs.db_collector }}
       chart: ${{ steps.detect.outputs.chart }}
       kind_e2e: ${{ steps.detect.outputs.kind_e2e }}
+      # release-please's pull request, from this repository, not a fork.
+      scenarios: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--branches--master') && github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -178,9 +185,15 @@ jobs:
       - name: Run acceptance checks on kind
         run: make kind-e2e
 
+  scenarios:
+    name: PatientZero scenarios
+    needs: changes
+    if: ${{ needs.changes.outputs.scenarios == 'true' }}
+    uses: ./.github/workflows/scenarios.yml
+
   ci-ok:
     name: ci-ok
-    needs: [changes, test, sqlserver, chart, kind-e2e]
+    needs: [changes, test, sqlserver, chart, kind-e2e, scenarios]
     # always(), not !cancelled(): a gate skipped on failure or cancellation
     # would count as passed.
     if: always()
@@ -193,4 +206,4 @@ jobs:
       - name: Every job did what the change detection asked for
         env:
           NEEDS: ${{ toJSON(needs) }}
-        run: scripts/ci-gate.sh changes test sqlserver:db_collector chart:chart kind-e2e:kind_e2e
+        run: scripts/ci-gate.sh changes test sqlserver:db_collector chart:chart kind-e2e:kind_e2e scenarios:scenarios

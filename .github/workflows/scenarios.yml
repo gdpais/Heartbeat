@@ -1,0 +1,86 @@
+name: scenarios
+
+# Runs every PatientZero scenario (ADR 0010) on a fresh kind cluster: the
+# restarts, outages, ingest faults and SLO alerts that phase 2's exit is
+# checked against, about two and a half hours. Too slow for every pull
+# request, so it runs:
+#
+#   - on the release pull request, called by ci.yml: ci-ok fails while a
+#     scenario fails, so no release is tagged with one (tags cannot be moved
+#     or deleted, so the check must come before the tag);
+#   - every night on master, so a regression shows days, not a release, after
+#     it merged;
+#   - by hand (Actions → scenarios → Run workflow), on any branch, for every
+#     scenario or some.
+#
+# make patientzero-scenarios runs them one after the other in a fixed order
+# (SCENARIO_ORDER in tools/patientzero/scripts/patientzero.sh); the journals
+# and the summary are kept as the run's artifact.
+
+on:
+  workflow_call:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: Scenario names separated by spaces; empty runs every scenario
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  scenarios:
+    name: Every PatientZero scenario on kind
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    # Two nightly runs never overlap. On a pull request ci.yml cancels the
+    # older run, this job with it.
+    concurrency:
+      group: scenarios-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install pinned kind, kubectl and Helm
+        run: |
+          make install-tools
+          echo "$PWD/.tmp/bin" >> "$GITHUB_PATH"
+      - name: Check tool versions
+        run: make tools-check
+      - name: Fetch chart dependencies (Chart.lock)
+        run: make chart-deps
+      # Random SA and collector passwords in the ignored .env.sqlserver-dev;
+      # then the kind cluster, the images, SQL Server and the chart.
+      - name: Start SQL Server and Heartbeat on kind
+        run: |
+          make sqlserver-dev-init
+          make sqlserver-dev-up
+      - name: Deploy PatientZero
+        run: make patientzero-up
+      # The input reaches the script through the environment, never the
+      # command line; the script accepts only scenario names.
+      - name: Run the scenarios
+        env:
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: tools/patientzero/scripts/patientzero.sh scenarios
+      - name: Show the cluster
+        if: failure()
+        run: |
+          kubectl --context kind-heartbeat get pods,statefulsets,deployments,jobs -A -o wide || true
+          kubectl --context kind-heartbeat -n heartbeat logs statefulset/db-collector --tail 200 || true
+          docker ps -a || true
+      - name: Keep the journals and the summary
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: patientzero-scenarios
+          path: .tmp/patientzero-scenarios/
+          if-no-files-found: warn
+          retention-days: 30

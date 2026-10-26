@@ -31,6 +31,11 @@
 #   scenario with cluster faults it is the run's host agent: it restarts or
 #   stops the db-collector, the OTel Collector, Loki or SQL Server when
 #   PatientZero asks, and ends an outage it started when interrupted.
+# scenarios: runs every scenario, or those SCENARIOS names, one after the
+#   other in SCENARIO_ORDER (below), as scenario does, and goes on after a
+#   failure. Writes .tmp/patientzero-scenarios/summary.md (and the GitHub
+#   step summary in CI) and exits 0 only if every scenario passed. The
+#   scenarios workflow runs it on a fresh cluster (.github/workflows/scenarios.yml).
 # scale: a production-sized test logging database, patientzero_scale on the
 # sandbox SQL Server: two weeks of the surveyed installation's log, written
 # straight into the cycle tables (tools/patientzero/cmd/oslog-scale), then
@@ -66,6 +71,7 @@
 #   SCALE_LOOKBACK         how far back the patientzero-scale collector starts [48h]
 #   SCENARIO               scenario to run; empty to list them []
 #   SCENARIO_LOAD          0 to run a scenario without starting its load [1]
+#   SCENARIOS              scenarios to run, space-separated; empty for all []
 set -eu
 cd "$(dirname "$0")/../../.."
 
@@ -92,6 +98,12 @@ LOAD_DIR=tools/patientzero/load
 LOAD_JOB=patientzero-load
 ADMIN_SECRET=patientzero-admin
 SCENARIO_DIR=.tmp/patientzero-scenarios
+# The order of make patientzero-scenarios: the SLO scenarios first, while the
+# burn-rate windows hold no other fault (they check that, scenarios/README.md);
+# late-commits last, as its OutSystemsLateLogRows alert keeps firing for the
+# 15 minutes it looks back, which restarts checks is quiet. A scenario file
+# missing here fails the scenarios package's tests.
+SCENARIO_ORDER="bad-deploy slow-sql checkout-errors orderlist-latency restarts rotation log-backlog log-growth loki-outage otel-outage collector-outage sqlserver-outage late-commits"
 # Renovate keeps this pin current (renovate.json).
 K6_IMAGE=grafana/k6:1.7.1@sha256:4fd3a694926b064d3491d9b02b01cde886583c4931f1223816e3d9a7bdfa7e0f
 
@@ -844,6 +856,38 @@ cmd_scenario() {
 	log "run $ended passed"
 }
 
+cmd_scenarios() {
+	# Names are words: no glob expands them.
+	set -f
+	names=${SCENARIOS:-$SCENARIO_ORDER}
+	for name in $names; do
+		case " $SCENARIO_ORDER " in
+		*" $name "*) ;;
+		*) die "no scenario $name; SCENARIOS takes names from: $SCENARIO_ORDER" ;;
+		esac
+	done
+	mkdir -p "$SCENARIO_DIR"
+	summary=$SCENARIO_DIR/summary.md
+	printf '| Scenario | Result | Took |\n| --- | --- | --- |\n' >"$summary"
+	failed=
+	for name in $names; do
+		log "scenario $name"
+		started=$(date +%s)
+		if SCENARIO=$name "$0" scenario; then
+			result=passed
+		else
+			result=failed
+			failed="$failed $name"
+		fi
+		printf '| %s | %s | %s s |\n' "$name" "$result" "$(($(date +%s) - started))" >>"$summary"
+	done
+	cat "$summary"
+	if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+		{ echo "## PatientZero scenarios"; echo; cat "$summary"; } >>"$GITHUB_STEP_SUMMARY"
+	fi
+	[ -z "$failed" ] || die "scenarios failed:$failed"
+}
+
 cmd_load_stop() {
 	cluster_exists || return 0
 	kubectl_ -n "$NAMESPACE" delete job "$LOAD_JOB" --ignore-not-found --wait >/dev/null
@@ -941,6 +985,7 @@ down) cmd_down ;;
 load) cmd_load ;;
 load-stop) cmd_load_stop ;;
 scenario) cmd_scenario ;;
+scenarios) cmd_scenarios ;;
 scale) cmd_scale ;;
 scale-measure) cmd_scale_measure ;;
 scale-collect) cmd_scale_collect ;;
