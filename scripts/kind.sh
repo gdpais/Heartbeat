@@ -26,6 +26,7 @@
 #   SQLSERVER_CONTAINER  Docker SQL Server container [heartbeat-sqlserver-dev]
 #   SQLSERVER_ENV_FILE   SA password and collector credential file [.env.sqlserver-dev]
 #   SQLSERVER_HOST_PORT  loopback host port for SQL Server; empty for none [11433]
+#   SQLSERVER_MEMORY_LIMIT_MB  SQL Server's memory cap in MB, at least 2048 [2048]
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -37,6 +38,7 @@ NAMESPACE=${HEARTBEAT_NAMESPACE:-heartbeat}
 SQLSERVER_CONTAINER=${SQLSERVER_CONTAINER:-heartbeat-sqlserver-dev}
 SQLSERVER_ENV_FILE=${SQLSERVER_ENV_FILE:-.env.sqlserver-dev}
 SQLSERVER_HOST_PORT=${SQLSERVER_HOST_PORT-11433}
+SQLSERVER_MEMORY_LIMIT_MB=${SQLSERVER_MEMORY_LIMIT_MB:-2048}
 SQLSERVER_IMAGE=mcr.microsoft.com/mssql/server:2022-latest
 RELEASE=heartbeat
 CHART=infra/helm/heartbeat
@@ -205,6 +207,24 @@ cmd_down() {
 	rm -rf "$STATE_DIR"
 }
 
+# SQL Server does not start with less than about 2 GB.
+sqlserver_memory_valid() {
+	case "$SQLSERVER_MEMORY_LIMIT_MB" in
+	"" | *[!0-9]*) die "SQLSERVER_MEMORY_LIMIT_MB must be a number of MB, not $SQLSERVER_MEMORY_LIMIT_MB" ;;
+	esac
+	[ "$SQLSERVER_MEMORY_LIMIT_MB" -ge 2048 ] || die "SQLSERVER_MEMORY_LIMIT_MB must be at least 2048 (SQL Server needs 2 GB), not $SQLSERVER_MEMORY_LIMIT_MB"
+}
+
+# A container keeps the environment it was created with, so one created
+# before the cap, or with another, is only reported. Its databases are on
+# the volume, so recreating the container keeps them.
+sqlserver_memory_check() {
+	cap=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$SQLSERVER_CONTAINER" | sed -n 's/^MSSQL_MEMORY_LIMIT_MB=//p')
+	[ "$cap" = "$SQLSERVER_MEMORY_LIMIT_MB" ] && return 0
+	if [ -n "$cap" ]; then cap="a $cap MB memory cap"; else cap="no memory cap"; fi
+	log "warning: $SQLSERVER_CONTAINER has $cap, not $SQLSERVER_MEMORY_LIMIT_MB MB, and keeps it until it is recreated; its databases stay on the ${SQLSERVER_CONTAINER}-data volume: docker rm -f $SQLSERVER_CONTAINER, then make sqlserver-dev-up"
+}
+
 env_value() {
 	grep "^$1=" "$SQLSERVER_ENV_FILE" | head -n 1 | cut -d= -f2-
 }
@@ -224,22 +244,27 @@ cmd_sqlserver_up() {
 		[ "$(printf '%s' "$collector_login" | tr 'A-Z' 'a-z')" = sa ]; then
 		die "HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV in $SQLSERVER_ENV_FILE must be <login>:<password> for a dedicated login, not sa; run make sqlserver-dev-init to add one"
 	fi
+	sqlserver_memory_valid
 	cmd_cluster
 	if [ -z "$(docker ps -aq --filter "name=^${SQLSERVER_CONTAINER}\$")" ]; then
-		log "starting $SQLSERVER_CONTAINER"
+		log "starting $SQLSERVER_CONTAINER (memory capped at $SQLSERVER_MEMORY_LIMIT_MB MB)"
 		set --
 		if [ -n "$SQLSERVER_HOST_PORT" ]; then
 			set -- -p "127.0.0.1:$SQLSERVER_HOST_PORT:1433"
 		fi
 		# The password goes in through the environment, not the command line.
-		MSSQL_SA_PASSWORD=$password docker run -d --name "$SQLSERVER_CONTAINER" \
+		# Uncapped, SQL Server sizes itself to 80% of the Docker VM, so a load
+		# flood or a second kind cluster ran the VM out of memory and got it
+		# killed; capped, it pages its buffer pool instead.
+		MSSQL_SA_PASSWORD=$password MSSQL_MEMORY_LIMIT_MB=$SQLSERVER_MEMORY_LIMIT_MB docker run -d --name "$SQLSERVER_CONTAINER" \
 			--platform linux/amd64 --network kind "$@" \
-			-e ACCEPT_EULA=Y -e MSSQL_PID=Developer -e MSSQL_SA_PASSWORD \
+			-e ACCEPT_EULA=Y -e MSSQL_PID=Developer -e MSSQL_SA_PASSWORD -e MSSQL_MEMORY_LIMIT_MB \
 			-v "${SQLSERVER_CONTAINER}-data:/var/opt/mssql" \
 			--health-cmd 'SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -Q "SELECT 1" >/dev/null 2>&1 || exit 1' \
 			--health-interval 10s --health-timeout 5s --health-retries 20 --health-start-period 30s \
 			"$SQLSERVER_IMAGE" >/dev/null
 	else
+		sqlserver_memory_check
 		docker start "$SQLSERVER_CONTAINER" >/dev/null
 	fi
 	log "waiting for $SQLSERVER_CONTAINER to become healthy"

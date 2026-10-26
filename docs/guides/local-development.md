@@ -100,7 +100,15 @@ make sqlserver-dev-down     # remove the container and its data; redeploy withou
 
 The container is named `heartbeat-sqlserver-dev`, uses `MSSQL_PID=Developer`,
 publishes 1433 only on `127.0.0.1:11433`, runs the AMD64 image (emulated on
-ARM hosts) and must pass a SQL health check before deploying. Once started,
+ARM hosts) and must pass a SQL health check before deploying. Its memory is
+capped at 2048 MB (`SQLSERVER_MEMORY_LIMIT_MB`, at least 2048, SQL Server's
+minimum); uncapped, SQL Server sizes itself to 80% of the Docker VM, and on an
+8 GB Docker host a PatientZero load flood or a second kind cluster got it
+killed. A container keeps the cap it was created with: `make sqlserver-dev-up`
+warns when it differs, and `docker rm -f heartbeat-sqlserver-dev` followed by
+`make sqlserver-dev-up` recreates it with the new one, keeping its databases,
+which are on the `heartbeat-sqlserver-dev-data` volume. `make test-sqlserver`
+caps its disposable container the same way. Once started,
 later `make kind-deploy` runs keep the target until `make sqlserver-dev-down`.
 The collector logs in as `heartbeat_collector`, which `make sqlserver-dev-up`
 creates with only the
