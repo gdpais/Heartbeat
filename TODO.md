@@ -270,7 +270,7 @@ follow the ingest path.
 Remaining work, in order: the signal gaps the PatientZero scenarios found
 [3.3, 9.1] → the scheduled scenario run [16.5] → this stage's validation →
 the release [0.5]. Not part of this exit, and done alongside stage 3 before
-the first production deploy [18]: per-probe failure isolation and a series
+the first production deploy [18]: a series
 budget [2.6], collector egress and exposure [2.7], unknown keys in component
 values [0.4], Alertmanager's rollout policy [9.4] and PatientZero's hardening
 [16.5].
