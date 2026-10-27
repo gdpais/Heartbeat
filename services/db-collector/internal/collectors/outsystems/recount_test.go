@@ -224,6 +224,34 @@ func TestRecountCompare(t *testing.T) {
 	}
 }
 
+// A log type that delivers nothing, every row of it late, counts each
+// minute once and keeps the counts of the window only.
+func TestRecountKeepsOnlyTheWindowWithoutDeliveries(t *testing.T) {
+	var s recountState
+	key := WatermarkKey{Collector: "c", Target: "t", LogType: "cyclic_job"}
+	window := 10 * time.Minute
+	s.start(key, Watermark{Instant: at(0), Source: "db"}, window, "SELECT 1")
+	var late int64
+	for m := 1; m <= 120; m++ {
+		lo, hi, ok := s.window(key, at(time.Duration(m)*time.Minute), window)
+		if !ok {
+			t.Fatalf("no window at t0+%dm", m)
+		}
+		counts := map[int64]int64{}
+		for k := int64(1); k <= int64(hi.Sub(lo)/time.Minute); k++ {
+			counts[k] = 1
+		}
+		n, _ := s.compare(key, lo, hi, counts)
+		late += n
+	}
+	if late != 120 {
+		t.Fatalf("late rows = %d, want 120, one a minute", late)
+	}
+	if n := len(s.logs[key].late); n > 10 {
+		t.Fatalf("kept the late counts of %d minutes, want at most the window's 10", n)
+	}
+}
+
 func TestMinuteEnd(t *testing.T) {
 	for _, tc := range []struct{ in, want time.Duration }{
 		{0, 0}, {time.Nanosecond, time.Minute}, {time.Minute, time.Minute}, {61 * time.Second, 2 * time.Minute},

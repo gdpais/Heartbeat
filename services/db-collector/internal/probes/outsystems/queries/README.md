@@ -78,8 +78,9 @@ the parameters directly; do not cast either side.
 - The recount runs the query as a derived table,
   `SELECT ... FROM (<query>) AS q`, to count its rows per minute
   ([ADR 0008](../../../../../../docs/architecture/decisions/0008-outsystems-11-log-extraction.md)).
-  So no `WITH`, top-level `OPTION`, or `FOR XML` or `JSON`, and name every
-  column (`... AS Message`). SQL Server then reads only the `Instant` index;
+  So no `WITH`, top-level `OPTION`, or `FOR XML` or `JSON`, keep
+  `TOP (@limit)` with the `ORDER BY`, and name every column
+  (`... AS Message`). SQL Server then reads only the `Instant` index;
   `make test-sqlserver` checks each query's count against its rows and its
   logical reads.
 

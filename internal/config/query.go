@@ -111,8 +111,9 @@ func ValidateReadOnlySelect(query string) error {
 // the text of a derived table: the statement alone, without the comments and
 // ';' around it, so that "FROM (\n" + text + "\n) AS q" reads exactly the
 // rows query returns.  It fails for a query a derived table cannot hold: one
-// led by WITH, or with a top-level OPTION (query hints) or FOR XML, JSON or
-// BROWSE clause.  The error says why, without quoting the query.
+// led by WITH, with a top-level OPTION (query hints) or FOR XML, JSON or
+// BROWSE clause, or with a top-level ORDER BY but no TOP or OFFSET.  The
+// error says why, without quoting the query.
 func DerivedTable(query string) (string, error) {
 	if err := ValidateReadOnlySelect(query); err != nil {
 		return "", err
@@ -126,6 +127,7 @@ func DerivedTable(query string) (string, error) {
 		return "", errors.New("starts with WITH, which a derived table cannot hold")
 	}
 	depth := 0
+	top, orderBy, offset := false, false, false
 	for i, token := range statement {
 		if token.kind != sqlPunct && token.kind != sqlWord {
 			continue
@@ -140,7 +142,19 @@ func DerivedTable(query string) (string, error) {
 			return "", errors.New("has an OPTION clause, which a derived table cannot hold")
 		case token.text == "FOR" && i+1 < len(statement) && slices.Contains([]string{"XML", "JSON", "BROWSE"}, statement[i+1].text):
 			return "", fmt.Errorf("has a FOR %s clause, which a derived table cannot hold", statement[i+1].text)
+		case token.text == "TOP":
+			top = true
+		case token.text == "ORDER" && i+1 < len(statement) && statement[i+1].text == "BY":
+			orderBy = true
+		case token.text == "OFFSET" && orderBy:
+			offset = true
 		}
+	}
+	// A derived table is ordered only to pick the rows TOP or OFFSET keep
+	// (SQL Server's Msg 1033).  A TOP in one branch of a UNION ordered as a
+	// whole passes here, and its recount reports what SQL Server makes of it.
+	if orderBy && !top && !offset {
+		return "", errors.New("has an ORDER BY clause without TOP or OFFSET, which a derived table cannot hold")
 	}
 	return query[statement[0].start:statement[len(statement)-1].end], nil
 }

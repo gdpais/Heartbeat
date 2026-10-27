@@ -170,15 +170,18 @@ groups:
         annotations:
           summary: "OutSystems {{ $labels.log_type }} log rows of {{ $labels.environment }}/{{ $labels.target }} were committed too late to be read"
           description: "The {{ $labels.collector }} collector's recount found about {{ $value | printf \"%.0f\" }} {{ $labels.log_type }} rows in the last 15 minutes that the log service committed after the collector had read past their Instant, later than the lag. They are not in Loki, and the derived metrics and SLOs undercount them. Raise this log type's lag (probes[].lag) above how late the log service commits; late commits usually mean it is behind."
-      # The extraction delivered rows more often than the logging database
-      # holds them. It never should: the watermark moves only past rows sent.
+      # The extraction counted rows delivered more often than the logging
+      # database holds them: it read them twice, which it never should (the
+      # watermark moves only past rows sent), or they were deleted after they
+      # were sent. A batch sent again after the Collector took it is not
+      # counted: delivery is at least once (ADR 0008).
       - alert: OutSystemsDuplicateLogRows
         expr: sum by (collector, environment, target, log_type) (increase(heartbeat_outsystems_duplicate_rows_total[15m])) > 0
         labels:
           severity: warning
         annotations:
-          summary: "OutSystems {{ $labels.log_type }} log rows of {{ $labels.environment }}/{{ $labels.target }} were sent twice"
-          description: "The {{ $labels.collector }} collector's recount found about {{ $value | printf \"%.0f\" }} {{ $labels.log_type }} rows in the last 15 minutes that it delivered more often than the logging database holds them: Loki holds them twice, and the derived metrics count them twice. This is a defect of the extraction; report it with the collector's log, which names the minutes."
+          summary: "OutSystems {{ $labels.log_type }} log rows of {{ $labels.environment }}/{{ $labels.target }} were delivered more often than the logging database holds them"
+          description: "The {{ $labels.collector }} collector's recount found about {{ $value | printf \"%.0f\" }} {{ $labels.log_type }} rows in the last 15 minutes that it delivered more often than the logging database holds them. Either the extraction read them twice, a defect: Loki holds them twice and the derived metrics count them twice; report it with the collector's log, which names the minutes. Or rows were deleted from the logging database after they were sent."
       # Most recounts of the last 15 minutes failed: late and duplicate rows
       # go uncounted. A ratio, since how many recounts run depends on the
       # poll interval (one a minute at most), over three or more, so one

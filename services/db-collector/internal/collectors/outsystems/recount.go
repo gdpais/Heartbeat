@@ -7,8 +7,10 @@ package outsystems
 //   - More rows in the database than delivered: rows the log service
 //     committed after the watermark had passed them, later than the lag.
 //     They are never read; [MetricLateRows] counts them.
-//   - Fewer: rows delivered more often than the database holds them, which
-//     the extraction must never do; [MetricDuplicateRows] counts them.
+//   - Fewer: rows delivered more often than the database holds them, read
+//     twice, which the extraction must never do, or deleted after they were
+//     sent; [MetricDuplicateRows] counts them.  A batch sent again after
+//     the Collector took it is delivered once here, so it is not counted.
 //
 // It only counts: nothing is read again or sent, so the recount cannot
 // duplicate a row in Loki.  Each minute's difference is counted once, the
@@ -214,6 +216,10 @@ func (s *recountState) compare(key WatermarkKey, lo, hi time.Time, counts map[in
 			log.duplicate[end] = -extra
 		}
 	}
+	// No later recount compares a minute at or before lo: the watermark
+	// only moves on, and the counts start again when it moves back.  So a
+	// log type that delivers nothing, every row late, keeps the window only.
+	log.prune(lo)
 	return late, duplicate
 }
 

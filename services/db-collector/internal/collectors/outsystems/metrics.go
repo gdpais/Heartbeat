@@ -39,7 +39,9 @@ const (
 	// than the lag (recount.go).  They are not sent.
 	MetricLateRows = "heartbeat_outsystems_late_rows_total"
 	// MetricDuplicateRows counts rows a recount found delivered more often
-	// than the logging database holds them: sent twice.
+	// than the logging database holds them: read twice, or deleted after
+	// they were sent.  A batch sent again after the Collector took it is
+	// not counted.
 	MetricDuplicateRows = "heartbeat_outsystems_duplicate_rows_total"
 	// MetricRecounts counts the recounts run, failed ones included.
 	MetricRecounts = "heartbeat_outsystems_recounts_total"

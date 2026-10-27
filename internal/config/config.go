@@ -700,7 +700,7 @@ func validateProbeQueries(collector CollectorRuntimeConfig) error {
 				// The recount counts the query's rows as a derived table.
 				if collector.Kind == KindOutSystemsLogs && collector.OutSystemsLogs.RecountWindow > 0 {
 					if _, err := DerivedTable(probe.QueryTemplate); err != nil {
-						return fmt.Errorf("%s probe %s query_template cannot be recounted: it %w; drop that clause or set recount_window: 0s", scope, probe.Name, err)
+						return fmt.Errorf("%s probe %s query_template cannot be recounted: it %w; change the query_template or set recount_window: 0s", scope, probe.Name, err)
 					}
 				}
 			}

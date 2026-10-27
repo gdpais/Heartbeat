@@ -413,8 +413,8 @@ tests:
               target: logging-db
               log_type: general
             exp_annotations:
-              summary: "OutSystems general log rows of prod/logging-db were sent twice"
-              description: "The oslogs collector's recount found about 2 general rows in the last 15 minutes that it delivered more often than the logging database holds them: Loki holds them twice, and the derived metrics count them twice. This is a defect of the extraction; report it with the collector's log, which names the minutes."
+              summary: "OutSystems general log rows of prod/logging-db were delivered more often than the logging database holds them"
+              description: "The oslogs collector's recount found about 2 general rows in the last 15 minutes that it delivered more often than the logging database holds them. Either the extraction read them twice, a defect: Loki holds them twice and the derived metrics count them twice; report it with the collector's log, which names the minutes. Or rows were deleted from the logging database after they were sent."
 
   - name: OutSystems log recount failing fires when most recounts fail, not for one, at any poll interval
     interval: 1m

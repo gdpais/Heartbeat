@@ -143,6 +143,10 @@ func TestDerivedTable(t *testing.T) {
 			"SELECT x FROM (SELECT TOP (1) x FROM t OPTION_x) AS q WHERE x IN (SELECT y FROM u FOR SYSTEM_TIME AS OF '2026-01-01')"},
 		{"FOR SYSTEM_TIME at the top level", "SELECT y FROM u FOR SYSTEM_TIME AS OF '2026-01-01'", "SELECT y FROM u FOR SYSTEM_TIME AS OF '2026-01-01'"},
 		{"a column named option", "SELECT t.option FROM t", "SELECT t.option FROM t"},
+		{"ORDER BY with OFFSET", "SELECT Instant FROM t ORDER BY Instant OFFSET 0 ROWS FETCH NEXT @limit ROWS ONLY",
+			"SELECT Instant FROM t ORDER BY Instant OFFSET 0 ROWS FETCH NEXT @limit ROWS ONLY"},
+		{"ORDER BY inside OVER and a subquery", "SELECT ROW_NUMBER() OVER (ORDER BY Instant) AS n FROM (SELECT TOP (1) Instant FROM t ORDER BY Instant) AS r",
+			"SELECT ROW_NUMBER() OVER (ORDER BY Instant) AS n FROM (SELECT TOP (1) Instant FROM t ORDER BY Instant) AS r"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := DerivedTable(tc.query)
@@ -159,6 +163,8 @@ func TestDerivedTable(t *testing.T) {
 		{"OPTION", "SELECT 1 AS x FROM t OPTION (RECOMPILE)", "OPTION clause"},
 		{"FOR XML", "SELECT 1 AS x FOR XML PATH('')", "FOR XML clause"},
 		{"FOR JSON", "SELECT 1 AS x FOR JSON AUTO", "FOR JSON clause"},
+		{"ORDER BY without TOP", "SELECT Instant FROM t WHERE Instant > @from ORDER BY Instant", "ORDER BY clause without TOP or OFFSET"},
+		{"a UNION ordered without TOP", "SELECT Instant FROM a UNION ALL SELECT Instant FROM b ORDER BY Instant", "ORDER BY clause without TOP or OFFSET"},
 	} {
 		t.Run("rejects "+tc.name, func(t *testing.T) {
 			if got, err := DerivedTable(tc.query); err == nil || !strings.Contains(err.Error(), tc.want) {

@@ -811,7 +811,15 @@ func TestLoadRuntimeConfigRejectsInvalidOutSystemsLogsSettings(t *testing.T) {
 				return strings.Replace(s, "{name: general, timeout_ms: 20000}",
 					`{name: general, timeout_ms: 20000, query_template: "SELECT TOP (@limit) Instant FROM dbo.oslog_General WHERE Instant > @from AND Instant <= @to ORDER BY Instant OPTION (RECOMPILE)"}`, 1)
 			},
-			wantErr: "probe general query_template cannot be recounted: it has an OPTION clause, which a derived table cannot hold; drop that clause or set recount_window: 0s",
+			wantErr: "probe general query_template cannot be recounted: it has an OPTION clause, which a derived table cannot hold; change the query_template or set recount_window: 0s",
+		},
+		{
+			name: "query_template ordered without TOP", otel: otelSection,
+			edit: func(s string) string {
+				return strings.Replace(s, "{name: general, timeout_ms: 20000}",
+					`{name: general, timeout_ms: 20000, query_template: "SELECT Instant FROM dbo.oslog_General WHERE Instant > @from AND Instant <= @to ORDER BY Instant"}`, 1)
+			},
+			wantErr: "probe general query_template cannot be recounted: it has an ORDER BY clause without TOP or OFFSET, which a derived table cannot hold",
 		},
 		{name: "zero interval", otel: otelSection, settings: "      scrape_interval: 0s\n", wantErr: "must have positive scrape interval"},
 		{name: "no OTLP endpoint", wantErr: "opentelemetry.endpoint is required for outsystems_logs collectors"},
