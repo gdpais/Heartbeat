@@ -47,10 +47,12 @@ type Ledger interface {
 }
 
 // Window is a delivery check's rows: those with an Instant in (From, To],
-// widened to whole seconds.
+// widened to whole seconds.  At is when the check is evaluated, up to which
+// its late_rows counter is read; zero means To.
 type Window struct {
 	From time.Time
 	To   time.Time
+	At   time.Time
 }
 
 // DeliveryCount is one log type's result of a delivery check.
@@ -62,6 +64,9 @@ type DeliveryCount struct {
 	Loki     int64 `json:"loki"`
 	Written  int64 `json:"written"`
 	Lost     int64 `json:"lost"`
+	// Late is how much the check's late_rows counter grew, which must be
+	// Lost; nil without late_rows.
+	Late *int64 `json:"late,omitempty"`
 }
 
 // URLFor is the base URL of the source a signal kind reads.
@@ -97,8 +102,9 @@ type Result struct {
 // counted. It passes when they are equal for every log type, and at least
 // one row was written: a missing row or a row stored twice changes the
 // count, and a window with no rows checks nothing. The window is widened to whole
-// seconds, From down and To up, the same on both sides. Values are Loki's
-// counts, in the check's log type order.
+// seconds, From down and To up, the same on both sides. With late_rows, the
+// counter's growth from From to w.At must also equal the rows lost, of each
+// log type. Values are Loki's counts, in the check's log type order.
 func (s Sources) EvaluateDelivery(ctx context.Context, sig scenario.Signal, w Window) (Result, error) {
 	d := sig.Delivery
 	if d == nil {
@@ -106,6 +112,9 @@ func (s Sources) EvaluateDelivery(ctx context.Context, sig scenario.Signal, w Wi
 	}
 	if s.Loki == "" || s.Ledger == nil || s.Application == "" {
 		return Result{}, errors.New("a delivery check needs a Loki URL, the Ledger and the application")
+	}
+	if d.LateRows != "" && s.Prometheus == "" {
+		return Result{}, errors.New("a delivery check with late_rows needs a Prometheus URL")
 	}
 	if !w.To.After(w.From) {
 		return Result{}, fmt.Errorf("the rows' window %s to %s is empty", w.From.Format(time.RFC3339Nano), w.To.Format(time.RFC3339Nano))
@@ -139,6 +148,18 @@ func (s Sources) EvaluateDelivery(ctx context.Context, sig scenario.Signal, w Wi
 		}
 		c := DeliveryCount{LogType: logType, Expected: written - lost, Loki: lines, Written: written, Lost: lost}
 		r.Pass = r.Pass && c.Loki == c.Expected
+		if d.LateRows != "" {
+			at := w.At
+			if at.IsZero() {
+				at = to
+			}
+			late, err := s.counterGrowth(ctx, withLabel(d.LateRows, "log_type", logType), from, at)
+			if err != nil {
+				return Result{}, fmt.Errorf("%s late_rows: %w", logType, err)
+			}
+			c.Late = &late
+			r.Pass = r.Pass && late == lost
+		}
 		r.Delivery = append(r.Delivery, c)
 		r.Values = append(r.Values, float64(lines))
 	}
@@ -152,6 +173,36 @@ func (s Sources) EvaluateDelivery(ctx context.Context, sig scenario.Signal, w Wi
 		return r, errors.New("PatientZero committed no rows in the window: is the load running?")
 	}
 	return r, nil
+}
+
+// counterGrowth is how much the sum of the counters selector selects grew
+// from from to to; no series counts as 0.
+func (s Sources) counterGrowth(ctx context.Context, selector string, from, to time.Time) (int64, error) {
+	var at [2]float64
+	for i, t := range []time.Time{from, to} {
+		values, err := s.promQuery(ctx, s.Prometheus, "sum("+selector+")", t)
+		if err != nil {
+			return 0, err
+		}
+		if len(values) > 0 {
+			at[i] = values[0]
+		}
+	}
+	return int64(at[1] - at[0]), nil
+}
+
+// withLabel adds the matcher name="value" to selector, a metric name with
+// optional matchers.
+func withLabel(selector, name, value string) string {
+	matcher := name + "=" + strconv.Quote(value)
+	if strings.HasSuffix(selector, "}") {
+		inside := strings.TrimSpace(selector[strings.Index(selector, "{")+1 : len(selector)-1])
+		if inside == "" {
+			return strings.TrimSuffix(selector, "}") + matcher + "}"
+		}
+		return strings.TrimSuffix(selector, "}") + ", " + matcher + "}"
+	}
+	return selector + "{" + matcher + "}"
 }
 
 const maxValues = 20

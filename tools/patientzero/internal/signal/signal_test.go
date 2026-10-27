@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -237,5 +238,63 @@ func TestDeliveryComparesLokiWithTheLedger(t *testing.T) {
 	}
 	if _, err := src.Evaluate(context.Background(), sig, at); err == nil {
 		t.Error("Evaluate must refuse a delivery check")
+	}
+}
+
+// With late_rows, the counter of each log type must have grown by exactly the
+// rows lost, from the window's start to the evaluation.
+func TestDeliveryChecksTheLateRowsCounter(t *testing.T) {
+	loki := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"95"]}]}}`))
+	}))
+	defer loki.Close()
+	from := time.Date(2026, 10, 23, 10, 0, 0, 0, time.UTC)
+	evaluated := from.Add(9 * time.Minute)
+	// The counter is 7 at the window's start, and 7 + late at evaluated.
+	late := 25.0
+	var asked []string
+	prom := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		asked = append(asked, q.Get("query")+" @"+q.Get("time"))
+		value := 7.0
+		if q.Get("time") == strconv.FormatInt(evaluated.Unix(), 10)+".000" {
+			value += late
+		}
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"` + strconv.FormatFloat(value, 'f', -1, 64) + `"]}]}}`))
+	}))
+	defer prom.Close()
+	src := Sources{Loki: loki.URL, Prometheus: prom.URL, Ledger: &fakeLedger{rows: 120, held: 25}, Application: "PatientZero"}
+	sig := scenario.Signal{Name: "d", Delivery: &scenario.Delivery{
+		LogTypes: []string{"general"}, LostAfter: scenario.Duration(30 * time.Second),
+		LateRows: `heartbeat_outsystems_late_rows_total{collector="patientzero"}`,
+	}}
+	w := Window{From: from, To: from.Add(5 * time.Minute), At: evaluated}
+	res, err := src.EvaluateDelivery(context.Background(), sig, w)
+	if err != nil || !res.Pass || res.Delivery[0].Late == nil || *res.Delivery[0].Late != 25 {
+		t.Fatalf("%+v, %v; want a pass with 25 late rows counted", res, err)
+	}
+	want := `sum(heartbeat_outsystems_late_rows_total{collector="patientzero", log_type="general"})`
+	if len(asked) != 2 || asked[0] != want+" @"+strconv.FormatInt(from.Unix(), 10)+".000" {
+		t.Fatalf("asked Prometheus %q, want %s at the window's start and at the evaluation", asked, want)
+	}
+	late = 24 // one lost row the collector did not count
+	if res, err := src.EvaluateDelivery(context.Background(), sig, w); err != nil || res.Pass {
+		t.Fatalf("%+v, %v; want a failure", res, err)
+	}
+	if _, err := (Sources{Loki: loki.URL, Ledger: &fakeLedger{rows: 1}, Application: "P"}).EvaluateDelivery(context.Background(), sig, w); err == nil {
+		t.Fatal("late_rows without a Prometheus URL must fail")
+	}
+}
+
+func TestWithLabel(t *testing.T) {
+	for in, want := range map[string]string{
+		"m":               `m{log_type="error"}`,
+		"m{}":             `m{log_type="error"}`,
+		`m{c="p"}`:        `m{c="p", log_type="error"}`,
+		`m{c="p", d!=""}`: `m{c="p", d!="", log_type="error"}`,
+	} {
+		if got := withLabel(in, "log_type", "error"); got != want {
+			t.Errorf("withLabel(%s) = %s, want %s", in, got, want)
+		}
 	}
 }

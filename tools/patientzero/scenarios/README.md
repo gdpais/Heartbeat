@@ -41,9 +41,9 @@ scenario with cluster faults it is also the run's host agent, which needs
 | [`slow-sql`](slow-sql.yaml) | The order list's query runs 2.5 to 3.5 s longer in SQL Server for 15 minutes | More running sessions on SQL Server; slow-SQL rows in Loki and `heartbeat_outsystems_slow_events_total`; the latency SLI past 14.4%; `OutSystemsLatencyBudgetBurnFast` firing, then resolved; `OutSystemsLatencyBudgetBurnSlow` firing | about 25 minutes |
 | [`rotation`](rotation.yaml) | The weekly rotation of the logging database's views, while the load runs | Extraction keeps up; Loki holds every row of the run, once | about 8 minutes |
 | [`log-backlog`](log-backlog.yaml) | Every request's log rows committed 10 s late for 4 minutes, within the collector's 15 s lag | Extraction keeps up; Loki holds every row of the run, once | about 8 minutes |
-| [`late-commits`](late-commits.yaml) | Every request's log rows committed 90 s late for 3 minutes, past every log type's lag | The extracted rows stop, then return; Loki holds every row of the run but the late ones, once | about 9 minutes |
+| [`late-commits`](late-commits.yaml) | Every request's log rows committed 90 s late for 3 minutes, past every log type's lag | The extracted rows stop, then return; `OutSystemsLateLogRows` firing and nothing sent twice; Loki holds every row of the run but the late ones, once, and `heartbeat_outsystems_late_rows_total` counted exactly the late ones | about 9 minutes |
 | [`log-growth`](log-growth.yaml) | 20 extra general rows of 2,000 characters per request for 5 minutes, about 100 MB | The SQL Server storage probe sees `patientzero_log`'s data file grow; extraction keeps up; Loki discards nothing and holds every row, once | about 9 minutes |
-| [`restarts`](restarts.yaml) | The db-collector, the OTel Collector and Loki restarted one after the other | No `HeartbeatServiceDown` or `OutSystemsLogExportBlocked`, no discarded rows; Loki holds every row of the run, once | about 9 minutes |
+| [`restarts`](restarts.yaml) | The db-collector, the OTel Collector and Loki restarted one after the other | No `HeartbeatServiceDown`, `OutSystemsLogExportBlocked`, `OutSystemsLateLogRows` or `OutSystemsDuplicateLogRows`, no discarded rows; Loki holds every row of the run, once | about 9 minutes |
 | [`loki-outage`](loki-outage.yaml) | Loki down for 4 minutes | `heartbeat_outsystems_export_blocked` 1 while the target stays up; `OutSystemsLogExportBlocked` and `HeartbeatServiceDown` for Loki firing, then resolved; extraction catches up; Loki holds every row, once | about 8 minutes |
 | [`otel-outage`](otel-outage.yaml) | The OTel Collector down for 4 minutes | `HeartbeatServiceDown` for it and `OutSystemsLogExportBlocked` firing, then resolved; extraction catches up; Loki holds every row, once | about 8 minutes |
 | [`collector-outage`](collector-outage.yaml) | The db-collector down for 4 minutes | Its scrape target gone and `HeartbeatServiceDown` for it firing, then both back; extraction catches up; Loki holds every row, once | about 8 minutes |
@@ -191,6 +191,11 @@ stored twice) and no fewer (a row lost).
   minute plus 15 s, for screen rows). A delay in between loses some rows and
   not others. A check also fails when no row was written in its window, and
   its mode is always `eventually`.
+- **`late_rows`.** With `lost_after`, a counter selector such as
+  `heartbeat_outsystems_late_rows_total{collector="patientzero"}`: per log
+  type (its `log_type` label), the counter must also have grown by exactly
+  the rows lost, from the window's start to the evaluation. The collector's
+  recount counts the late rows, so this checks it finds each one, once.
 
 The journal's `check` line records the rows' window and each log type's
 counts.

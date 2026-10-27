@@ -38,6 +38,9 @@
 // held at once, pending exports included: past it, a batch reads less.  The
 // records keep at most maxValueBytes of each value (records.go).
 //
+// Once a minute, each log type counts again the rows in the window behind its
+// watermark, to find rows committed past the lag (recount.go).
+//
 // The query contract (queries/README.md) is checked on every batch: a
 // datetime or datetime2 Instant column, at most @limit rows, ascending
 // Instant values within (@from, @to].  A violation fails the call without sending anything.
@@ -118,6 +121,9 @@ type Executor struct {
 
 	// exports tracks the background exports (export.go).
 	exports exportState
+	// recounts keeps what each log type delivered, for its recount
+	// (recount.go).
+	recounts recountState
 }
 
 // NewExecutor returns an Executor with the built-in queries.
@@ -159,6 +165,11 @@ func (e *Executor) RunProbe(ctx context.Context, item collectormetadata.Schedule
 		return nil, nil, e.blocked(item, key, location, err)
 	}
 	watermark := e.watermark(key, item, location)
+	if window := item.OutSystemsLogs.RecountWindow; window > 0 {
+		e.recounts.start(key, watermark, window, query)
+	} else {
+		e.recounts.forget(key)
+	}
 	for batch := 1; ; batch++ {
 		started := time.Now()
 		full, err := e.extractBatch(ctx, item, key, query, location, &watermark)
@@ -171,6 +182,7 @@ func (e *Executor) RunProbe(ctx context.Context, item collectormetadata.Schedule
 			return nil, nil, e.blocked(item, key, location, err)
 		}
 		if !full || batch >= e.maxBatches() || !timeLeft(ctx, time.Since(started)) {
+			e.recount(ctx, item, key)
 			return nil, nil, nil
 		}
 	}

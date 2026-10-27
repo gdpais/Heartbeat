@@ -87,13 +87,20 @@ var LogTypes = []string{"cyclic_job", "error", "extension", "general", "integrat
 // PatientZero committed, of each log type, with an Instant from the start
 // of step FromStep to the end of step ToStep, except the rows a
 // commit-delay fault held back longer than LostAfter, which must be
-// missing: committed past the collector's lag, they are never read.
+// missing: committed past the collector's lag, they are never read.  With
+// LateRows, a Prometheus counter selector, the counter must also have grown
+// by exactly the rows lost, of each log type (its log_type label), from the
+// start of FromStep to the evaluation: the collector's recount counts them.
 type Delivery struct {
 	LogTypes  []string `yaml:"log_types" json:"log_types"`
 	FromStep  string   `yaml:"from_step,omitempty" json:"from_step"`
 	ToStep    string   `yaml:"to_step,omitempty" json:"to_step"`
 	LostAfter Duration `yaml:"lost_after,omitempty" json:"lost_after,omitempty"`
+	LateRows  string   `yaml:"late_rows,omitempty" json:"late_rows,omitempty"`
 }
+
+// counterSelector is a metric name, optionally with label matchers.
+var counterSelector = regexp.MustCompile(`^[a-zA-Z_:][a-zA-Z0-9_:]*(\{[^{}]*\})?$`)
 
 // Anchors: whether a signal's window opens at the start or the end of its
 // step.
@@ -161,6 +168,9 @@ func (s Signal) Query() string {
 		q := fmt.Sprintf("%s rows from the start of %s to the end of %s", strings.Join(d.LogTypes, ", "), d.FromStep, d.ToStep)
 		if d.LostAfter > 0 {
 			q += fmt.Sprintf(", but those committed more than %s late", d.LostAfter)
+		}
+		if d.LateRows != "" {
+			q += fmt.Sprintf(", which %s counts", d.LateRows)
 		}
 		return q
 	default:
@@ -475,6 +485,12 @@ func (s *Scenario) validateDelivery(sig *Signal, where string, add func(string, 
 	}
 	if d.LostAfter < 0 || d.LostAfter.D() > MaxStepDuration {
 		add("%s: lost_after must be a positive duration of at most %s", where, MaxStepDuration)
+	}
+	if d.LateRows != "" && d.LostAfter == 0 {
+		add("%s: late_rows needs lost_after: it counts the rows lost", where)
+	}
+	if d.LateRows != "" && (!counterSelector.MatchString(d.LateRows) || strings.Contains(d.LateRows, "log_type")) {
+		add("%s: late_rows must be a counter's name with optional label matchers, without log_type, such as heartbeat_outsystems_late_rows_total{collector=\"patientzero\"}", where)
 	}
 	if okTo {
 		if end, _ := s.StepStart(d.ToStep); s.Anchor(*sig) < end+s.Steps[to].Duration.D() {

@@ -225,7 +225,8 @@
             },
             "from_step": { "$ref": "#/$defs/name", "description": "The step whose start opens the rows' window; the first step by default." },
             "to_step": { "$ref": "#/$defs/name", "description": "The step whose end closes the rows' window; the last step by default." },
-            "lost_after": { "$ref": "#/$defs/duration", "description": "Rows a commit-delay fault held back longer than this must be missing from Loki: committed past the collector's lag, they are never read. Without it every row must be there." }
+            "lost_after": { "$ref": "#/$defs/duration", "description": "Rows a commit-delay fault held back longer than this must be missing from Loki: committed past the collector's lag, they are never read. Without it every row must be there." },
+            "late_rows": { "type": "string", "pattern": "^[a-zA-Z_:][a-zA-Z0-9_:]*(\\{[^{}]*\\})?$", "description": "A Prometheus counter selector without log_type, such as heartbeat_outsystems_late_rows_total{collector=\"patientzero\"}: per log type, it must have grown by exactly the rows lost, from the start of from_step to the evaluation. Needs lost_after." }
           }
         },
         "labels": {

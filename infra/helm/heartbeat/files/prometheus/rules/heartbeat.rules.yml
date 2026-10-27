@@ -160,6 +160,42 @@ groups:
         annotations:
           summary: "OutSystems log export of {{ $labels.environment }}/{{ $labels.target }} is blocked"
           description: "The {{ $labels.collector }} collector has waited more than 2 minutes for the OTel Collector to accept a batch of logs, and reads nothing more until it does: logs, derived metrics and the OutSystems SLO alerts for this target go stale. Nothing is lost while the rows are still in the logging database's views (the current and the previous week). Usually Loki is down or slow; HeartbeatServiceDown says whether Loki or the OTel Collector is down, and GET /admin/config shows what each log type waits for."
+      # The recount (ADR 0008) found rows the log service committed later
+      # than the lag: the watermark had passed them, so they are not in Loki
+      # and the derived metrics and SLOs undercount. No for: they are lost.
+      - alert: OutSystemsLateLogRows
+        expr: sum by (collector, environment, target, log_type) (increase(heartbeat_outsystems_late_rows_total[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "OutSystems {{ $labels.log_type }} log rows of {{ $labels.environment }}/{{ $labels.target }} were committed too late to be read"
+          description: "The {{ $labels.collector }} collector's recount found about {{ $value | printf \"%.0f\" }} {{ $labels.log_type }} rows in the last 15 minutes that the log service committed after the collector had read past their Instant, later than the lag. They are not in Loki, and the derived metrics and SLOs undercount them. Raise this log type's lag (probes[].lag) above how late the log service commits; late commits usually mean it is behind."
+      # The extraction counted rows delivered more often than the logging
+      # database holds them: it read them twice, which it never should (the
+      # watermark moves only past rows sent), or they were deleted after they
+      # were sent. A batch sent again after the Collector took it is not
+      # counted: delivery is at least once (ADR 0008).
+      - alert: OutSystemsDuplicateLogRows
+        expr: sum by (collector, environment, target, log_type) (increase(heartbeat_outsystems_duplicate_rows_total[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "OutSystems {{ $labels.log_type }} log rows of {{ $labels.environment }}/{{ $labels.target }} were delivered more often than the logging database holds them"
+          description: "The {{ $labels.collector }} collector's recount found about {{ $value | printf \"%.0f\" }} {{ $labels.log_type }} rows in the last 15 minutes that it delivered more often than the logging database holds them. Either the extraction read them twice, a defect: Loki holds them twice and the derived metrics count them twice; report it with the collector's log, which names the minutes. Or rows were deleted from the logging database after they were sent."
+      # Most recounts of the last 15 minutes failed: late and duplicate rows
+      # go uncounted. A ratio, since how many recounts run depends on the
+      # poll interval (one a minute at most), over three or more, so one
+      # failure just after a start is not most of them.
+      - alert: OutSystemsLogRecountFailing
+        expr: >-
+          sum by (collector, environment, target, log_type) (increase(heartbeat_outsystems_recount_failures_total[15m]))
+          / sum by (collector, environment, target, log_type) (increase(heartbeat_outsystems_recounts_total[15m])) > 0.5
+          and sum by (collector, environment, target, log_type) (increase(heartbeat_outsystems_recounts_total[15m])) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "OutSystems {{ $labels.log_type }} log recount of {{ $labels.environment }}/{{ $labels.target }} is failing"
+          description: "Most recounts of the {{ $labels.collector }} collector's {{ $labels.log_type }} rows failed in the last 15 minutes, so rows committed past the lag, or sent twice, are not counted. The reason is in the collector's log (\"outsystems_logs recount failed\"); extraction itself goes on."
 
   - name: heartbeat-alerts
     rules:

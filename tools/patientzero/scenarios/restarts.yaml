@@ -46,6 +46,20 @@ signals:
     step: before
     mode: always
     within: 8m
+  # A restarted collector recounts only what it delivered itself, so a
+  # restart is never taken for late or duplicate rows.
+  - name: no-late-rows
+    alert: OutSystemsLateLogRows
+    state: resolved
+    step: before
+    mode: always
+    within: 8m
+  - name: nothing-sent-twice
+    alert: OutSystemsDuplicateLogRows
+    state: resolved
+    step: before
+    mode: always
+    within: 8m
   - name: loki-discards-nothing
     alert: LokiDiscardingLogs
     state: resolved

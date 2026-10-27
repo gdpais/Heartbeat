@@ -343,6 +343,7 @@ func (r *Runner) check(ctx context.Context, u *run, i int, sig scenario.Signal, 
 		var res signal.Result
 		var err error
 		if rows != nil {
+			window.At = at
 			res, err = r.cfg.Sources.EvaluateDelivery(evalCtx, sig, window)
 		} else {
 			res, err = r.cfg.Sources.Evaluate(evalCtx, sig, at)

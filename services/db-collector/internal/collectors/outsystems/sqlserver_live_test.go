@@ -735,3 +735,132 @@ VALUES ('held-1', DATEADD(MINUTE, -5, SYSUTCDATETIME()), '', 7, 1, 0, 'Order fai
 		t.Fatalf("delivered %v after the Collector accepted", got)
 	}
 }
+
+// The recount wraps every log type's query and counts, per minute, exactly
+// the rows the query returns, with datetime and datetime2 bounds.
+func TestRecountAgainstSQLServer(t *testing.T) {
+	server := newLiveServer(t)
+	setupFixtures(t, server)
+	sa := server.sa(t, fixtureDatabase)
+	source := SQLServerSource{Manager: server.manager}
+	target := server.target(fixtureDatabase, liveOSLogCredentialRef)
+	catalog := catalogoutsystems.DefaultCatalog()
+	from := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := Wall(time.Now(), time.UTC).Truncate(time.Minute)
+	for _, logType := range catalog.Names() {
+		t.Run(logType, func(t *testing.T) {
+			loadFixtureRows(t, sa, logType)
+			query, _ := catalog.Get(logType)
+			statement, err := collectorconfig.DerivedTable(query.SQL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, dateTime := range []bool{false, true} {
+				params := QueryParams{From: from, To: to, Limit: 10000, DateTime: dateTime}
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				batch, err := source.Query(ctx, target, query.SQL, params)
+				if err != nil {
+					cancel()
+					t.Fatalf("query: %v", err)
+				}
+				instants, _, err := checkContract(batch, from, to, params.Limit)
+				if err != nil {
+					cancel()
+					t.Fatal(err)
+				}
+				want := map[int64]int64{}
+				for _, instant := range instants {
+					want[int64(minuteEnd(instant).Sub(from)/time.Minute)]++
+				}
+				params.Limit = RecountLimit
+				got, err := source.Recount(ctx, target, recountSQL(statement), params)
+				cancel()
+				if err != nil {
+					t.Fatalf("recount (datetime bounds %v): %v", dateTime, err)
+				}
+				if len(want) == 0 || fmt.Sprint(got) != fmt.Sprint(want) {
+					t.Fatalf("recount (datetime bounds %v) = %v, want the query's %d rows by minute: %v", dateTime, got, len(instants), want)
+				}
+			}
+		})
+	}
+}
+
+// The recount reads only the Instant index of the window, not the rows: both
+// cycle tables of each log type get 50,000 copies of a fixture row, and the
+// count of the 100,000 must take a few hundred logical reads, not one or
+// more per row.
+func TestRecountReadsTheInstantIndexAgainstSQLServer(t *testing.T) {
+	server := newLiveServer(t)
+	setupFixtures(t, server)
+	sa := server.sa(t, fixtureDatabase)
+	catalog := catalogoutsystems.DefaultCatalog()
+	const copies = 50000
+	views := regexp.MustCompile(`(?i)FROM\s+dbo\.(oslog_\w+)`)
+	for _, logType := range catalog.Names() {
+		t.Run(logType, func(t *testing.T) {
+			loadFixtureRows(t, sa, logType)
+			query, _ := catalog.Get(logType)
+			current := views.FindStringSubmatch(query.SQL)[1]
+			for _, view := range []string{current, current + "_Previous"} {
+				copyRows(t, sa, cycleTable(t, sa, current, view), copies)
+			}
+			statement, err := collectorconfig.DerivedTable(query.SQL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			conn, err := sa.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			sessionReads := func() int64 {
+				var reads int64
+				if err := conn.QueryRowContext(ctx, `SELECT logical_reads FROM sys.dm_exec_sessions WHERE session_id = @@SPID`).Scan(&reads); err != nil {
+					t.Fatalf("logical reads: %v", err)
+				}
+				return reads
+			}
+			// The copies are a millisecond apart from 2025-01-01, before every
+			// fixture row: the first two minutes after it hold them all.
+			run := func() int64 {
+				t.Helper()
+				rows, err := conn.QueryContext(ctx, recountSQL(statement),
+					sql.Named("from", civil.DateTimeOf(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))),
+					sql.Named("to", civil.DateTimeOf(time.Date(2025, 1, 1, 0, 2, 0, 0, time.UTC))), sql.Named("limit", RecountLimit))
+				if err != nil {
+					t.Fatalf("recount: %v", err)
+				}
+				var total int64
+				for rows.Next() {
+					var minute, n int64
+					if err := rows.Scan(&minute, &n); err != nil {
+						t.Fatal(err)
+					}
+					total += n
+				}
+				if err := rows.Close(); err != nil || rows.Err() != nil {
+					t.Fatalf("recount: %v %v", err, rows.Err())
+				}
+				return total
+			}
+			run() // compiles the plan and updates the stale statistics
+			reads := int64(-1)
+			for range 3 {
+				before := sessionReads()
+				if n := run(); n != 2*copies {
+					t.Fatalf("recount counted %d rows, want %d", n, 2*copies)
+				}
+				if r := sessionReads() - before; reads < 0 || r < reads {
+					reads = r
+				}
+			}
+			t.Logf("%d rows counted, %d logical reads", 2*copies, reads)
+			if reads > 2*copies/50 {
+				t.Fatalf("%d logical reads to count %d rows: the recount reads the rows, not only the Instant index", reads, 2*copies)
+			}
+		})
+	}
+}

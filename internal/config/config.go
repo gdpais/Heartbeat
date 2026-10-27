@@ -63,6 +63,11 @@ const (
 	DefaultLogInitialLookback = 15 * time.Minute
 	// DefaultLogTimezone is the time zone OutSystems Instant values are read in.
 	DefaultLogTimezone = "UTC"
+	// DefaultLogRecountWindow is how far behind its watermark a log type's
+	// rows are counted again, to find those committed past the lag.
+	DefaultLogRecountWindow = 10 * time.Minute
+	// MaxLogRecountWindow is the largest recount_window accepted.
+	MaxLogRecountWindow = time.Hour
 )
 
 // Endpoint holds the connection details for an external service integration.
@@ -116,6 +121,7 @@ type collectorConfigDocument struct {
 	BatchLimit      *int   `yaml:"batch_limit"`
 	InitialLookback string `yaml:"initial_lookback"`
 	LogTimezone     string `yaml:"log_timezone"`
+	RecountWindow   string `yaml:"recount_window"`
 }
 
 type targetDocument struct {
@@ -167,6 +173,10 @@ type OutSystemsLogsConfig struct {
 	InitialLookback time.Duration
 	// LogTimezone is the IANA name of the time zone Instant is stored in.
 	LogTimezone string
+	// RecountWindow is how far behind its watermark each log type counts its
+	// rows again, once a minute, to find rows committed past the lag; 0 turns
+	// the recount off.
+	RecountWindow time.Duration
 	// LogsEndpoint is opentelemetry.endpoint, the OTLP/HTTP base URL the logs
 	// are sent to. It is copied here so a change restarts the collector.
 	LogsEndpoint string
@@ -463,6 +473,7 @@ func normalizeOutSystemsLogs(doc collectorDocument) (OutSystemsLogsConfig, error
 			{"batch_limit", c.BatchLimit != nil},
 			{"initial_lookback", c.InitialLookback != ""},
 			{"log_timezone", c.LogTimezone != ""},
+			{"recount_window", c.RecountWindow != ""},
 		} {
 			if field.set {
 				return OutSystemsLogsConfig{}, fmt.Errorf("collector %s: %s applies only to %s collectors", doc.ID, field.name, KindOutSystemsLogs)
@@ -475,6 +486,7 @@ func normalizeOutSystemsLogs(doc collectorDocument) (OutSystemsLogsConfig, error
 		BatchLimit:      DefaultLogBatchLimit,
 		InitialLookback: DefaultLogInitialLookback,
 		LogTimezone:     DefaultLogTimezone,
+		RecountWindow:   DefaultLogRecountWindow,
 	}
 	for _, field := range []struct {
 		name  string
@@ -483,6 +495,7 @@ func normalizeOutSystemsLogs(doc collectorDocument) (OutSystemsLogsConfig, error
 	}{
 		{"lag", c.Lag, &cfg.Lag},
 		{"initial_lookback", c.InitialLookback, &cfg.InitialLookback},
+		{"recount_window", c.RecountWindow, &cfg.RecountWindow},
 	} {
 		if field.value == "" {
 			continue
@@ -684,6 +697,12 @@ func validateProbeQueries(collector CollectorRuntimeConfig) error {
 				if err := ValidateReadOnlySelect(probe.QueryTemplate); err != nil {
 					return fmt.Errorf("%s probe %s query_template must be one read-only SELECT: it %w", scope, probe.Name, err)
 				}
+				// The recount counts the query's rows as a derived table.
+				if collector.Kind == KindOutSystemsLogs && collector.OutSystemsLogs.RecountWindow > 0 {
+					if _, err := DerivedTable(probe.QueryTemplate); err != nil {
+						return fmt.Errorf("%s probe %s query_template cannot be recounted: it %w; change the query_template or set recount_window: 0s", scope, probe.Name, err)
+					}
+				}
 			}
 			if probe.MaxRows == 0 {
 				continue
@@ -721,6 +740,9 @@ func validateOutSystemsLogs(collector CollectorRuntimeConfig, logsEndpoint strin
 	}
 	if logs.InitialLookback <= 0 {
 		return fmt.Errorf("collector %s initial_lookback must be positive", collector.ID)
+	}
+	if w := logs.RecountWindow; w != 0 && (w < 2*time.Minute || w > MaxLogRecountWindow || w%time.Minute != 0) {
+		return fmt.Errorf("collector %s recount_window must be 0s (off) or whole minutes from 2m to %s", collector.ID, MaxLogRecountWindow)
 	}
 	if logs.BatchLimit < 1 || logs.BatchLimit > MaxLogBatchLimit {
 		return fmt.Errorf("collector %s batch_limit must be between 1 and %d", collector.ID, MaxLogBatchLimit)

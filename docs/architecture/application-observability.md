@@ -170,8 +170,9 @@ include the SLO thresholds (0.1, 0.25, 0.5, 1, 2, 3, 5, 10, 30, 60 s).
 | Metric or source | What it answers |
 | --- | --- |
 | `heartbeat_outsystems_front_end_operations_total{front_end, outcome}` | Load balance and error skew per front-end server: one bad node |
-| `heartbeat_outsystems_log_delay_seconds{log_type}`: now minus the newest `Instant` seen, while rows arrive | How far behind the platform's own log service is; a growing delay means its queue is backing up |
-| `heartbeat_outsystems_extract_lag_seconds`, `heartbeat_outsystems_extract_rows_total`, `heartbeat_outsystems_export_failures_total`, plus the collector's probe duration, target and freshness metrics | Health of Heartbeat's own extraction |
+| `heartbeat_outsystems_late_rows_total{log_type}`: rows the recount found committed after the extraction had read past their `Instant` | Whether the platform's log service falls behind by more than the lag; those rows are not in Loki and the metrics undercount ([ADR 0008](decisions/0008-outsystems-11-log-extraction.md)) |
+| `heartbeat_outsystems_log_delay_seconds{log_type}`: now minus the newest `Instant` read, while rows arrive | How fresh extraction is: about the lag plus the poll interval. It cannot show the log service falling behind, since a row is read only once it is older than the lag; the late-row counter does |
+| `heartbeat_outsystems_extract_lag_seconds`, `heartbeat_outsystems_extract_rows_total`, `heartbeat_outsystems_export_failures_total`, `heartbeat_outsystems_duplicate_rows_total`, `heartbeat_outsystems_recount_failures_total`, plus the collector's probe duration, target and freshness metrics | Health of Heartbeat's own extraction |
 | The `sqlserver` collector kind on the logging and platform databases | Waits, blocking, storage growth and I/O of the databases OutSystems depends on; the log database's growth and the platform database's blocking are common OutSystems incidents |
 | Front-end Windows/IIS hosts | Not collected: it needs an agent on the platform servers (for example `windows_exporter`). Optional, the operator's decision |
 

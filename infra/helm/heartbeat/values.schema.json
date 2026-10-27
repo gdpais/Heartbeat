@@ -400,6 +400,10 @@
                     "type": "string",
                     "description": "outsystems_logs only: IANA time zone the Instant column is stored in (default UTC)."
                   },
+                  "recount_window": {
+                    "type": "string",
+                    "description": "outsystems_logs only: how far behind its watermark each log type recounts its rows, once a minute, to find rows committed past the lag (0s off, or whole minutes from 2m to 1h; default 10m)."
+                  },
                   "target_names": {
                     "type": "array",
                     "items": {

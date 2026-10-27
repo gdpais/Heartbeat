@@ -50,6 +50,9 @@ func registeredMetrics(t *testing.T) map[string]bool {
 	metrics.batchStuck(item)
 	metrics.setLogDelay(item, time.Second)
 	metrics.setExportBlocked(item, true)
+	metrics.recounted(item, 1, 1)
+	metrics.recountRan(item)
+	metrics.recountFailed(item)
 	observe := func(logType string, columns []string, row ...any) {
 		batch := Batch{Rows: [][]any{row}}
 		for _, name := range columns {

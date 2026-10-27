@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -104,6 +105,58 @@ func ValidateReadOnlySelect(query string) error {
 		return errors.New("has no top-level SELECT after WITH")
 	}
 	return nil
+}
+
+// DerivedTable returns query, which must pass [ValidateReadOnlySelect], as
+// the text of a derived table: the statement alone, without the comments and
+// ';' around it, so that "FROM (\n" + text + "\n) AS q" reads exactly the
+// rows query returns.  It fails for a query a derived table cannot hold: one
+// led by WITH, with a top-level OPTION (query hints) or FOR XML, JSON or
+// BROWSE clause, or with a top-level ORDER BY but no TOP or OFFSET.  The
+// error says why, without quoting the query.
+func DerivedTable(query string) (string, error) {
+	if err := ValidateReadOnlySelect(query); err != nil {
+		return "", err
+	}
+	tokens, err := sqlTokens(query)
+	if err != nil {
+		return "", err
+	}
+	statement := trimSemicolons(tokens)
+	if statement[0].text == "WITH" {
+		return "", errors.New("starts with WITH, which a derived table cannot hold")
+	}
+	depth := 0
+	top, orderBy, offset := false, false, false
+	for i, token := range statement {
+		if token.kind != sqlPunct && token.kind != sqlWord {
+			continue
+		}
+		switch {
+		case token.text == "(":
+			depth++
+		case token.text == ")":
+			depth--
+		case depth > 0 || token.kind != sqlWord || token.afterDot:
+		case token.text == "OPTION":
+			return "", errors.New("has an OPTION clause, which a derived table cannot hold")
+		case token.text == "FOR" && i+1 < len(statement) && slices.Contains([]string{"XML", "JSON", "BROWSE"}, statement[i+1].text):
+			return "", fmt.Errorf("has a FOR %s clause, which a derived table cannot hold", statement[i+1].text)
+		case token.text == "TOP":
+			top = true
+		case token.text == "ORDER" && i+1 < len(statement) && statement[i+1].text == "BY":
+			orderBy = true
+		case token.text == "OFFSET" && orderBy:
+			offset = true
+		}
+	}
+	// A derived table is ordered only to pick the rows TOP or OFFSET keep
+	// (SQL Server's Msg 1033).  A TOP in one branch of a UNION ordered as a
+	// whole passes here, and its recount reports what SQL Server makes of it.
+	if orderBy && !top && !offset {
+		return "", errors.New("has an ORDER BY clause without TOP or OFFSET, which a derived table cannot hold")
+	}
+	return query[statement[0].start:statement[len(statement)-1].end], nil
 }
 
 // forbiddenSQLKeywords maps each keyword a probe query may not contain to why.
@@ -216,6 +269,9 @@ type sqlToken struct {
 	// afterDot reports a word right after '.', which is the column or object
 	// part of a multi-part name.
 	afterDot bool
+	// start and end are the token's byte offsets in the query, end
+	// exclusive.
+	start, end int
 }
 
 // sqlTokens splits query into tokens, dropping whitespace and comments.
@@ -239,6 +295,11 @@ func sqlTokens(query string) ([]sqlToken, error) {
 	}
 	for i := 0; i < len(query); {
 		r, size := utf8.DecodeRuneInString(query[i:])
+		// add appends a token that runs from i to end and moves i past it.
+		add := func(token sqlToken, end int) {
+			token.start, token.end = i, end
+			tokens, i = append(tokens, token), end
+		}
 		switch {
 		case unicode.IsSpace(r):
 			i += size
@@ -259,31 +320,30 @@ func sqlTokens(query string) ([]sqlToken, error) {
 			if !ok {
 				return nil, errors.New("has an unterminated string literal")
 			}
-			tokens, i = append(tokens, sqlToken{kind: sqlString}), end
+			add(sqlToken{kind: sqlString}, end)
 		case r == '[':
 			end, ok := quotedEnd(query, i, ']')
 			if !ok {
 				return nil, errors.New("has an unterminated [bracketed] identifier")
 			}
-			tokens, i = append(tokens, sqlToken{kind: sqlQuoted}), end
+			add(sqlToken{kind: sqlQuoted}, end)
 		case r == '"':
 			end, ok := quotedEnd(query, i, '"')
 			if !ok {
 				return nil, errors.New(`has an unterminated "quoted" identifier`)
 			}
-			tokens, i = append(tokens, sqlToken{kind: sqlQuoted}), end
+			add(sqlToken{kind: sqlQuoted}, end)
 		case r == '@' || r == '#':
 			end := wordEnd(query, i+size)
-			tokens, i = append(tokens, sqlToken{kind: sqlVariable}), end
+			add(sqlToken{kind: sqlVariable}, end)
 		case r == '_' || unicode.IsLetter(r):
 			end := wordEnd(query, i)
-			tokens = append(tokens, sqlToken{kind: sqlWord, text: strings.ToUpper(query[i:end]), afterDot: afterDot()})
-			i = end
+			add(sqlToken{kind: sqlWord, text: strings.ToUpper(query[i:end]), afterDot: afterDot()}, end)
 		case '0' <= r && r <= '9':
 			end := numberEnd(query, i)
-			tokens, i = append(tokens, sqlToken{kind: sqlNumber}), end
+			add(sqlToken{kind: sqlNumber}, end)
 		default:
-			tokens, i = append(tokens, sqlToken{kind: sqlPunct, text: string(r)}), i+size
+			add(sqlToken{kind: sqlPunct, text: string(r)}, i+size)
 		}
 	}
 	return tokens, nil
