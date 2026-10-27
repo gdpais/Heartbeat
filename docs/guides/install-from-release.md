@@ -145,7 +145,7 @@ stays ready while every SQL Server target fails
 | `CreateContainerConfigError` on `db-collector-0` or the Grafana pod | A Secret from step 1 is missing or lacks a key; `kubectl -n heartbeat describe pod <pod>` names it. Create it; the pod then starts by itself |
 | `ImagePullBackOff` or `ErrImagePull` | The digest in `heartbeat.yaml` is wrong, or the cluster cannot reach `ghcr.io` (or Docker Hub, `quay.io` for the engines) |
 | Pods `Pending` with an unbound claim | No default StorageClass. Make one the default, or name a class for each claim in the values |
-| `values don't meet the specifications of the schema` | A value is misspelt or out of range; the message gives its path. Unknown top-level keys are rejected too |
+| `values don't meet the specifications of the schema` | A value is misspelt or out of range; the message gives its path. Unknown keys are rejected too, at the top level and inside `dbCollector`, the security contexts and the chart's other own components |
 
 ## 5. Add a SQL Server target
 

@@ -73,7 +73,7 @@ Production delivery is section 18.
 - [ ] Install the Renovate GitHub App on the repository (config is in `renovate.json`)
 - [ ] Agree the local loop's time and resource budget (measured: about 2.0 GiB RAM for the full profile)
 - [x] Cap the sandbox SQL Server's memory (`MSSQL_MEMORY_LIMIT_MB` in `scripts/kind.sh` and `scripts/sqlserver-test.sh`), so that a load flood or a second cluster slows it down instead of getting it killed; on 2026-10-22 it was killed twice on an 8 GB Docker host, once under a PatientZero load flood and once when a second cluster started. 2048 MB by default, SQL Server's minimum (`SQLSERVER_MEMORY_LIMIT_MB`); an existing container keeps the cap it was created with, and `make sqlserver-dev-up` warns when it differs ([sandbox](docs/guides/local-development.md#sql-server-sandbox))
-- [ ] Reject unknown keys inside each component's chart values (`dbCollector.enabeld` is ignored today)
+- [x] Reject unknown keys inside each component's chart values (`dbCollector.enabeld` was ignored): `dbCollector`, `otelCollectorQueue`, `grafanaDashboards` and the two security contexts now list every key, so a misspelt one fails; `integrations`, `prometheusRules` and `backendNetworkPolicies` already did. The bundled engines' values stay their charts' own
 
 ### 0.5 Development workflow and releases
 
