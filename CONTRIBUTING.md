@@ -130,6 +130,7 @@ branches as `gone`, ready for `git branch -d`.
 | `SQL Server probes` | When `services/db-collector`, its test scripts or `tools/patientzero` change; also runs PatientZero's live test |
 | `Helm chart` | When the chart, its values or its tests change |
 | `kind end-to-end` | When a service, the chart or the kind setup changes |
+| `PatientZero scenarios` | On the release pull request only (release-please's branch, not its paths): every scenario on a fresh kind cluster, about 2.5 hours, through `.github/workflows/scenarios.yml` |
 | `ci-ok` | Always. Passes only if every job did what the change detection asked for; the only required check |
 
 Any path the script does not list (`go.mod`, `internal/`, `packages/config-schema`,
@@ -139,7 +140,15 @@ by hand on its branch (Actions → ci → Run workflow).
 
 Adding a job: give it `needs: changes` and an `if:` on a flag, add the flag to
 `scripts/ci-changes.sh` and to `tests/ci_scripts_test.go`, and add the job to
-`ci-ok`'s `needs` and arguments. Never add `paths:` to the workflow's
+`ci-ok`'s `needs` and arguments. The `scenarios` flag is the one exception:
+it depends on the branch, so the `changes` job sets it itself.
+
+`.github/workflows/scenarios.yml` runs every PatientZero scenario
+([scenarios](tools/patientzero/scenarios/README.md)) nightly on `master`, by
+hand (Actions → scenarios → Run workflow, any branch, every scenario or some)
+and, through `ci.yml`, on the release pull request. Its artifact holds each
+scenario's run journal and a summary. Run the same locally with
+`make patientzero-scenarios` on a fresh cluster. Never add `paths:` to the workflow's
 triggers: a required check whose workflow never starts is never reported, and
 the pull request waits forever.
 
@@ -169,7 +178,10 @@ one version covers both images and the chart. The rules and reasons are in
 `version.txt` and the chart version from the Conventional Commits merged since
 the last release; only `feat`, `fix` and breaking changes make one. Review the
 entries, edit them in that pull request if needed, and merge it when you want
-to release. release-please then tags the merge commit and creates the GitHub
+to release. Its CI runs every PatientZero scenario as well, about two and a
+half hours, and `ci-ok` waits for them: a tag cannot be moved or deleted, so
+a failing scenario must stop the release before it is tagged. release-please
+then tags the merge commit and creates the GitHub
 release, and the tag starts `.github/workflows/release.yml`, which:
 
 1. checks the tag is on `master`, matches the chart version and passed the

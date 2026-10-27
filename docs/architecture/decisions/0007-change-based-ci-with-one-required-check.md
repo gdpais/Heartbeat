@@ -1,7 +1,11 @@
 # 0007. Change-based CI with one required check
 
 - Status: Accepted. In effect from 2026-10-10: `master` requires `ci-ok`.
-- Date: 2026-10-10
+- Date: 2026-10-10. Amended 2026-10-26: the release pull request also runs
+  every PatientZero scenario (`scenarios.yml`, about two and a half hours),
+  chosen by its branch rather than its paths, and `ci-ok` includes it; the
+  same workflow runs nightly on `master` and by hand. Ordinary pull requests
+  keep their change-based jobs.
 
 ## Context
 

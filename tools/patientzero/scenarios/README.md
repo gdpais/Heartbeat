@@ -11,7 +11,17 @@ reports are compared with.
 ```bash
 make patientzero-scenario                        # list the scenarios
 make patientzero-scenario NAME=checkout-errors   # run one, with its load, and check its signals
+make patientzero-scenarios                       # run every one in order, about 2.5 hours
 ```
+
+`make patientzero-scenarios` runs them one after the other in a fixed order
+(`SCENARIO_ORDER` in [`patientzero.sh`](../scripts/patientzero.sh)), goes on
+after a failure and writes `.tmp/patientzero-scenarios/summary.md`;
+`SCENARIOS="restarts loki-outage"` runs some. The SLO scenarios come first,
+while the burn-rate windows hold no other fault, and `late-commits` last,
+since its late-row alert keeps firing for 15 minutes; run it on a fresh
+cluster, as CI does. CI runs it nightly on `master`, by hand, and on the
+release pull request ([CONTRIBUTING](../../../CONTRIBUTING.md#ci)).
 
 It needs PatientZero on kind (`make sqlserver-dev-up`, then
 `make patientzero-up`). The command starts the k6 load profile the scenario

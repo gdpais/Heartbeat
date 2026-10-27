@@ -1,8 +1,11 @@
 package scenarios_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"io/fs"
 	"os"
+	"regexp"
 	"slices"
 	"sort"
 	"testing"
@@ -163,5 +166,39 @@ func TestSchemaMatchesValidation(t *testing.T) {
 	sort.Strings(described)
 	if !slices.Equal(described, types) {
 		t.Errorf("schema describes the params of %v, registry has %v", described, types)
+	}
+}
+
+// make patientzero-scenarios, and the scenarios workflow with it, runs the
+// scenarios in SCENARIO_ORDER (scripts/patientzero.sh): every scenario file
+// must have its place there, chosen for what it leaves behind.
+func TestEveryScenarioHasAPlaceInTheOrder(t *testing.T) {
+	script, err := os.ReadFile("../scripts/patientzero.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^SCENARIO_ORDER="([^"]*)"$`).FindSubmatch(script)
+	if m == nil {
+		t.Fatal(`no SCENARIO_ORDER="..." line in scripts/patientzero.sh`)
+	}
+	var order []string
+	for _, name := range bytes.Fields(m[1]) {
+		order = append(order, string(name))
+	}
+	files, err := fs.Glob(scenarios.FS, "*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, file := range files {
+		names = append(names, file[:len(file)-len(".yaml")])
+	}
+	sorted := slices.Clone(order)
+	slices.Sort(sorted)
+	if !slices.Equal(sorted, names) || len(slices.Compact(sorted)) != len(order) {
+		t.Fatalf("SCENARIO_ORDER = %v, want each scenario file once: %v", order, names)
+	}
+	if order[len(order)-1] != "late-commits" {
+		t.Errorf("late-commits must run last: its late-row alert stays firing for 15 minutes")
 	}
 }
