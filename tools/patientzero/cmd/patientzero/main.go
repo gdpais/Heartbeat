@@ -70,7 +70,19 @@ type config struct {
 	schemaDir, readerRole, frontEnd string
 	adminToken, journalDir          string
 	sources                         signals.Sources
+	// maxOpenConns bounds each SQL Server pool (business and logging) so a
+	// flood of requests cannot open unbounded connections and exhaust the
+	// database. maxInFlight bounds concurrent database-backed requests; past
+	// it the server sheds load with 503 (see app.Server.MaxInFlight), and 0
+	// means no limit.
+	maxOpenConns, maxInFlight int
 }
+
+// Pool and load-shedding defaults; override with the matching env vars.
+const (
+	defaultMaxOpenConns = 20
+	defaultMaxInFlight  = 64
+)
 
 func env(name, def string) string {
 	if v, ok := os.LookupEnv(name); ok {
@@ -114,6 +126,12 @@ func loadConfig() (config, error) {
 	c.port = port
 	if c.trust, err = strconv.ParseBool(env("PATIENTZERO_SQL_TRUST_SERVER_CERTIFICATE", "false")); err != nil {
 		return c, errors.New("PATIENTZERO_SQL_TRUST_SERVER_CERTIFICATE must be true or false")
+	}
+	if c.maxOpenConns, err = strconv.Atoi(env("PATIENTZERO_SQL_MAX_OPEN_CONNS", strconv.Itoa(defaultMaxOpenConns))); err != nil || c.maxOpenConns < 1 {
+		return c, errors.New("PATIENTZERO_SQL_MAX_OPEN_CONNS must be a positive integer")
+	}
+	if c.maxInFlight, err = strconv.Atoi(env("PATIENTZERO_MAX_IN_FLIGHT", strconv.Itoa(defaultMaxInFlight))); err != nil || c.maxInFlight < 0 {
+		return c, errors.New("PATIENTZERO_MAX_IN_FLIGHT must be 0 (no limit) or a positive integer")
 	}
 	if c.database == c.logDatabase {
 		return c, errors.New("PATIENTZERO_DATABASE and PATIENTZERO_LOG_DATABASE must differ")
@@ -181,6 +199,16 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	defer logging.Close()
+	// Bound both pools so a request flood cannot open unbounded connections
+	// and exhaust SQL Server. Requests past maxOpenConns wait in the pool for
+	// a connection; the in-flight limiter (below) bounds how many can wait,
+	// shedding the rest with 503.
+	for _, db := range []*sql.DB{business, logging} {
+		db.SetMaxOpenConns(cfg.maxOpenConns)
+		db.SetMaxIdleConns(cfg.maxOpenConns)
+		db.SetConnMaxLifetime(5 * time.Minute)
+		db.SetConnMaxIdleTime(time.Minute)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -237,24 +265,25 @@ func run(log *slog.Logger) error {
 	})
 
 	srv := &app.Server{
-		Faults:   faults,
-		Traffic:  counter,
-		Admin:    scenarioRunner.Handler(cfg.adminToken),
-		Store:    &shop.SQLStore{DB: business},
-		Logs:     writer,
-		Ledger:   ledger,
-		Schema:   oslog.NewSchema(types),
-		FrontEnd: cfg.frontEnd,
-		SlowSQL:  app.DefaultSlowSQL,
-		Log:      log,
+		Faults:      faults,
+		Traffic:     counter,
+		Admin:       scenarioRunner.Handler(cfg.adminToken),
+		Store:       &shop.SQLStore{DB: business},
+		Logs:        writer,
+		Ledger:      ledger,
+		Schema:      oslog.NewSchema(types),
+		FrontEnd:    cfg.frontEnd,
+		SlowSQL:     app.DefaultSlowSQL,
+		MaxInFlight: cfg.maxInFlight,
+		Log:         log,
 		Ready: func(ctx context.Context) error {
 			if !migrated.Load() {
 				return errors.New("schemas not applied yet")
 			}
-			if err := business.PingContext(ctx); err != nil {
+			if err := app.Ping(ctx, business); err != nil {
 				return err
 			}
-			return logging.PingContext(ctx)
+			return app.Ping(ctx, logging)
 		},
 	}
 	httpServer := &http.Server{

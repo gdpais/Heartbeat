@@ -38,6 +38,7 @@ type EntryPoint struct {
 	DurationMsMax  int64 `json:"duration_ms_max"`
 	AnonymousCalls int64 `json:"anonymous"`
 	SlowSQL        int64 `json:"slow_sql"`
+	Shed           int64 `json:"shed"`
 }
 
 // Summary is the traffic between From and To.
@@ -48,6 +49,9 @@ type Summary struct {
 	Failed   int64     `json:"failed"`
 	Injected int64     `json:"injected"`
 	SlowSQL  int64     `json:"slow_sql"`
+	// Shed are the requests turned away with 503 at the in-flight limit.
+	// They wrote no log rows and are not among the Requests.
+	Shed int64 `json:"shed"`
 	// Rows are the log rows committed in the interval, per log type, held
 	// ones when they were committed.
 	Rows           map[string]int64      `json:"rows"`
@@ -106,6 +110,13 @@ func (w *window) add(r Request) {
 	s.EntryPoints[r.EntryPoint] = ep
 }
 
+func (w *window) shed(entryPoint string) {
+	w.sum.Shed++
+	ep := w.sum.EntryPoints[entryPoint]
+	ep.Shed++
+	w.sum.EntryPoints[entryPoint] = ep
+}
+
 // insert adds v unless the set is full; it reports a full set.
 func insert(set map[string]struct{}, v string, limit int) bool {
 	if _, ok := set[v]; ok {
@@ -147,6 +158,21 @@ func (c *Counter) Observe(r Request) {
 	}
 	c.interval.add(r)
 	c.run.add(r)
+}
+
+// Shed counts a request turned away at the in-flight limit, if a run is
+// active.
+func (c *Counter) Shed(entryPoint string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.active {
+		return
+	}
+	c.interval.shed(entryPoint)
+	c.run.shed(entryPoint)
 }
 
 // Committed counts log rows committed, per log type, if a run is active.

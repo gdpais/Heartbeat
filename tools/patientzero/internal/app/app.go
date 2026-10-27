@@ -7,6 +7,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"heartbeat/tools/patientzero/internal/inject"
@@ -108,22 +110,150 @@ type Server struct {
 	// Module_Name SLOWSQL and the Message "<statement> took <n> ms". Zero
 	// logs none.
 	SlowSQL time.Duration
+	// MaxInFlight bounds how many database-backed entry-point requests
+	// (OrderList, PlaceOrder, GetOrders) run at once. Beyond it the server
+	// sheds load with 503 and a Retry-After header instead of opening more
+	// connections and cascading 500s when the database cannot keep up. Zero
+	// or less means no limit (the health and admin endpoints are never
+	// limited).
+	MaxInFlight int
+	// shedEvery is how often, at most, the server logs the requests it
+	// shed; zero means shedReportEvery. Tests shorten it.
+	shedEvery time.Duration
 }
 
-// Handler routes the health endpoints and the entry points.
+// Handler routes the health endpoints and the entry points. The three
+// database-backed entry points run behind the in-flight limiter (MaxInFlight).
 func (s *Server) Handler() http.Handler {
+	limit := s.limiter()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("GET /readyz", s.readyz)
-	mux.HandleFunc("GET "+PathOrderList, s.orderList)
-	mux.HandleFunc("POST "+PathPlaceOrder, s.placeOrder)
-	mux.HandleFunc("GET "+PathAPIOrders, s.apiOrders)
+	mux.HandleFunc("GET "+PathOrderList, limit(EntryOrderList, s.orderList))
+	mux.HandleFunc("POST "+PathPlaceOrder, limit(EntryPlaceOrder, s.placeOrder))
+	mux.HandleFunc("GET "+PathAPIOrders, limit(EntryGetOrders, s.apiOrders))
 	if s.Admin != nil {
 		mux.Handle("/admin/", s.Admin)
 	}
 	return mux
+}
+
+// shedReportEvery is how often, at most, the server logs that it is shedding
+// load, so a flood of requests does not flood the log too.
+const shedReportEvery = 10 * time.Second
+
+// limiter returns a middleware that admits at most MaxInFlight requests at
+// once, shedding the rest with 503 and Retry-After. With MaxInFlight <= 0 it
+// is a pass-through, so existing callers and tests are unaffected unless they
+// set it. The token pool is created once, so every handler it wraps shares the
+// one budget. A shed request writes no log rows; the run's traffic counts it
+// as shed, under the entry point's name, and the server log reports it.
+func (s *Server) limiter() func(name string, next http.HandlerFunc) http.HandlerFunc {
+	if s.MaxInFlight <= 0 {
+		return func(_ string, next http.HandlerFunc) http.HandlerFunc { return next }
+	}
+	tokens := make(chan struct{}, s.MaxInFlight)
+	every := s.shedEvery
+	if every <= 0 {
+		every = shedReportEvery
+	}
+	report := newShedReport(every, func(shed int) {
+		s.logger().Warn("in-flight limit reached; shed requests with 503",
+			"max_in_flight", s.MaxInFlight, "shed", shed)
+	})
+	return func(name string, next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case tokens <- struct{}{}:
+				defer func() { <-tokens }()
+				next(w, r)
+				return
+			default:
+			}
+			s.Traffic.Shed(name)
+			report.add()
+			w.Header().Set("Retry-After", "1")
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "overloaded"})
+		}
+	}
+}
+
+// shedReport paces the shedding log lines. The first shed request is logged
+// at once; those shed within every of a line are held and logged together
+// when that interval ends. So the log has at most one line per interval, and
+// every shed request is counted in one, the last of a burst included.
+type shedReport struct {
+	every time.Duration
+	log   func(shed int)
+	// now and after are time.Now and time.AfterFunc; tests replace them.
+	now   func() time.Time
+	after func(time.Duration, func())
+
+	mu        sync.Mutex
+	last      time.Time // when the last line was logged
+	held      int       // shed since then, not logged yet
+	scheduled bool      // a flush of the held ones is due
+}
+
+func newShedReport(every time.Duration, log func(shed int)) *shedReport {
+	return &shedReport{every: every, log: log, now: time.Now,
+		after: func(d time.Duration, f func()) { time.AfterFunc(d, f) }}
+}
+
+// add counts one shed request. It is logged at once when no line was logged
+// within every; otherwise it is held for the flush at the interval's end.
+func (p *shedReport) add() {
+	p.mu.Lock()
+	p.held++
+	if p.scheduled {
+		p.mu.Unlock()
+		return
+	}
+	now := p.now()
+	if wait := p.every - now.Sub(p.last); !p.last.IsZero() && wait > 0 {
+		p.scheduled = true
+		p.mu.Unlock()
+		p.after(wait, p.flush)
+		return
+	}
+	n := p.take(now)
+	p.mu.Unlock()
+	p.log(n)
+}
+
+// flush logs the held shed requests, at the end of an interval.
+func (p *shedReport) flush() {
+	p.mu.Lock()
+	p.scheduled = false
+	n := p.take(p.now())
+	p.mu.Unlock()
+	if n > 0 {
+		p.log(n)
+	}
+}
+
+// take returns the held count and starts a new interval at now. p.mu is held.
+func (p *shedReport) take(now time.Time) int {
+	n := p.held
+	p.held, p.last = 0, now
+	return n
+}
+
+// Ping reports whether db answers, for a Ready func. A pool whose every
+// connection is in use has reached SQL Server already and is not pinged: the
+// ping would wait for a connection to free up, and when SQL Server is slow
+// that wait outlasts the readiness probe, taking the pod out of its Service
+// just when the in-flight limiter is shedding load. A request can take the
+// last free connection between the check and the ping, but while requests
+// queue for a connection the pool stays full and the check holds; without a
+// queue, the ping's wait is short.
+func Ping(ctx context.Context, db *sql.DB) error {
+	if st := db.Stats(); st.MaxOpenConnections > 0 && st.InUse >= st.MaxOpenConnections {
+		return nil
+	}
+	return db.PingContext(ctx)
 }
 
 func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
@@ -554,12 +684,17 @@ func (s *Server) apiOrders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, orders)
 }
 
+// writeServerActionError answers a failed server action. A refused order
+// (shop.ErrInvalid) is a 400 with a fixed client message; any other error is a
+// 500 with a generic message, so internal error text (JSON-decoder messages,
+// raw SQL Server/driver errors) is never reflected to the caller. The detail
+// still reaches the OutSystems error log row the handler writes.
 func writeServerActionError(w http.ResponseWriter, err error) {
-	status := http.StatusInternalServerError
+	status, message := http.StatusInternalServerError, "Internal Server Error"
 	if errors.Is(err, shop.ErrInvalid) {
-		status = http.StatusBadRequest
+		status, message = http.StatusBadRequest, "The request could not be processed."
 	}
-	writeJSON(w, status, map[string]any{"exception": map[string]string{"name": "ServerException", "message": err.Error()}})
+	writeJSON(w, status, map[string]any{"exception": map[string]string{"name": "ServerException", "message": message}})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

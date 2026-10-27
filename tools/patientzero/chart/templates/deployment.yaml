@@ -39,6 +39,10 @@ spec:
               value: {{ .Values.sql.database | quote }}
             - name: PATIENTZERO_LOG_DATABASE
               value: {{ .Values.sql.logDatabase | quote }}
+            - name: PATIENTZERO_SQL_MAX_OPEN_CONNS
+              value: {{ .Values.sql.maxOpenConns | quote }}
+            - name: PATIENTZERO_MAX_IN_FLIGHT
+              value: {{ .Values.maxInFlight | quote }}
             - name: PATIENTZERO_LOG_READER_ROLE
               value: {{ .Values.logReaderRole | quote }}
             # Each pod is one front-end server in the log rows.
