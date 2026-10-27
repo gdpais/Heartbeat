@@ -21,6 +21,8 @@ one; mark the old record *Superseded by ADR NNNN*.
 | [0013](0013-api-design-and-subsystem-boundaries.md) | API: stdlib `net/http` routing; spec-first OpenAPI 3.1 with oapi-codegen; `pgx` + `sqlc`; `db/migrations` applied by golang-migrate from an init container; local users with argon2id and cookie sessions in Redis; versioned job envelopes on Redis Streams, with the PostgreSQL row as the job. Freezes subsystem boundaries and ownership rules | Accepted |
 | [0014](0014-probe-assignments-to-runtime-config.md) | The API never writes cluster state: approved probe assignments render to one generated values file (`managedCollectors`), proposed as a pull request to `heartbeat-deploy` and synced by Argo CD; on kind the same file goes into `make kind-deploy` | Accepted; GitHub App for the API not set up |
 | [0015](0015-postgresql-and-redis-delivery.md) | PostgreSQL and Redis: small chart templates on the projects' images for kind and CI, off in production, which uses RDS and ElastiCache; Redis runs as Valkey; no Bitnami charts | Accepted |
+| [0016](0016-audit-records-through-an-outbox.md) | Audit records are written to an `audit_outbox` in the change's transaction and drained as OTLP log records through the OTel Collector to Loki; no JSONL files; the outbox is a queue, not a store | Accepted |
+| [0017](0017-outsystems-sources-map-application-identity.md) | An OutSystems 11 telemetry source maps an application to its `service.name` (`application_name`); the `outsystems_logs` collector per installation stays in YAML, not rendered by the API | Accepted |
 
 Template:
 

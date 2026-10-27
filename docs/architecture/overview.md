@@ -75,8 +75,9 @@ An existing store does not imply that its planned consumers are implemented.
 Session analysis owns correlation and baselines; reporting owns report
 generation. Their queue protocol, scheduling details, artifact backend, and
 provisioning interfaces still need to be defined. Baseline metadata lives in
-PostgreSQL; live rule evaluation belongs in Prometheus. Audit JSONL output and
-optional DB evidence snapshots are omitted from this overview; the collector's
+PostgreSQL; live rule evaluation belongs in Prometheus. Audit records
+([ADR 0016](decisions/0016-audit-records-through-an-outbox.md)) and optional
+DB evidence snapshots are omitted from this overview; the collector's
 current evidence sink does not retain them.
 
 ## Open questions

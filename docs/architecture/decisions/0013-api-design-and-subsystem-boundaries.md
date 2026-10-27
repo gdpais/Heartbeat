@@ -188,4 +188,6 @@ Considered and not chosen:
 - The 0.1 freeze items are closed by this record; changing a boundary above
   now needs a new ADR.
 - How assignments reach the collector is [ADR 0014](0014-probe-assignments-to-runtime-config.md);
-  how PostgreSQL and Redis are deployed is [ADR 0015](0015-postgresql-and-redis-delivery.md).
+  how PostgreSQL and Redis are deployed is [ADR 0015](0015-postgresql-and-redis-delivery.md);
+  how the audit record is written in the transaction and delivered is
+  [ADR 0016](0016-audit-records-through-an-outbox.md).

@@ -10,7 +10,7 @@ after foundations and schema prerequisites (sections 2–5). Later-service
 integrations are explicitly identified below; they do not block independent
 stage work, but they do block end-to-end completion of the dependent feature.
 Stage 3 does not wait for stage 2's release: its decisions are recorded
-(ADRs 0013–0015) and its prerequisites are done, so it starts while the
+(ADRs 0013–0017) and its prerequisites are done, so it starts while the
 release waits for the release app [0.5].
 
 Test each implementation action as it lands. Section 16 is a shared validation
@@ -350,7 +350,7 @@ source (OutSystems Cloud or ODC) or the phase 7 investigation timeline.
 
 Delivery stage 3. PostgreSQL schema [1], Redis [0.2], runtime config [8]
 and collector contracts are prerequisites, and its decisions are recorded
-(ADRs 0013–0015). Deep links [4.9] need YAML templates and datasources [8.1,
+(ADRs 0013–0017). Deep links [4.9] need YAML templates and datasources [8.1,
 9.3], which exist.
 
 Remaining work, in order, one pull request each: API bootstrap [4.1] →
@@ -397,8 +397,10 @@ queue tests alone.
 - [ ] Enforce app -> environment ownership path
 
 ### 4.4 Telemetry source management
+- [x] Decide what an OutSystems 11 source is: a mapping from an application to its `service.name` (`config.application_name`, `ingest_mode = agentless`); the extraction collector per installation stays in YAML ([ADR 0017](docs/architecture/decisions/0017-outsystems-sources-map-application-identity.md))
 - [ ] Implement telemetry sources CRUD
-- [ ] Support OutSystems telemetry source registration
+- [ ] Support OutSystems telemetry source registration, with `config` checked against a JSON Schema per source type; within an environment, an `application_name` maps to one application
+- [ ] Show whether the collector observes the source: an enabled `outsystems_logs` collector reports its environment in `GET /admin/config`
 - [ ] Associate telemetry source to application
 - [ ] Derive environment through application
 - [ ] Validate ingest mode and required config
@@ -447,9 +449,11 @@ Built with the reporting worker [7, 14], not in stage 3.
 - [ ] Keep Grafana/Loki integration template-driven, not DB-driven
 
 ### 4.10 Audit output
-- [ ] Append admin/operator mutations to JSONL audit files
+- [x] Decide how audit records are written and delivered: in the change's transaction to an `audit_outbox`, drained as OTLP log records through the OTel Collector to Loki ([ADR 0016](docs/architecture/decisions/0016-audit-records-through-an-outbox.md))
+- [ ] Write a record for every admin/operator change in its transaction; drain the outbox to the OTel Collector, at least once, and delete rows once accepted; `audit_record.schema.json` in `packages/telemetry-contracts`
 - [ ] Include request ID, actor, entity type/id, before/after, config version when relevant
-- [ ] Ensure secrets never enter audit logs
+- [ ] Ensure secrets never enter audit records: a test changes each audited entity and fails on a password, hash, session ID or token
+- [ ] Export the outbox's row count and oldest age; alert when delivery stalls
 
 ---
 
@@ -767,8 +771,7 @@ ownership and outage testing are in section 19.
 - [ ] add worker backoff behavior
 
 ### 15.3 Audit and runbooks
-- [ ] rotate audit JSONL files
-- [ ] ship audit logs to Loki/SIEM
+- [ ] ship audit records to a SIEM, as an OTel Collector exporter, when one is chosen; they reach Loki from stage 3 [4.10]
 - [x] write SQL Server onboarding runbook ([guide](docs/guides/database-targets.md))
 - [ ] write alert tuning runbook
 - [ ] write ops/runbook docs for reload failures, collector crashes, queue backlogs
@@ -894,7 +897,7 @@ until ownership is validated. Design details:
 - [ ] Define per-target ownership/takeover across replicas with fencing or equivalent duplicate-polling protection
 - [ ] Define recovery-time/data-gap objectives and downstream buffering/replay limits separately from collector failover
 - [ ] Test target/process/node loss, network partitions, reloads during failure, and storage/downstream outages; measure recovery, gaps, duplicates and database load, and re-check the baseline [2.6] under these failures
-- [ ] Validate security, operational runbooks, audit rotation/shipping and restore procedures [15]
+- [ ] Validate security, operational runbooks, audit shipping and restore procedures [15]
 
 ## 20. Fallback file ingestion
 
