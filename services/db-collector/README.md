@@ -97,16 +97,20 @@ one fires `HeartbeatCollectorConfigReloadFailed`
   timeout plus a 5s margin, so it never cuts a running probe short) bounds
   that wait: a dead connection fails and leaves the pool within about a
   minute. A probe that fails on that socket timeout counts as `timeout`.
-- A failing probe only affects its own target. The first failure retries on
-  the next cycle; repeated failures back off exponentially (capped at 5m, with
-  jitter). Every probe failure is logged as structured JSON with collector,
-  target, and probe.
-- A failed probe clears its series instead of exporting stale values. While
-  a target backs off none of its probes run, so all its probe series are
-  cleared, those of the probes that succeeded in the failed cycle included;
-  only its `heartbeat_collector_target_*` series stay. A removed collector's
+- A failing probe fails only itself. While other probes of its target
+  succeed, the target is `degraded` and stays up, and the probe backs off on
+  its own: the first failure retries on the next cycle, repeated failures
+  back off exponentially (capped at 5m, with jitter). A target fails, and
+  backs off the same way as a whole, only when every probe that ran failed.
+  Every probe failure is logged as structured JSON with collector, target,
+  and probe.
+- A failed probe clears its series instead of exporting stale values, for as
+  long as it backs off. While a target backs off none of its probes run, so
+  all its probe series are cleared; only its `heartbeat_collector_target_*`
+  and `heartbeat_collector_probe_up` series stay. A removed collector's
   series are deleted.
 - Self-observability series: `heartbeat_collector_target_up`,
+  `heartbeat_collector_probe_up`,
   `heartbeat_collector_target_consecutive_failures`,
   `heartbeat_collector_target_last_success_timestamp_seconds`,
   `heartbeat_collector_target_login_sysadmin`,

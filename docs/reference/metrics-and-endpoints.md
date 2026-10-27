@@ -46,7 +46,7 @@ Reload can also be triggered with `SIGHUP` or file polling.
 | `version`, `loaded_at`, `last_reload_at` | Active config version (SHA-256 of the file) and timestamps |
 | `last_reload_err`, `runtime_diverged`, `rollback_err` | Why the last reload was rejected or failed; set until the next successful reload. Monitoring sees it as [`heartbeat_collector_config_last_reload_successful`](#config-reloads) 0 |
 | `warnings` | Insecure startup settings, e.g. `sqlserver_trust_server_certificate` |
-| `readiness` | What `/readyz` decided and why: `status`, `reasons`, and per collector its phase, cycle age, restarts and targets. Each target has its state (`ok`, `failed`, `backoff`, or `blocked` for an `outsystems_logs` target waiting for the OTel Collector), consecutive failures, last success and the raw driver `error` of its last failed cycle, kept while it backs off, which can name the host, port and login but never contains the password. A `blocked` target's `error` says which log type waits, with how many rows, and for how long |
+| `readiness` | What `/readyz` decided and why: `status`, `reasons`, and per collector its phase, cycle age, restarts and targets. Each target has its state (`ok`, `failed`, `backoff`, `blocked` for an `outsystems_logs` target waiting for the OTel Collector, or `degraded` for a target with some probes failing), consecutive failures, last success and the raw driver `error` of its last failed cycle, kept while it backs off, which can name the host, port and login but never contains the password. A `blocked` target's `error` says which log type waits, with how many rows, and for how long. A `degraded` target lists its failing `probes`, each with its state (`failed`, or `backoff` while it waits out its own backoff), consecutive failures, next attempt and `error` |
 | `config` | The active config, redacted ([configuration reference](configuration.md#validation-and-reload-behavior)) |
 
 ```bash
@@ -161,13 +161,18 @@ that overrides a probe's `query_template` must return the same columns in the
 same units.
 
 A failed probe clears its series instead of exporting stale values, and a
-removed collector's series are deleted. One failed probe also fails its whole
-target for that cycle (`heartbeat_collector_target_up` is 0), although the
-target's other probes still run and export; if it keeps failing, the target
-backs off and none of its probes run until the retry. While it backs off
-(up to 5m) all its probe series are cleared, so the probes that still work
-leave a gap instead of a frozen value; only the
-`heartbeat_collector_target_*` series stay. For example, `storage` and
+removed collector's series are deleted. A failing probe fails only itself:
+while the target's other probes succeed, the target is `degraded`, stays up
+(`heartbeat_collector_target_up` 1) and keeps collecting, and the failing
+probe (`heartbeat_collector_probe_up` 0) backs off on its own, with the same
+schedule as a target (the next cycle, then doubling up to 5m, with jitter)
+and its series cleared until it succeeds again. A target fails, and backs off
+as a whole, only when every probe that ran failed, as when its database is
+unreachable or its login is refused; the probes' own backoffs are then
+forgotten. While a target backs off none of its probes run and all its probe
+series are cleared, so they leave a gap instead of a frozen value; only the
+`heartbeat_collector_target_*` and `heartbeat_collector_probe_up` series stay.
+When every probe of a target is backing off on its own, they all run. For example, `storage` and
 `file_io` read `sys.master_files`, which a long `RESTORE` or schema change
 can lock until the probe times out. A probe that returns no rows exports no
 series: `heartbeat_sqlserver_blocked_requests` is absent, not 0, while nothing
@@ -180,9 +185,10 @@ Requests panel does, so an unreachable target never reads as 0. The catalog live
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
-| `heartbeat_collector_target_up` | gauge | `collector`, `environment`, `target` | 1 if the last cycle for the target succeeded, including an `outsystems_logs` target that waits for the OTel Collector (`blocked`) |
-| `heartbeat_collector_target_consecutive_failures` | gauge | `collector`, `environment`, `target` | Failed cycles in a row |
-| `heartbeat_collector_target_last_success_timestamp_seconds` | gauge | `collector`, `environment`, `target` | Unix time of the last successful cycle; use it for freshness alerts |
+| `heartbeat_collector_target_up` | gauge | `collector`, `environment`, `target` | 1 if the last cycle for the target succeeded, including an `outsystems_logs` target that waits for the OTel Collector (`blocked`) and one with some probes failing (`degraded`) |
+| `heartbeat_collector_probe_up` | gauge | `collector`, `environment`, `target`, `probe` | 1 if the probe's last execution succeeded, waiting for the OTel Collector included; 0 if it failed, backs off on its own, or its target failed or backs off |
+| `heartbeat_collector_target_consecutive_failures` | gauge | `collector`, `environment`, `target` | Failed cycles in a row; a `degraded` cycle is not one |
+| `heartbeat_collector_target_last_success_timestamp_seconds` | gauge | `collector`, `environment`, `target` | Unix time of the last cycle in which every probe succeeded; use it for freshness alerts |
 | `heartbeat_collector_cycle_duration_seconds` | gauge | `collector` | Duration of the last collection cycle |
 | `heartbeat_collector_target_login_sysadmin` | gauge | `collector`, `environment`, `target` | 1 if the collector's login for the target is sysadmin-equivalent: a member of `sysadmin`, or holding `CONTROL SERVER` (it should be 0; see [login permissions](../guides/database-targets.md#collector-login-permissions)). Checked when the collector first connects to the target and about every 10 minutes after; absent until the first check, and while SQL Server cannot tell |
 | `heartbeat_collector_probe_duration_seconds` | histogram | `collector`, `environment`, `target`, `probe` | Probe execution time, failed and timed-out executions included (an abandoned probe is observed at the time it was abandoned); buckets 5ms, 10ms, 50ms, 100ms, 500ms, 1s, 5s, 10s, 30s, 60s |

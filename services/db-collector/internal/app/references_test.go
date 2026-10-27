@@ -37,7 +37,7 @@ func collectorMetrics() map[string]bool {
 	names := map[string]bool{}
 	for _, name := range []string{
 		collectors.MetricTargetUp, collectors.MetricTargetLastSuccess, collectors.MetricTargetConsecutiveFailures,
-		collectors.MetricCycleDuration, collectors.MetricTargetLoginSysadmin, collectors.MetricProbeErrors,
+		collectors.MetricCycleDuration, collectors.MetricTargetLoginSysadmin, collectors.MetricProbeErrors, collectors.MetricProbeUp,
 		MetricConfigLastReloadSuccessful, MetricConfigLastReloadSuccessTimestamp, MetricConfigReloads, MetricConfigInfo,
 	} {
 		names[name] = true

@@ -27,7 +27,36 @@ const (
 	// Collector has not accepted yet.  It is backpressure, not a failure: the
 	// target does not back off and heartbeat_collector_target_up stays 1.
 	TargetBlocked TargetState = "blocked"
+	// TargetDegraded is a target with probes that failed or back off on their
+	// own while its other probes succeeded: only the failing probes are
+	// missing.  The target does not back off and heartbeat_collector_target_up
+	// stays 1; Probes lists the failing probes.  A target is failed, and
+	// backs off as a whole, only when every probe that ran failed.
+	TargetDegraded TargetState = "degraded"
 )
+
+// ProbeState is the outcome of one probe of a degraded target.
+type ProbeState string
+
+const (
+	// ProbeFailed is a probe that failed in this cycle.
+	ProbeFailed ProbeState = "failed"
+	// ProbeBackoff is a probe that did not run in this cycle: it waits out
+	// the backoff of its earlier failures.
+	ProbeBackoff ProbeState = "backoff"
+)
+
+// ProbeResult is a failing probe of a [TargetDegraded] target.
+type ProbeResult struct {
+	Probe string
+	State ProbeState
+	// Err is the probe's error in this cycle, or in its last failed one while
+	// it backs off.  Like TargetResult.Err, it is for logs and in-process
+	// decisions only.
+	Err                 error
+	ConsecutiveFailures int
+	NextAttempt         time.Time
+}
 
 // TargetResult is the per-target outcome of one cycle.
 type TargetResult struct {
@@ -43,10 +72,12 @@ type TargetResult struct {
 	LastSuccess         time.Time
 	// NextAttempt is set when State is TargetBackoff or TargetFailed.
 	NextAttempt time.Time
+	// Probes lists the failing probes of a TargetDegraded target.
+	Probes []ProbeResult
 }
 
 // Healthy reports whether every target in the cycle succeeded.  A blocked
-// target counts as healthy: its probes ran.
+// target counts as healthy: its probes ran.  A degraded one does not.
 func (c CycleResult) Healthy() bool {
 	for _, target := range c.Targets {
 		if target.State != TargetOK && target.State != TargetBlocked {

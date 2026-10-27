@@ -656,8 +656,12 @@ type collectorReport struct {
 	// output to be accepted downstream (collectors.TargetBlocked): an
 	// outsystems_logs log type waiting for the OTel Collector. They are up,
 	// not failed.
-	TargetsBlocked int            `json:"targets_blocked"`
-	Targets        []targetReport `json:"targets"`
+	TargetsBlocked int `json:"targets_blocked"`
+	// TargetsDegraded counts targets with probes that failed or back off on
+	// their own while their other probes succeeded
+	// (collectors.TargetDegraded). They are up; their probes say which fail.
+	TargetsDegraded int            `json:"targets_degraded"`
+	Targets         []targetReport `json:"targets"`
 }
 
 // targetReport is the per-target section of readinessReport.
@@ -672,6 +676,19 @@ type targetReport struct {
 	// waits downstream and for how long. It can name the host, port and
 	// login but never the password: hosts are validated at config load so
 	// the connection URL always parses. Admin endpoints only.
+	Error string `json:"error,omitempty"`
+	// Probes lists the failing probes of a degraded target.
+	Probes []probeReport `json:"probes,omitempty"`
+}
+
+// probeReport is a failing probe of a degraded target.
+type probeReport struct {
+	Name                string     `json:"name"`
+	State               string     `json:"state"`
+	ConsecutiveFailures int        `json:"consecutive_failures"`
+	NextAttempt         *time.Time `json:"next_attempt,omitempty"`
+	// Error is the probe's raw error, as Error of its target. Admin
+	// endpoints only.
 	Error string `json:"error,omitempty"`
 }
 
@@ -839,10 +856,26 @@ func addTargets(report *collectorReport, targets []collectors.TargetResult, with
 			report.TargetsBackoff++
 		case collectors.TargetBlocked:
 			report.TargetsBlocked++
+		case collectors.TargetDegraded:
+			report.TargetsDegraded++
 		}
 		var errText string
 		if withErrors && target.Err != nil {
 			errText = target.Err.Error()
+		}
+		var probes []probeReport
+		for _, probe := range target.Probes {
+			var probeErr string
+			if withErrors && probe.Err != nil {
+				probeErr = probe.Err.Error()
+			}
+			probes = append(probes, probeReport{
+				Name:                probe.Probe,
+				State:               string(probe.State),
+				ConsecutiveFailures: probe.ConsecutiveFailures,
+				NextAttempt:         optionalTime(probe.NextAttempt),
+				Error:               probeErr,
+			})
 		}
 		report.Targets = append(report.Targets, targetReport{
 			Name:                target.Target,
@@ -851,6 +884,7 @@ func addTargets(report *collectorReport, targets []collectors.TargetResult, with
 			LastSuccess:         optionalTime(target.LastSuccess),
 			NextAttempt:         optionalTime(target.NextAttempt),
 			Error:               errText,
+			Probes:              probes,
 		})
 	}
 }
