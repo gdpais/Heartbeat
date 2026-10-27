@@ -101,6 +101,33 @@ Not covered, by design:
 - **PatientZero** sends nothing to the engines: it writes its logs to SQL
   Server, and the db-collector reads them.
 
+**The collector's egress.** The policies above limit what reaches each
+pod. `dbCollector.networkPolicy.egress` also limits where the collector
+connects, off by default and on in `kind.yaml` and the production example:
+
+| Destination | Ports | Why |
+| --- | --- | --- |
+| `egress.dns` (kube-dns in `kube-system` by default) | UDP and TCP 53 | Name resolution |
+| The bundled OTel Collector, while it is on | 4318 | OTLP/HTTP logs |
+| `egress.targets` | each `port` of `integrations`' targets (1433 when none) | The monitored SQL Servers and logging databases |
+| `egress.extraRules` | as given | An OTel Collector outside the chart, a proxy |
+
+NetworkPolicy matches addresses, not host names, so `egress.targets` are
+peers, usually ipBlock CIDRs of the databases' subnets; with egress on and a
+target configured, an install without them fails rather than cutting the
+collector off its databases. On kind they are everything outside the pod
+subnet, since the sandbox SQL Server is a container on the Docker `kind`
+network: the collector can reach it, DNS and the OTel Collector, and times
+out on any other pod or Service, which `make kind-e2e` checks.
+
+**Keep the collector's Service ClusterIP in production.** `/metrics` and
+`/healthz` are unauthenticated and name the collectors, targets and
+environments. A NodePort or LoadBalancer Service makes port 8082 reachable
+from anything that reaches a node, and with `externalTrafficPolicy: Cluster`
+the NetworkPolicy then sees the node's address instead of the client's, so
+its peers no longer tell sources apart. `kind.yaml` uses a NodePort only
+because kind binds it to `127.0.0.1`.
+
 `backendNetworkPolicies.<engine>.extraPeers` admits more NetworkPolicyPeers
 to an engine's ports (the Collector: 4317, 4318, and 8889 while its exporter
 is on; Prometheus 9090; Alertmanager 9093; Loki 3100), such as a shared

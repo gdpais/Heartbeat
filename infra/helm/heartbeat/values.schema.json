@@ -158,6 +158,56 @@
               "items": {
                 "$ref": "#/$defs/networkPolicyPeer"
               }
+            },
+            "egress": {
+              "description": "Egress NetworkPolicy for the collector, off by default: DNS, the bundled OTel Collector, the monitored databases (targets) and extraRules only.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "enabled"
+              ],
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "targets": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/networkPolicyPeer"
+                  }
+                },
+                "dns": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/networkPolicyPeer"
+                  }
+                },
+                "extraRules": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "to"
+                    ],
+                    "properties": {
+                      "to": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "$ref": "#/$defs/networkPolicyPeer"
+                        }
+                      },
+                      "ports": {
+                        "type": "array",
+                        "items": {
+                          "type": "object"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
         },

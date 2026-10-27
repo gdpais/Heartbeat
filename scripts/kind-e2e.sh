@@ -512,6 +512,40 @@ printf '%s\n' "$results" | while read -r url code; do
 	esac
 done
 pass "unlisted pods time out on the collector, Loki, Prometheus, Alertmanager and the OTel Collector, NodePorts included"
+# The collector's egress (kind.yaml limits it): a pod with the collector's
+# labels, which the db-collector NetworkPolicy selects, resolves names and
+# reaches the OTel Collector, which answers its GET with a 405, and times out
+# on every other pod, Grafana included, whose own ingress is open. The
+# collector image has no shell, hence the stand-in. Reaching SQL Server is
+# what the collector's targets being up already shows.
+egress_script='for url in "$@"; do out=$(timeout 10 wget -q -T 30 -O /dev/null "$url" 2>&1); echo "$url $? $out"; done'
+k -n "$NAMESPACE" delete pod egress-probe --ignore-not-found --wait=true >/dev/null
+k -n "$NAMESPACE" run egress-probe --image="$prom_image" --restart=Never \
+	--labels=app.kubernetes.io/name=db-collector,app.kubernetes.io/instance=heartbeat \
+	--command -- sh -c "$egress_script" sh http://otel-collector:4318/v1/logs http://grafana:3000/api/health \
+	http://loki:3100/ready http://prometheus:9090/-/ready >/dev/null
+wait_for 180 "egress probe pod finished" pod_done egress-probe
+results=$(k -n "$NAMESPACE" logs egress-probe 2>&1 | grep '^http' || true)
+k -n "$NAMESPACE" delete pod egress-probe --wait=false >/dev/null
+printf '%s\n' "$results" | sed 's/^/      /'
+[ "$(printf '%s\n' "$results" | grep -c .)" = 4 ] || fail "expected 4 egress probe results"
+printf '%s\n' "$results" | while read -r url code rest; do
+	case "$url" in
+	*otel-collector*)
+		case "$rest" in
+		*405*) ;;
+		*) fail "the collector cannot reach the OTel Collector: $url exit $code $rest" ;;
+		esac
+		;;
+	*)
+		case "$code" in
+		124 | 143) ;;
+		*) fail "$url from the collector: exit $code $rest, not a connection timeout" ;;
+		esac
+		;;
+	esac
+done
+pass "the collector resolves names and reaches the OTel Collector, and times out on Grafana, Loki and Prometheus"
 
 # ----------------------------------------------------------------------------
 step "a valid ConfigMap update is hot-reloaded without a restart"

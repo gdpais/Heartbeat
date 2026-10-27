@@ -54,6 +54,12 @@ dbCollector:
   # Covers the bounded shutdown: HTTP drain 10s + poller stop 20s + 5s.
   terminationGracePeriodSeconds: 45
   service:
+    # Keep ClusterIP in production. /metrics is unauthenticated and names the
+    # collectors, targets and environments; a NodePort or LoadBalancer Service
+    # makes it reachable from anything that reaches a node, and with
+    # externalTrafficPolicy Cluster the NetworkPolicy then sees the node's
+    # address instead of the client's. kind.yaml uses a NodePort bound to
+    # 127.0.0.1 only.
     type: ClusterIP
     port: 8082
     # Only used when type is NodePort.
@@ -83,6 +89,33 @@ dbCollector:
     # Operator access from outside the cluster or from tooling pods, such as
     # an ipBlock for the VPN or bastion range.
     operators: []
+    # Egress, off by default. On, the collector may connect only to DNS, the
+    # bundled OTel Collector's OTLP/HTTP port (4318) when otelCollector is
+    # on, the monitored databases on the ports integrations' targets name
+    # (1433 when they name none), and extraRules; anything else it tries,
+    # another pod or the internet, times out. NetworkPolicy matches
+    # addresses, not host names, so the databases are given as peers,
+    # usually ipBlock CIDRs: with egress on and a target configured, an
+    # empty targets list fails the install instead of cutting the collector
+    # off its databases. Needs a CNI that enforces egress policy.
+    egress:
+      enabled: false
+      # The monitored SQL Servers and OutSystems logging databases, as
+      # NetworkPolicyPeer objects; an ipBlock for databases outside the
+      # cluster.
+      targets: []
+      # Where the collector resolves names: kube-dns in kube-system on most
+      # clusters (kind, EKS). Both UDP and TCP 53.
+      dns:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      # More NetworkPolicyEgressRule objects (to and ports), such as an OTel
+      # Collector outside the chart or an HTTP proxy.
+      extraRules: []
   resources:
     requests:
       cpu: 50m

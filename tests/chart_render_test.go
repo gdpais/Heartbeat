@@ -42,6 +42,10 @@ type chartProfile struct {
 	// admit to port 8082, in peerString form; none means it denies all
 	// ingress. Checked whenever the profile renders the policy.
 	collectorPeers []string
+	// collectorEgress are the destinations the db-collector NetworkPolicy
+	// allows when it limits egress, in "TCP/1433 -> peerString" form; nil
+	// means it must not limit egress.
+	collectorEgress []string
 	// backendPolicies are the bundled engines' NetworkPolicies the profile
 	// must render, by name, each as the port and peer pairs it admits in
 	// "TCP/3100 <- peerString" form; no pairs means it denies all ingress.
@@ -84,7 +88,16 @@ const (
 	lokiPeer          = "pods{app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=loki}"
 	alertmanagerPeer  = "pods{app.kubernetes.io/instance=heartbeat,app.kubernetes.io/name=alertmanager}"
 	kindHostPeer      = "ip 0.0.0.0/0 except 10.244.0.0/16"
+	kubeDNSPeer       = "ns{kubernetes.io/metadata.name=kube-system} pods{k8s-app=kube-dns}"
 )
+
+// kindCollectorEgress is what the kind values let the collector reach: DNS,
+// the OTel Collector and, on SQL Server's port, everything but the pods.
+var kindCollectorEgress = []string{
+	"UDP/53 -> " + kubeDNSPeer, "TCP/53 -> " + kubeDNSPeer,
+	"TCP/4318 -> " + otelCollectorPeer,
+	"TCP/1433 -> " + kindHostPeer,
+}
 
 // defaultBackendPolicies are the engine policies with every component on:
 // each engine admits only the components that use it, on their ports.
@@ -154,6 +167,7 @@ var chartProfiles = []chartProfile{
 		present: []string{"StatefulSet/db-collector", "StatefulSet/loki", "StatefulSet/otel-collector", "PersistentVolumeClaim/otel-collector-queue", "NetworkPolicy/db-collector"},
 		// The host through the loopback NodePort; pods stay limited to Prometheus.
 		collectorPeers:  []string{bundledPrometheusPeer, kindHostPeer},
+		collectorEgress: kindCollectorEgress,
 		backendPolicies: kindBackendPolicies,
 	},
 	{
@@ -162,14 +176,17 @@ var chartProfiles = []chartProfile{
 		present:        []string{"StatefulSet/db-collector", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "NetworkPolicy/db-collector"},
 		absent:         []string{"StatefulSet/loki", "StatefulSet/otel-collector", "PersistentVolumeClaim/otel-collector-queue"},
 		collectorPeers: []string{bundledPrometheusPeer, kindHostPeer},
+		// Without the OTel Collector there is nothing to export to.
+		collectorEgress: []string{"UDP/53 -> " + kubeDNSPeer, "TCP/53 -> " + kubeDNSPeer, "TCP/1433 -> " + kindHostPeer},
 		// No policy for the engines that are off.
 		backendPolicies: withPairs(kindBackendPolicies, nil, "otel-collector", "loki"),
 	},
 	{
 		name:           "kind-sqlserver-dev",
 		values:         []string{"kind.yaml", "sqlserver-dev.yaml"},
-		present:        []string{"StatefulSet/db-collector", "NetworkPolicy/db-collector"},
-		collectorPeers: []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
+		present:         []string{"StatefulSet/db-collector", "NetworkPolicy/db-collector"},
+		collectorPeers:  []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
+		collectorEgress: kindCollectorEgress,
 		notes: []string{
 			"- heartbeat-sqlserver-dev-credentials (a HEARTBEAT_CREDENTIAL_<REF> key per credential_ref)",
 			"get secret heartbeat-runtime heartbeat-sqlserver-dev-credentials grafana-admin\n",
@@ -182,6 +199,7 @@ var chartProfiles = []chartProfile{
 		values:          []string{"production.example.yaml"},
 		present:         []string{"StatefulSet/db-collector", "Ingress/grafana", "NetworkPolicy/db-collector"},
 		collectorPeers:  []string{bundledPrometheusPeer, "ip 10.100.0.0/16"},
+		collectorEgress: []string{"UDP/53 -> " + kubeDNSPeer, "TCP/53 -> " + kubeDNSPeer, "TCP/4318 -> " + otelCollectorPeer, "TCP/1433 -> ip 10.20.0.0/16"},
 		backendPolicies: defaultBackendPolicies,
 	},
 	{
@@ -403,6 +421,41 @@ var chartProfiles = []chartProfile{
 		name:      "unknown-top-level-key",
 		set:       []string{"dbColector.enabled=false"},
 		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		// Egress needs the databases' addresses: with a target and none, the
+		// install fails instead of cutting the collector off.
+		name:      "collector-egress-without-targets",
+		values:    []string{"kind.yaml", "sqlserver-dev.yaml"},
+		set:       []string{"dbCollector.networkPolicy.egress.targets=null"},
+		wantError: "dbCollector.networkPolicy.egress.enabled needs egress.targets",
+	},
+	{
+		// The databases' ports come from integrations' targets, each once;
+		// extra rules are kept as given.
+		name: "collector-egress-ports-and-extra-rules",
+		inline: "dbCollector:\n" +
+			"  networkPolicy:\n" +
+			"    egress:\n" +
+			"      enabled: true\n" +
+			"      targets: [{ipBlock: {cidr: 10.20.0.0/16}}]\n" +
+			"      dns: []\n" +
+			"      extraRules: [{to: [{ipBlock: {cidr: 10.30.0.1/32}}], ports: [{protocol: TCP, port: 3128}]}]\n" +
+			"integrations:\n" +
+			"  collectors:\n" +
+			"    - id: sql\n" +
+			"      kind: sqlserver\n" +
+			"      enabled: true\n" +
+			"      config:\n" +
+			"        environment: prod\n" +
+			"        probes: [{name: waits}]\n" +
+			"        targets:\n" +
+			"          - {name: a, host: a.example.internal, port: 1433, database_name: master, credential_ref: env/a}\n" +
+			"          - {name: b, host: b.example.internal, port: 14330, database_name: master, credential_ref: env/a}\n" +
+			"          - {name: c, host: c.example.internal, port: 1433, database_name: master, credential_ref: env/a}\n",
+		present:         []string{"NetworkPolicy/db-collector"},
+		collectorPeers:  []string{bundledPrometheusPeer},
+		collectorEgress: []string{"TCP/4318 -> " + otelCollectorPeer, "TCP/1433 -> ip 10.20.0.0/16", "TCP/14330 -> ip 10.20.0.0/16", "TCP/3128 -> ip 10.30.0.1/32"},
 	},
 	{
 		// A misspelt key inside a component fails too: v0.1.0 ignored
@@ -667,6 +720,7 @@ func TestChartProfiles(t *testing.T) {
 			checkCollectorGoMemLimit(t, objects, profile.goMemLimit)
 			checkInClusterEndpoints(t, objects)
 			checkCollectorNetworkPolicy(t, objects, profile.collectorPeers)
+			checkCollectorEgress(t, objects, profile.collectorEgress)
 			checkBackendNetworkPolicies(t, objects, profile.backendPolicies)
 			checkCollectorState(t, objects, profile.stateEmptyDir)
 			checkCollectorPipelines(t, objects, profile.collectorReceivers)
@@ -1461,6 +1515,57 @@ func checkGrafanaGzip(t *testing.T, objects map[string]object) {
 // (which admits every source). The bundled Prometheus peer must match the
 // rendered Prometheus Deployment's selector, so a subchart label change cannot
 // silently cut off scraping.
+// checkCollectorEgress checks what the db-collector NetworkPolicy lets the
+// collector reach: nothing limited when want is nil, else exactly want, in
+// "TCP/1433 -> peerString" form, and never an empty `to`, which would allow
+// every destination.
+func checkCollectorEgress(t *testing.T, objects map[string]object, want []string) {
+	t.Helper()
+	policy, ok := objects["NetworkPolicy/db-collector"]
+	if !ok {
+		return
+	}
+	var spec struct {
+		PolicyTypes []string `yaml:"policyTypes"`
+		Egress      *[]struct {
+			Ports []struct {
+				Protocol string `yaml:"protocol"`
+				Port     int    `yaml:"port"`
+			} `yaml:"ports"`
+			To []networkPolicyPeer `yaml:"to"`
+		} `yaml:"egress"`
+	}
+	if err := policy.Spec.Decode(&spec); err != nil {
+		t.Fatal(err)
+	}
+	limits := slices.Contains(spec.PolicyTypes, "Egress")
+	if want == nil {
+		if limits || spec.Egress != nil {
+			t.Errorf("db-collector NetworkPolicy limits egress (%v), want it off", spec.PolicyTypes)
+		}
+		return
+	}
+	if !limits || spec.Egress == nil {
+		t.Fatalf("db-collector NetworkPolicy does not limit egress: policyTypes %v", spec.PolicyTypes)
+	}
+	var got []string
+	for _, rule := range *spec.Egress {
+		if len(rule.To) == 0 {
+			t.Fatal("db-collector NetworkPolicy egress rule has an empty to, which allows every destination")
+		}
+		for _, port := range rule.Ports {
+			for _, peer := range rule.To {
+				got = append(got, fmt.Sprintf("%s/%d -> %s", port.Protocol, port.Port, peerString(peer)))
+			}
+		}
+	}
+	slices.Sort(got)
+	wanted := slices.Sorted(slices.Values(want))
+	if !slices.Equal(got, wanted) {
+		t.Errorf("db-collector NetworkPolicy egress = %q, want %q", got, wanted)
+	}
+}
+
 func checkCollectorNetworkPolicy(t *testing.T, objects map[string]object, wantPeers []string) {
 	t.Helper()
 	policy, ok := objects["NetworkPolicy/db-collector"]
@@ -1481,8 +1586,8 @@ func checkCollectorNetworkPolicy(t *testing.T, objects map[string]object, wantPe
 	if err := policy.Spec.Decode(&spec); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(spec.PolicyTypes, ",") != "Ingress" {
-		t.Errorf("db-collector NetworkPolicy policyTypes = %v, want [Ingress]", spec.PolicyTypes)
+	if strings.Join(spec.PolicyTypes, ",") != "Ingress" && strings.Join(spec.PolicyTypes, ",") != "Ingress,Egress" {
+		t.Errorf("db-collector NetworkPolicy policyTypes = %v, want [Ingress] or [Ingress Egress]", spec.PolicyTypes)
 	}
 	if sts, ok := objects["StatefulSet/db-collector"]; ok {
 		var stsSpec struct {

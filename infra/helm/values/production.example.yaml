@@ -30,6 +30,13 @@ dbCollector:
     operators:
       - ipBlock:
           cidr: 10.100.0.0/16
+    # Egress to DNS, the bundled OTel Collector and the monitored databases
+    # only: the subnet of orders-db and oslog-sql below (placeholder).
+    egress:
+      enabled: true
+      targets:
+        - ipBlock:
+            cidr: 10.20.0.0/16
   # ExternalSecret-managed: HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_<NAME>=<login>:<password>.
   credentials:
     existingSecret: heartbeat-sqlserver-credentials
