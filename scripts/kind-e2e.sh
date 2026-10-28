@@ -168,6 +168,11 @@ has_value() { [ -n "$(prom_value "$1")" ]; }
 # pod_phase <pod> [namespace], pod_done <pod> [namespace]: a one-shot pod's phase.
 pod_phase() { k -n "${2:-$NAMESPACE}" get pod "$1" -o jsonpath='{.status.phase}'; }
 pod_done() { case "$(pod_phase "$@")" in Succeeded | Failed) true ;; *) false ;; esac; }
+# ephemeral_done <pod> <container>: an ephemeral container of the pod has exited.
+ephemeral_done() {
+	[ -n "$(k -n "$NAMESPACE" get pod "$1" \
+		-o jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"$2\")].state.terminated.reason}")" ]
+}
 # Lines Loki returns for a LogQL query over the last hour.
 loki_count() {
 	svc_get loki:3100 "/loki/api/v1/query_range?limit=1000&query=$(printf '%s' "$1" | jq -sRr @uri)" |
@@ -512,6 +517,41 @@ printf '%s\n' "$results" | while read -r url code; do
 	esac
 done
 pass "unlisted pods time out on the collector, Loki, Prometheus, Alertmanager and the OTel Collector, NodePorts included"
+# The collector's egress (kind.yaml limits it), from an ephemeral container in
+# db-collector-0, which shares the pod's network and so its policy: it
+# resolves names and reaches the OTel Collector, which answers its GET with a
+# 405, and times out on every other pod, Grafana included, whose own ingress
+# is open. A stand-in pod with the collector's labels would also join the
+# collector's Services, and Prometheus would scrape it. The collector image
+# has no shell, hence the Prometheus image. Reaching SQL Server is what the
+# collector's targets being up already shows. An ephemeral container stays in
+# the pod until the pod is replaced, so each run names its own.
+egress_script='for url in "$@"; do out=$(timeout 10 wget -q -T 30 -O /dev/null "$url" 2>&1); echo "$url $? $out"; done'
+egress_probe=egress-probe-$(date +%s)
+k -n "$NAMESPACE" debug db-collector-0 --profile=restricted --image="$prom_image" --container="$egress_probe" \
+	-- sh -c "$egress_script" sh http://otel-collector:4318/v1/logs http://grafana:3000/api/health \
+	http://loki:3100/ready http://prometheus:9090/-/ready >/dev/null
+wait_for 180 "egress probe finished" ephemeral_done db-collector-0 "$egress_probe"
+results=$(k -n "$NAMESPACE" logs db-collector-0 -c "$egress_probe" 2>&1 | grep '^http' || true)
+printf '%s\n' "$results" | sed 's/^/      /'
+[ "$(printf '%s\n' "$results" | grep -c .)" = 4 ] || fail "expected 4 egress probe results"
+printf '%s\n' "$results" | while read -r url code rest; do
+	case "$url" in
+	*otel-collector*)
+		case "$rest" in
+		*405*) ;;
+		*) fail "the collector cannot reach the OTel Collector: $url exit $code $rest" ;;
+		esac
+		;;
+	*)
+		case "$code" in
+		124 | 143) ;;
+		*) fail "$url from the collector: exit $code $rest, not a connection timeout" ;;
+		esac
+		;;
+	esac
+done
+pass "the collector resolves names and reaches the OTel Collector, and times out on Grafana, Loki and Prometheus"
 
 # ----------------------------------------------------------------------------
 step "a valid ConfigMap update is hot-reloaded without a restart"

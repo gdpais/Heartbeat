@@ -37,6 +37,18 @@ dbCollector:
           cidr: 0.0.0.0/0
           except:
             - 10.244.0.0/16
+    # Egress on, as production should have it: the sandbox SQL Server is a
+    # container on the Docker kind network, outside the pod subnet, so the
+    # targets are everything but the pods; other pods and Services (whose
+    # addresses NetworkPolicy sees as their pods') are out of reach but for
+    # DNS and the OTel Collector. kind-e2e checks it.
+    egress:
+      enabled: true
+      targets:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.244.0.0/16
 
 # The same operator access to the engines with a loopback NodePort (make
 # health, the demo helpers): Prometheus, Alertmanager and the OTel Collector's

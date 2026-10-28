@@ -251,8 +251,8 @@ Replica ownership and outage testing are section 19. Design details:
 - [x] Network exposure: add a NetworkPolicy limiting port 8082 to Prometheus and operator access
 - [x] SQL Server TLS: log a startup warning and surface in diagnostics when `TrustServerCertificate` is enabled; per-target TLS settings wait until a real target needs them
 - [x] Check at validation that a `query_template` is a single read-only `SELECT` (defense in depth; the read-only login stays the control)
-- [ ] Egress NetworkPolicy for the collector: DNS, the monitored targets and the OTel Collector only (the policy restricts ingress only)
-- [ ] A NodePort or LoadBalancer Service bypasses the collector's NetworkPolicy, so the unauthenticated `/metrics` (collector, target and environment names, probe counters) reaches anything that can reach a node. The chart default is ClusterIP and kind binds its node port to 127.0.0.1 only; say in the chart values and the deployment docs that production keeps ClusterIP
+- [x] Egress NetworkPolicy for the collector: DNS, the monitored targets and the OTel Collector only (the policy restricted ingress only). `dbCollector.networkPolicy.egress`, off by default (NetworkPolicy cannot match the targets' host names, so their addresses are given as peers), on in `kind.yaml` and the production example; the targets' ports come from `integrations`, an install with targets but no target peers fails, and `make kind-e2e` checks, from an ephemeral container in the collector's pod, that it reaches only DNS and the OTel Collector
+- [x] A NodePort or LoadBalancer Service bypasses the collector's NetworkPolicy, so the unauthenticated `/metrics` (collector, target and environment names, probe counters) reaches anything that can reach a node. The chart default is ClusterIP and kind binds its node port to 127.0.0.1 only; the chart values (`dbCollector.service.type`), the [network access](docs/guides/kubernetes-local.md#network-access) guide and the install guide say production keeps ClusterIP
 
 ---
 
