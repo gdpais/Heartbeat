@@ -1,5 +1,6 @@
 {{- if and .Values.dbCollector.enabled .Values.dbCollector.networkPolicy.enabled }}
 {{- $np := .Values.dbCollector.networkPolicy }}
+{{- $egress := $np.egress | default dict }}
 {{- $sel := dict "root" $ "component" "db-collector" }}
 {{- $peers := list }}
 {{- if .Values.prometheus.enabled }}
@@ -7,12 +8,30 @@
 {{- $peers = append $peers (include "heartbeat.enginePeer" (dict "root" $ "engine" "prometheus") | fromYaml) }}
 {{- end }}
 {{- $peers = concat $peers $np.scrapers $np.operators }}
+{{- /* The ports of the monitored databases, from the enabled collectors'
+targets; a collector without enabled: true is off, as the collector reads it. */}}
+{{- $ports := list }}
+{{- $targets := 0 }}
+{{- range ((.Values.integrations | default dict).collectors | default list) }}
+{{- if .enabled }}
+{{- range ((.config | default dict).targets | default list) }}
+{{- $targets = add1 $targets }}
+{{- $ports = append $ports (int (.port | default 1433)) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $ports = $ports | default (list 1433) | uniq }}
+{{- if and $egress.enabled (gt $targets 0) (not $egress.targets) }}
+{{- fail "dbCollector.networkPolicy.egress.enabled needs egress.targets: the monitored databases' addresses as NetworkPolicyPeer objects (an ipBlock CIDR for databases outside the cluster). Without them the collector could not reach its targets." }}
+{{- end }}
 # Only Prometheus, the configured scrapers and the operator peers may reach the collector's
 # port 8082 (metrics, health and the token-protected admin endpoints); all
 # other ingress, including from other pods in the namespace, is dropped.
 # Kubelet probes and `kubectl port-forward` are not subject to NetworkPolicy.
 # With no peers the policy denies all ingress: an empty `from` would allow
-# every source, so it is never rendered.
+# every source, so it is never rendered. With egress on, the collector may
+# connect only to DNS, the bundled OTel Collector, its databases and the
+# extra rules.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -26,6 +45,9 @@ spec:
       {{- include "heartbeat.selectorLabels" $sel | nindent 6 }}
   policyTypes:
     - Ingress
+    {{- if $egress.enabled }}
+    - Egress
+    {{- end }}
   {{- if $peers }}
   ingress:
     - ports:
@@ -35,5 +57,31 @@ spec:
         {{- toYaml $peers | nindent 8 }}
   {{- else }}
   ingress: []
+  {{- end }}
+  {{- if $egress.enabled }}
+  {{- $rules := list }}
+  {{- with $egress.dns }}
+  {{- $rules = append $rules (dict "to" . "ports" (list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53))) }}
+  {{- end }}
+  {{- if .Values.otelCollector.enabled }}
+  {{- /* The OTLP/HTTP container port, which the OTel Collector's own policy admits. */}}
+  {{- $otlpHttp := dig "otlp-http" "containerPort" 4318 (.Values.otelCollector.ports | default dict) }}
+  {{- $otel := include "heartbeat.enginePeer" (dict "root" $ "engine" "otelCollector") | fromYaml }}
+  {{- $rules = append $rules (dict "to" (list $otel) "ports" (list (dict "protocol" "TCP" "port" $otlpHttp))) }}
+  {{- end }}
+  {{- with $egress.targets }}
+  {{- $targetPorts := list }}
+  {{- range $ports }}
+  {{- $targetPorts = append $targetPorts (dict "protocol" "TCP" "port" .) }}
+  {{- end }}
+  {{- $rules = append $rules (dict "to" . "ports" $targetPorts) }}
+  {{- end }}
+  {{- $rules = concat $rules ($egress.extraRules | default list) }}
+  {{- if $rules }}
+  egress:
+    {{- toYaml $rules | nindent 4 }}
+  {{- else }}
+  egress: []
+  {{- end }}
   {{- end }}
 {{- end }}

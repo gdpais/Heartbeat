@@ -29,7 +29,10 @@ instead. Production deploys the same chart from ECR through Argo CD
   3.3 GiB.
 - A CNI that enforces NetworkPolicy (kindnet, Calico, Cilium, Amazon VPC CNI
   with network policy on). Without one the chart's policies are accepted and
-  drop nothing.
+  drop nothing. To limit where the collector connects, set
+  `dbCollector.networkPolicy.egress` with your databases' subnets, and keep
+  its Service `ClusterIP`
+  ([network access](kubernetes-local.md#network-access)).
 
 The commands below use the namespace `heartbeat` and the release name
 `heartbeat`. Any names work, but install one release per namespace: the
