@@ -163,7 +163,9 @@ jobs:
     # condition calls a status function, hence !cancelled().
     if: ${{ !cancelled() && needs.changes.outputs.kind_e2e == 'true' && (needs.chart.result == 'success' || needs.chart.result == 'skipped') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 10-19 minutes in October 2026 (ADR 0003). A job that grows past this
+    # trims its checks rather than raising the timeout.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

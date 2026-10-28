@@ -62,8 +62,8 @@ phases 3 and 4, investigations, alerts and reports in phase 7.
   and installs from the [install guide](../guides/install-from-release.md)
   ([ADR 0006](../architecture/decisions/0006-trunk-based-development-and-tagged-releases.md)) [0.5]
 
-Open housekeeping: agree the local loop's time and resource budget [0.4]. The
-release GitHub App and the tag-creation ruleset wait for the end of phase 2
+Open housekeeping: the release GitHub App and the tag-creation ruleset wait for
+the end of phase 2
 ([ADR 0006](../architecture/decisions/0006-trunk-based-development-and-tagged-releases.md)) [0.5].
 
 ## Phase 1 — DB collector (done)

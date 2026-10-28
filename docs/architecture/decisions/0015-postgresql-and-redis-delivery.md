@@ -100,8 +100,10 @@ Considered and not chosen:
 
 - The chart gains two templates, values, schema entries and render tests,
   and `make kind-e2e` checks that the API reaches both (build slice 2.2).
-- The full kind profile grows by one PostgreSQL and one Valkey pod; the
-  memory budget is measured when they land.
+- The full kind profile grows by one PostgreSQL and one Valkey pod. With the
+  API they must fit the local loop's 2.5 GiB budget
+  ([ADR 0003](0003-helm-on-kind-and-production.md)), measured under load
+  when they land.
 - Production needs RDS and ElastiCache in the infrastructure code and their
   Secrets in Secrets Manager [18].
 - If the integration fixture's PostgreSQL major moves, the migration tests
