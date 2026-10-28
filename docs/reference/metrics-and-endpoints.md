@@ -81,10 +81,11 @@ is served beside it.
 | --- | --- | --- |
 | `GET /metrics` | none | Prometheus exposition: [request metrics](#api-requests), Go runtime and process metrics |
 | `GET /healthz` | none | Liveness only; 200 `ok` while the process serves HTTP. It checks no dependency, so a PostgreSQL or Redis outage never restarts the pod |
-| `GET /readyz` | none | 200 when every readiness check passes, 503 otherwise. The checks run concurrently on each call, 2s at most in all; a check without an answer by then fails. There are none yet: PostgreSQL and Redis join when the API connects to them. The body is only `{"status":"ready"}` or `{"status":"not_ready"}`; the failing checks and their errors are logged when the status changes |
+| `GET /readyz` | none | 200 when every readiness check passes, 503 otherwise. The checks run concurrently on each call, 2s at most in all; a check without an answer by then fails. `postgresql`: a query reaches the database and its schema version is at least the newest migration the API embeds, and not dirty (a newer version passes, so the previous release keeps serving during a rollout). `redis`: a `PING` reaches Redis (Valkey) and authenticates. Each passes again on its own once its dependency is back. The body is only `{"status":"ready"}` or `{"status":"not_ready"}`; the failing checks and their errors (`schema not migrated`, a refused connection, a failed login, never a password) are logged when the status changes |
 
 On `SIGTERM` or `SIGINT` the API stops accepting connections, waits up to 10s
-for the requests in flight, then closes the rest.
+for the requests in flight, closes the rest, then closes its PostgreSQL and
+Redis connections.
 
 ## Metrics
 

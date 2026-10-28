@@ -50,7 +50,9 @@ make kind-down     # delete the cluster
 | `minimal` | DB collector, Prometheus, Alertmanager, Grafana |
 
 Choose one with `PROFILE=minimal make kind-up` (or `make kind-deploy`).
-PostgreSQL and Redis are not deployed until a service uses them.
+PostgreSQL and Valkey (Redis) are not deployed yet: the chart adds them with
+the API [4.1]. To run the API against them on your machine, see
+[run the API](#run-the-api).
 
 Services keep the ports Compose used, on 127.0.0.1 only: Grafana
 http://localhost:3001 (`admin`/`admin`), Prometheus :9090, Alertmanager :9093,
@@ -73,6 +75,7 @@ How the chart, images and cluster fit together, and how to debug them:
 | Chart templates or values | `make kind-deploy` |
 | Prometheus rules or dashboards (`infra/helm/heartbeat/files/`) | `make kind-deploy` (rules reload in place; run `make rules-check` first) |
 | The API's contract (`apps/api/openapi.yaml`) | `make generate`, and commit the regenerated code with it ([below](#change-the-api-contract)) |
+| An API query (`apps/api/internal/store/queries/`) or a migration (`db/migrations/`) | `make generate`, and commit the regenerated code with it ([below](#change-a-query-or-a-migration)) |
 
 Images are tagged by content (`dev-<image id>`), so a code change always rolls
 out a new pod and a stale image cannot hide behind a reused tag. Every deploy
@@ -140,12 +143,12 @@ make patientzero-down       # remove it, its databases and its login
 
 | Command | What it runs | Needs |
 | --- | --- | --- |
-| `make test` | First `make generate-check`: fails when the API's generated code differs from what its OpenAPI spec generates. Then all Go unit and repository contract tests, including the docs generator's and PatientZero's modules | Go, network access the first time (the generator is fetched by `go run`) |
+| `make test` | First `make generate-check`: fails when the API's generated code differs from what its OpenAPI spec and its SQL queries generate. Then all Go unit and repository contract tests, including the docs generator's and PatientZero's modules | Go, a C compiler (sqlc's parser), network access the first time (the generators are fetched by `go run`) |
 | `make test-race` | The same suite with the race detector | Go |
 | `make vet` | Go static checks | Go |
 | `make vulncheck` | `govulncheck` on all three Go modules; fails on a known vulnerability the code can reach, standard library included | Go, network access |
 | `make rules-check` | promtool rule validation and unit tests | Docker |
-| `make test-integration` | PostgreSQL migration and index tests (`-tags=integration`) | Docker (`postgres:17`) |
+| `make test-integration` | PostgreSQL migration and index tests; then the API against PostgreSQL and Valkey: golang-migrate applies `db/migrations` (again, concurrently, over a newer schema), the readiness check reads the schema version, credentials rotate, and `/readyz` follows each dependency going away and coming back (`-tags=integration`) | Docker (`postgres:17`, `valkey/valkey`) |
 | `make test-sqlserver` | Every built-in probe against a disposable SQL Server, as a login with only the documented grants; fails on duplicate series or padded label values; checks the session settings and the sysadmin-equivalence flag for that login, `sa` and a `CONTROL SERVER` login. Every OutSystems log query against its fixture tables, views and rows, as a login with only `SELECT` on them, returning every row of the current and the previous week; and the extraction of `oslog_Error` to a fake OTel Collector across cycles, a restart and a weekly log table rotation, each row exactly once (`-tags=sqlserver`). Then PatientZero's live tests (`TestLive*`) as `sa`: its entry points write `oslog_*` rows that the collector's own queries read back, and a small production-shaped log (`make patientzero-scale`'s generator) loads, matches its known answers and is measured | Docker (SQL Server 2022) |
 | `make chart-check` | `helm lint`, then renders every values profile and checks it (below); then lints and renders PatientZero's chart and checks that its NetworkPolicies admit port 8080 only from the load Job and its Service stays ClusterIP | Helm, `make chart-deps` |
 | `make kind-e2e` | Acceptance checks on a temporary kind cluster (below) | Docker, kind, kubectl, Helm, jq |
@@ -189,18 +192,27 @@ It takes about 10 minutes.
 
 Integration tests never touch your developer stack:
 
-- Each test uses `infra/docker-compose.test.yml` (a disposable PostgreSQL
-  fixture, not the platform) under a random `heartbeat-test-<id>` project, with
-  no published ports and tmpfs storage.
+- Each test in `tests/` uses `infra/docker-compose.test.yml` (a disposable
+  PostgreSQL fixture, not the platform) under a random `heartbeat-test-<id>`
+  project, with no published ports and tmpfs storage.
 - Only `db/migrations` is bind-mounted, read-only.
 - `COMPOSE_*` overrides and dotenv files are ignored; your selected Docker
   daemon is kept.
-- Cleanup is registered before startup and removes only that test's project.
-  Tests run concurrently, and separate test processes are isolated too.
+- The API's tests (`apps/api`) connect from the test process, so each starts
+  its own containers with `docker run` instead: a random
+  `heartbeat-api-test-<id>` name, a random password passed through the
+  environment, tmpfs storage, and one port published on 127.0.0.1 at a
+  random port. PostgreSQL is the fixture's image, so both kinds of test run
+  the same major.
+- Cleanup is registered before startup and removes only that test's project
+  or containers. Tests run concurrently, and separate test processes are
+  isolated too.
 
 If a test process is killed, find the leftover project with
 `docker compose ls` and remove only that `heartbeat-test-<id>` project using the
-test Compose file.
+test Compose file; find leftover API test containers with
+`docker ps -a --filter name=heartbeat-api-test-` and remove them with
+`docker rm -fv`.
 
 ## Build images
 
@@ -236,12 +248,44 @@ Credentials need no restart either: the collector reads the mounted
 credentials Secret on every connection, and the kubelet updates it within
 about a minute. See the [configuration reference](../reference/configuration.md#credential-resolution).
 
+## Run the API
+
+The API is not deployed yet [4.1]. Run it on your machine against a
+PostgreSQL and a Valkey container of your own. Host ports 55432 and 56379,
+on 127.0.0.1 only, stay clear of a local PostgreSQL or Redis:
+
+```bash
+export DEV_PASSWORD=$(openssl rand -hex 16)
+POSTGRES_PASSWORD=$DEV_PASSWORD docker run -d --name heartbeat-api-dev-postgres \
+  -p 127.0.0.1:55432:5432 -e POSTGRES_USER=heartbeat -e POSTGRES_DB=heartbeat -e POSTGRES_PASSWORD postgres:17
+VALKEY_EXTRA_FLAGS="--requirepass $DEV_PASSWORD" docker run -d --name heartbeat-api-dev-valkey \
+  -p 127.0.0.1:56379:6379 -e VALKEY_EXTRA_FLAGS valkey/valkey:9.1.3
+until docker exec heartbeat-api-dev-postgres pg_isready -qh 127.0.0.1; do sleep 1; done
+
+export HEARTBEAT_API_POSTGRES_HOST=127.0.0.1 HEARTBEAT_API_POSTGRES_PORT=55432 \
+  HEARTBEAT_API_POSTGRES_SSLMODE=disable \
+  HEARTBEAT_CREDENTIAL_SECRET_API_POSTGRES="heartbeat:$DEV_PASSWORD" \
+  HEARTBEAT_API_REDIS_ADDR=127.0.0.1:56379 HEARTBEAT_API_REDIS_TLS=false \
+  HEARTBEAT_CREDENTIAL_SECRET_API_REDIS="default:$DEV_PASSWORD"
+
+go run ./apps/api/cmd/api migrate up   # apply db/migrations
+go run ./apps/api/cmd/api              # serve on :8081
+curl localhost:8081/readyz             # {"status":"ready"}
+```
+
+The defaults expect TLS on both (`verify-full` and `HEARTBEAT_API_REDIS_TLS=true`),
+which local containers don't have, hence the two overrides. The API starts
+without either dependency: `/readyz` answers 503 and the log's
+`readiness changed` line says which check fails and why, for example
+`schema not migrated` before `migrate up`. Every setting is in the
+[configuration reference](../reference/configuration.md#api); the endpoints
+are in the [endpoints reference](../reference/metrics-and-endpoints.md#api-8081).
+Remove the containers with
+`docker rm -fv heartbeat-api-dev-postgres heartbeat-api-dev-valkey`.
+
 ## Change the API contract
 
-The API is not deployed yet; run it with `go run ./apps/api/cmd/api` (it
-listens on `:8081`, see the
-[endpoints](../reference/metrics-and-endpoints.md#api-8081)). Its contract
-is [`apps/api/openapi.yaml`](../../apps/api/openapi.yaml), written by hand
+The API's contract is [`apps/api/openapi.yaml`](../../apps/api/openapi.yaml), written by hand
 ([ADR 0013](../architecture/decisions/0013-api-design-and-subsystem-boundaries.md)).
 After editing it, regenerate the server types and commit them with the spec:
 
@@ -255,6 +299,44 @@ spec generates. The generator, oapi-codegen, is pinned in the Makefile
 install. The handlers in `apps/api/internal/httpapi` implement the generated
 `StrictServerInterface`: a new operation does not compile until it has one,
 and a handler can only return the responses the spec declares.
+
+## Change a query or a migration
+
+The API's SQL is in [`apps/api/internal/store/queries/`](../../apps/api/internal/store/queries/schema.sql),
+one `-- name: <Method> :one|:many|:exec` comment per query
+([ADR 0013](../architecture/decisions/0013-api-design-and-subsystem-boundaries.md)).
+sqlc reads the schema from `db/migrations` (the `.up.sql` files) and writes
+typed Go for pgx into `apps/api/internal/store/*.gen.go`. Settings are in
+[`apps/api/sqlc.yaml`](../../apps/api/sqlc.yaml). After editing a query, or
+adding a migration that a query reads:
+
+```bash
+make generate   # also rewrites apps/api/internal/store/*.gen.go
+```
+
+As with the contract, `make test` fails while the committed code is stale,
+and a query that no longer matches the schema fails `make generate`, not the
+API at run time. sqlc is pinned in the Makefile (`SQLC_VERSION`) and built
+by `go run`; its PostgreSQL parser is C, so it needs a C compiler (the Xcode
+Command Line Tools on macOS) and takes about half a minute the first time.
+
+A migration is a `NNNN_name.up.sql` and `NNNN_name.down.sql` pair in
+[`db/migrations`](../../db/migrations), numbered next, four digits, and
+written expand then contract ([CONTRIBUTING](../../CONTRIBUTING.md)). The API
+embeds the files and `api migrate up` applies the new ones with
+golang-migrate, recording the version in `schema_migrations`; in a cluster
+an init container will run it before the API starts [4.1]. Until the
+database has the newest version the API embeds, its readiness check fails,
+so a replica of a new release never serves an old schema. An older release
+started against a newer schema (a rollback) migrates nothing and is ready.
+
+If a migration fails, golang-migrate marks its version dirty, `migrate up`
+refuses to run, and readiness says so. PostgreSQL ran the file as one
+implicit transaction, so none of it applied: fix the file, set the version
+back with `update schema_migrations set version = <previous>, dirty = false`
+(or `delete from schema_migrations` when it was the first), and run
+`migrate up` again. `api migrate version` prints the version, with
+`(dirty)` when it is.
 
 ## Troubleshooting
 

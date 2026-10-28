@@ -26,7 +26,7 @@ Early MVP construction. See the [roadmap](docs/product/roadmap.md) and
 | Kubernetes delivery | `infra/helm`, `infra/kind` | One Helm chart for kind, CI and production: the DB collector plus pinned Prometheus, Alertmanager, Grafana, Loki and OTel Collector; kind workflow and acceptance tests |
 | Metadata schema | `db/migrations` | Migrated and tested; no service uses it yet |
 | Shared contracts | `packages/` | JSON schemas for config and telemetry payloads |
-| API | `apps/api` | Bootstrap: health, readiness, metrics and the OpenAPI spec; no database yet, not deployed |
+| API | `apps/api` | Bootstrap: health, readiness on PostgreSQL and Redis (Valkey), metrics, the OpenAPI spec and `api migrate up`; not deployed |
 | Web UI | `apps/web` | Not started |
 | Session analyzer, reporting | `services/session-analyzer`, `services/reporting` | Not started |
 
@@ -82,17 +82,18 @@ and the [changelog](CHANGELOG.md).
 
 ```text
 apps/
-  api/                 control-plane API: OpenAPI spec, HTTP service (bootstrap)
+  api/                 control-plane API: OpenAPI spec, HTTP service, sqlc queries
   web/                 operator UI (scaffold)
 services/
   db-collector/        SQL Server collector
   session-analyzer/    investigation and baseline worker (scaffold)
   reporting/           report worker (scaffold)
 internal/config/       shared integrations config manager
+internal/credentials/  shared credential lookup (HEARTBEAT_CREDENTIAL_<REF>)
 packages/
   config-schema/       integrations YAML JSON schema
   telemetry-contracts/ shared payload contracts
-db/migrations/         PostgreSQL schema migrations
+db/migrations/         PostgreSQL schema migrations, embedded in the API
 config/                integrations.yaml for running a service outside Kubernetes
 infra/helm/heartbeat/  Helm chart: workloads, engine config, rules, dashboards
 infra/helm/values/     values per environment (kind, minimal, SQL Server sandbox,
