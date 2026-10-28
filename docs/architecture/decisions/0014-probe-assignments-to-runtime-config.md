@@ -148,3 +148,6 @@ Considered and not chosen:
 - The same pattern (render to a file in the config repository, review, sync)
   fits rendered Prometheus rules and Alertmanager routes later [4.7]; that is
   a separate decision.
+- `outsystems_logs` collectors are not rendered: an OutSystems source maps an
+  application to its logs, and the extraction collector stays in YAML
+  ([ADR 0017](0017-outsystems-sources-map-application-identity.md)).

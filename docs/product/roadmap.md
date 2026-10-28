@@ -10,8 +10,8 @@ shared validation inventory [16] throughout rather than as a final stage.
 | --- | --- | --- |
 | 0 | Foundations, including kind + Helm delivery | Done |
 | 1 | DB collector (SQL Server) | Done |
-| 2 | OutSystems ingest (OutSystems 11 log extraction) | Near its exit: everything it builds is done ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)), and PatientZero's ingest, outage and SLO scenarios pass on kind. Left: the signal gaps those scenarios found, a scheduled CI run of the scenarios, the stage validation and the release |
-| 3 | API / control plane | Not started; decisions recorded in ADRs [0013](../architecture/decisions/0013-api-design-and-subsystem-boundaries.md)–[0015](../architecture/decisions/0015-postgresql-and-redis-delivery.md); starts without waiting for phase 2's release |
+| 2 | OutSystems ingest (OutSystems 11 log extraction) | At its exit: everything it builds is done ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)), including the signal gaps PatientZero's scenarios found and a nightly CI run of every scenario. Left: the first green nightly run, the stage validation and the release |
+| 3 | API / control plane | Ready to start: planned into pull-request-sized slices [4]; decisions recorded in ADRs [0013](../architecture/decisions/0013-api-design-and-subsystem-boundaries.md)–[0017](../architecture/decisions/0017-outsystems-sources-map-application-identity.md); starts without waiting for phase 2's release |
 | 4 | Web UI | Not started |
 | 5 | Production delivery (EKS + Argo CD) | Not started; decisions recorded |
 | 6 | Complete application and database product workflows | Not started |
@@ -138,17 +138,19 @@ a 48-hour backfill matches its known answer in Loki. The phase ends with its
 release: the release GitHub App is created then, and release-please cuts the
 release from the commits since `v0.1.0` [0.5].
 
+Done for the exit: the signal gaps the outage scenarios found (an alert when
+the log export is blocked, `HeartbeatServiceDown` for a missing db-collector
+or Loki, a late-row counter for rows committed past the `lag`, and the log
+delay metric described as extraction freshness) [3.3, 9.1], and a CI workflow
+that runs every scenario on kind nightly, by hand and on the release pull
+request; the scenarios take over two hours, so they stay out of the per-PR
+`make kind-e2e` [16.5].
+
 Left before the exit, in order:
 
-1. The signal gaps the outage scenarios found: an alert when the log export
-   is blocked, `HeartbeatServiceDown` for a missing db-collector or Loki
-   [3.3, 9.1], a signal for rows committed past the `lag`, and a log delay
-   metric that shows the log service falling behind, as ADR 0008 says it
-   does [3.3]
-2. A nightly CI workflow that runs every scenario on kind; the scenarios take
-   over two hours, so they stay out of the per-PR `make kind-e2e` [16.5]
-3. The stage validation, with that run as its evidence [3]
-4. The release [0.5]
+1. The first green nightly run of that workflow [16.5]
+2. The stage validation, with that run as its evidence [3]
+3. The release [0.5]
 
 Not in the exit, and done alongside phase 3 before the first production
 deploy: per-probe failure isolation and a series budget [2.6], collector
@@ -161,29 +163,42 @@ Decisions: API design and the frozen subsystem boundaries
 ([ADR 0013](../architecture/decisions/0013-api-design-and-subsystem-boundaries.md)), approved
 probe assignments as pull requests to the config repository
 ([ADR 0014](../architecture/decisions/0014-probe-assignments-to-runtime-config.md)), PostgreSQL
-and Redis delivery ([ADR 0015](../architecture/decisions/0015-postgresql-and-redis-delivery.md)).
+and Redis delivery ([ADR 0015](../architecture/decisions/0015-postgresql-and-redis-delivery.md)),
+audit records through an outbox to Loki
+([ADR 0016](../architecture/decisions/0016-audit-records-through-an-outbox.md)),
+OutSystems sources as application identity mappings
+([ADR 0017](../architecture/decisions/0017-outsystems-sources-map-application-identity.md)).
 Its prerequisites are done, so it starts while phase 2's release waits for
 the release app.
 
-- Bootstrap, local auth with minimal roles, PostgreSQL and Redis (added to the
-  chart here) [4.1–4.2]
-- Environments, applications, components, telemetry sources, database targets
-  and probe assignments; approved assignments become YAML/Kubernetes runtime
-  config [4.3–4.5, 2.5]
-- Investigation, alerting and reporting metadata and job APIs; deep links;
-  JSONL audit output [4.6–4.10]
+In order, one pull request each:
 
-Exit: auth/ownership, CRUD persistence, secret refs, audit redaction and queue
-contracts; PatientZero registered through the API as an application with its
-telemetry source and database targets. Workflows that need later workers
-(investigations, baselines, reports) are validated in phase 7, not from
-endpoint tests alone.
+- Bootstrap, PostgreSQL and Redis connectivity, migrations, and the API,
+  PostgreSQL and Valkey in the chart [4.1]
+- Audit output, first, so every later change is audited [4.10]
+- Local auth with minimal roles: login, sessions, users and roles [4.2]
+- Environments, applications, components, telemetry sources, database targets,
+  probe definitions and assignments; approved assignments become
+  YAML/Kubernetes runtime config through the `managedCollectors` chart key,
+  applied on kind by a make target; the collector reads credentials from
+  mounted Secret files, so a new target needs no restart [4.3–4.5, 2.5]
+- Grafana deep links from the integrations templates [4.9]
+
+The pull requests to `heartbeat-deploy` (ADR 0014) wait for that repository
+in phase 5. Investigation, alerting and reporting APIs and their job
+contracts move to phase 7 and are built with their workers [4.6–4.8]: nothing
+consumes them before, and their shape depends on the correlation model and
+the evidence design.
+
+Exit: auth/ownership, CRUD persistence, secret refs and audit redaction;
+PatientZero registered through the API as an application with its telemetry
+source and database target, whose approved probes the collector runs on kind.
 
 ## Phase 4 — Web UI
 
 - Bootstrap, auth, and inventory/onboarding screens on the phase-3 APIs [5]
-- Investigation, alert and report screens start as contract-backed shells and
-  are completed with their workers in phase 7
+- Investigation, alert and report screens come in phase 7, with their APIs
+  and workers
 
 Exit: API-backed login, roles, onboarding and Grafana/Loki deep links;
 PatientZero onboarded from the UI.
@@ -223,11 +238,15 @@ field/metric semantics, cardinality and database load checked.
 
 ## Phase 7 — Investigations, alerting and reporting
 
+- Job/result contracts on Redis Streams, versioned before the first producer
+  and consumer ([ADR 0013](../architecture/decisions/0013-api-design-and-subsystem-boundaries.md)) [4]
 - Collector evidence: content, destination and publication, retrievable
   before the analyzer uses it [12.4]
-- Session analyzer and investigation UI [6, 12]
-- Alert policy rendering to Prometheus and Alertmanager; adaptive baselines [13]
-- Report templates, schedules, generation and email delivery [7, 14]
+- Session analyzer, the investigations API and the investigation UI [4.6, 6, 12]
+- Alerting API, alert policy rendering to Prometheus and Alertmanager;
+  adaptive baselines [4.7, 13]
+- Reporting API, report templates, schedules, generation and email delivery
+  [4.8, 7, 14]
 - The rest of PatientZero: timers, extension calls, a fake partner, and the
   blocking, slow-partner, timer-backlog, bad front-end and daylight saving
   scenarios [16.5]; request traces if they haven't come earlier [3.5, 3.6]
