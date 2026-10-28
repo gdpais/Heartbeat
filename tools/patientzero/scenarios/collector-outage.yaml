@@ -3,11 +3,11 @@ version: 1
 name: collector-outage
 description: >-
   The db-collector is down for 4 minutes while the load runs (its StatefulSet
-  scaled to 0). Prometheus finds it through its headless Service, so with no
-  pod it has no target at all: up has no series, and HeartbeatServiceDown
-  fires for the missing series after 2 minutes. Once it is back the alert
-  resolves, the collector reads the 4 minutes it missed from the watermarks
-  it saved, and Loki ends with every row PatientZero committed, once.
+  scaled to 0). Prometheus finds it through DNS on its headless Service, so
+  with no pod it scrapes no collector, and HeartbeatServiceDown fires after
+  2 minutes. Once it is back the alert resolves, the collector reads the 4
+  minutes it missed from the watermarks it saved, and Loki ends with every
+  row PatientZero committed, once.
 load: steady
 steps:
   - name: before
@@ -20,10 +20,14 @@ steps:
   - name: after
     duration: 2m
 signals:
-  # No series at all, not up == 0: what HeartbeatServiceDown's absent()
-  # rule fires on.
-  - name: collector-target-gone
-    promql: up{job="db-collector"}
+  # No collector target up. With no pod the DNS lookup finds nothing and the
+  # target goes (no up series: HeartbeatServiceDown's absent() rule), unless
+  # one of the names Prometheus tries on its DNS search path fails instead
+  # of answering NXDOMAIN: then it keeps the target it had, which fails
+  # (up == 0: the up == 0 rule). Which one depends on the cluster's DNS; on
+  # GitHub's runners it is up == 0.
+  - name: collector-target-down
+    promql: up{job="db-collector"} == 1
     condition: absent
     step: down
     within: 2m

@@ -224,9 +224,9 @@ groups:
           summary: "Heartbeat alerting pipeline is alive"
           description: "Always firing. If the dead-man's switch stops receiving it, Heartbeat alerting is down."
       # Loki and the OTel Collector are static targets, so down they report
-      # up == 0. The db-collector is found through DNS and has no target at
-      # all while its pod is gone: heartbeat-collector-missing.rules.yml
-      # covers that.
+      # up == 0. The db-collector is found through DNS and usually has no
+      # target at all while its pod is gone:
+      # heartbeat-collector-missing.rules.yml covers that.
       - alert: HeartbeatServiceDown
         expr: up{job=~"db-collector|otel-collector|loki"} == 0
         for: 2m
