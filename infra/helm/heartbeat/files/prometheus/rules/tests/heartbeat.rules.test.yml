@@ -425,6 +425,34 @@ tests:
               summary: "OutSystems general log rows of prod/logging-db were delivered more often than the logging database holds them"
               description: "The oslogs collector's recount found about 2 general rows in the last 15 minutes that it delivered more often than the logging database holds them. Either the extraction read them twice, a defect: Loki holds them twice and the derived metrics count them twice; report it with the collector's log, which names the minutes. Or rows were deleted from the logging database after they were sent."
 
+  - name: OutSystems derived series overflow fires per collector while rows are dropped, then clears
+    interval: 1m
+    input_series:
+      # From 2m, two metrics of oslogs drop updates; the other collector is
+      # within its budget.
+      - series: 'heartbeat_outsystems_derived_series_overflow_total{collector="oslogs",metric="heartbeat_outsystems_operations_total",job="db-collector",instance="10.0.0.1:8082"}'
+        values: '0 0 2x20'
+      - series: 'heartbeat_outsystems_derived_series_overflow_total{collector="oslogs",metric="heartbeat_outsystems_operation_seconds_total",job="db-collector",instance="10.0.0.1:8082"}'
+        values: '0 0 1x20'
+      - series: 'heartbeat_outsystems_derived_series_overflow_total{collector="oslogs-staging",metric="heartbeat_outsystems_operations_total",job="db-collector",instance="10.0.0.1:8082"}'
+        values: '0x22'
+    alert_rule_test:
+      - alertname: OutSystemsDerivedSeriesOverflow
+        eval_time: 1m
+        exp_alerts: []
+      - alertname: OutSystemsDerivedSeriesOverflow
+        eval_time: 4m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              collector: oslogs
+            exp_annotations:
+              summary: "The oslogs collector's derived OutSystems metrics are full"
+              description: "The oslogs collector dropped about 3 updates of its derived metrics in the last 15 minutes: the rows needed new series and it already holds its max_derived_series (heartbeat_outsystems_derived_series). Series that exist keep counting, but new applications, modules, operations or front-ends are missing from the derived metrics, the OutSystems dashboards and the SLO alerts. The metric label of the overflow counter says which metric it is; raise max_derived_series if the collector's memory allows (about 690 bytes a series)."
+      - alertname: OutSystemsDerivedSeriesOverflow
+        eval_time: 20m
+        exp_alerts: []
+
   - name: OutSystems log recount failing fires when most recounts fail, not for one, at any poll interval
     interval: 1m
     input_series:

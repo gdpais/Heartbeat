@@ -104,6 +104,12 @@ integrations:
         batch_limit: 5000
         initial_lookback: 15m
         log_timezone: UTC
+        # Series the derived OutSystems metrics may hold; past it new
+        # applications, modules and operations are left out of them and
+        # OutSystemsDerivedSeriesOverflow fires. About 690 bytes of the
+        # collector's memory each. A proposed default: size it from
+        # heartbeat_outsystems_derived_series once the installation runs.
+        max_derived_series: 50000
         probes:
           - name: error
           - name: general

@@ -54,9 +54,10 @@ const (
 var metricLabels = []string{"collector", "environment", "target", "log_type"}
 
 // Metrics records the extraction self-metrics and the derived metrics
-// (derived.go).  The self-metric series of a collector are created, counters
-// at 0, when its Poller starts; every series of a collector is deleted when
-// it stops.  A label value Prometheus rejects skips the update instead of
+// (derived.go), within each collector's series budget.  The self-metric
+// series of a collector are created, counters at 0, when its Poller starts;
+// every series of a collector is deleted when it stops, which frees its
+// budget.  A label value Prometheus rejects skips the update instead of
 // panicking.  A nil *Metrics records nothing.  Metrics is safe for
 // concurrent use.
 type Metrics struct {
@@ -134,11 +135,13 @@ func labelValues(item collectormetadata.ScheduledProbe) []string {
 
 // initCollector creates the counters of every log type collector extracts at
 // 0, so increase() sees the first row and the first failure, and its
-// export-blocked gauge at 0.
+// export-blocked gauge at 0.  It also sets the collector's series budget
+// for the derived metrics and creates its budget series.
 func (m *Metrics) initCollector(collector collectorconfig.CollectorRuntimeConfig) {
 	if m == nil || !collector.Enabled {
 		return
 	}
+	m.derived.init(collector)
 	for _, target := range collector.Targets {
 		if len(collector.TargetNames) > 0 && !slices.Contains(collector.TargetNames, target.Name) {
 			continue

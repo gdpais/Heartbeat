@@ -138,8 +138,12 @@ values of `module` per application and of `operation` per application and log
 type keep their own series, later ones are counted as `other`; `front_end`
 is capped at 50 and integration `type` at 20 per collector, `application` at
 1,000. The kept values are the first seen since the collector started, so a
-restart can keep different ones. User, session, request and IP never become
-labels.
+restart can keep different ones. The caps multiply, so each collector also
+holds at most `max_derived_series` series of these metrics; past it a row
+that needs a new series is left out of that metric and counted, and
+`OutSystemsDerivedSeriesOverflow` fires
+([series budget](../reference/metrics-and-endpoints.md#derived-outsystems-metrics)).
+User, session, request and IP never become labels.
 
 Entry points are the rows that stand for one request or timer run: `screen`
 (Traditional and Reactive screens; `operation` is the screen),

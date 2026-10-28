@@ -729,7 +729,7 @@ func TestLoadRuntimeConfigOutSystemsLogsDefaults(t *testing.T) {
 	got := collectors[0]
 	want := OutSystemsLogsConfig{
 		Lag: time.Minute, BatchLimit: 5000, InitialLookback: 15 * time.Minute,
-		LogTimezone: "UTC", RecountWindow: 10 * time.Minute, LogsEndpoint: "http://otel-collector:4318",
+		LogTimezone: "UTC", RecountWindow: 10 * time.Minute, MaxDerivedSeries: 50000, LogsEndpoint: "http://otel-collector:4318",
 	}
 	if got.OutSystemsLogs != want {
 		t.Fatalf("settings = %+v, want %+v", got.OutSystemsLogs, want)
@@ -752,14 +752,14 @@ func TestLoadRuntimeConfigOutSystemsLogsDefaults(t *testing.T) {
 
 func TestLoadRuntimeConfigOutSystemsLogsSettings(t *testing.T) {
 	cfg, err := LoadRuntimeConfig(outSystemsLogsConfig(t, otelSection,
-		"      scrape_interval: 10s\n      lag: 2m\n      batch_limit: 50000\n      initial_lookback: 1h\n      log_timezone: Europe/Lisbon\n      recount_window: 30m\n"))
+		"      scrape_interval: 10s\n      lag: 2m\n      batch_limit: 50000\n      initial_lookback: 1h\n      log_timezone: Europe/Lisbon\n      recount_window: 30m\n      max_derived_series: 1000000\n"))
 	if err != nil {
 		t.Fatalf("LoadRuntimeConfig: %v", err)
 	}
 	got := cfg.EnabledCollectors(KindOutSystemsLogs)[0]
 	want := OutSystemsLogsConfig{
 		Lag: 2 * time.Minute, BatchLimit: 50000, InitialLookback: time.Hour,
-		LogTimezone: "Europe/Lisbon", RecountWindow: 30 * time.Minute, LogsEndpoint: "http://otel-collector:4318",
+		LogTimezone: "Europe/Lisbon", RecountWindow: 30 * time.Minute, MaxDerivedSeries: 1000000, LogsEndpoint: "http://otel-collector:4318",
 	}
 	if got.OutSystemsLogs != want || got.ScrapeInterval != 10*time.Second {
 		t.Fatalf("settings = %+v every %s, want %+v every 10s", got.OutSystemsLogs, got.ScrapeInterval, want)
@@ -799,6 +799,8 @@ func TestLoadRuntimeConfigRejectsInvalidOutSystemsLogsSettings(t *testing.T) {
 		{name: "negative lookback", otel: otelSection, settings: "      initial_lookback: -15m\n", wantErr: "initial_lookback must be positive"},
 		{name: "zero batch", otel: otelSection, settings: "      batch_limit: 0\n", wantErr: "batch_limit must be between 1 and 50000"},
 		{name: "batch above the maximum", otel: otelSection, settings: "      batch_limit: 50001\n", wantErr: "batch_limit must be between 1 and 50000"},
+		{name: "zero series budget", otel: otelSection, settings: "      max_derived_series: 0\n", wantErr: "max_derived_series must be between 1 and 1000000"},
+		{name: "series budget above the maximum", otel: otelSection, settings: "      max_derived_series: 1000001\n", wantErr: "max_derived_series must be between 1 and 1000000"},
 		{name: "unknown time zone", otel: otelSection, settings: "      log_timezone: Mars/Olympus\n", wantErr: `log_timezone "Mars/Olympus" must be an IANA time zone name`},
 		{name: "host time zone", otel: otelSection, settings: "      log_timezone: Local\n", wantErr: `log_timezone "Local" must be an IANA time zone name`},
 		{name: "recount window below 2m", otel: otelSection, settings: "      recount_window: 1m\n", wantErr: "recount_window must be 0s (off) or whole minutes from 2m to 1h0m0s"},
@@ -875,7 +877,7 @@ func TestLoadRuntimeConfigRejectsInvalidOutSystemsLogsSettings(t *testing.T) {
 // The outsystems_logs settings belong to that kind only; on a SQL Server
 // collector they would be silently ignored.
 func TestLoadRuntimeConfigRejectsOutSystemsLogsSettingsOnOtherKinds(t *testing.T) {
-	for _, setting := range []string{"lag: 1m", "batch_limit: 10", "initial_lookback: 1m", "log_timezone: UTC", "recount_window: 10m"} {
+	for _, setting := range []string{"lag: 1m", "batch_limit: 10", "initial_lookback: 1m", "log_timezone: UTC", "recount_window: 10m", "max_derived_series: 100"} {
 		t.Run(setting, func(t *testing.T) {
 			path := outSystemsLogsConfig(t, otelSection, "")
 			content, _ := os.ReadFile(path)
@@ -925,7 +927,7 @@ func TestValidateRejectsLogTypeExtractedByTwoOutSystemsLogsCollectors(t *testing
 	collector := func(id string, enabled bool, targets ...TargetRuntimeConfig) CollectorRuntimeConfig {
 		return CollectorRuntimeConfig{
 			ID: id, Kind: KindOutSystemsLogs, Enabled: enabled, ScrapeInterval: time.Minute, Targets: targets,
-			OutSystemsLogs: OutSystemsLogsConfig{Lag: time.Minute, InitialLookback: time.Minute, BatchLimit: 100, LogTimezone: "UTC"},
+			OutSystemsLogs: OutSystemsLogsConfig{Lag: time.Minute, InitialLookback: time.Minute, BatchLimit: 100, LogTimezone: "UTC", MaxDerivedSeries: 100},
 		}
 	}
 	tests := []struct {
