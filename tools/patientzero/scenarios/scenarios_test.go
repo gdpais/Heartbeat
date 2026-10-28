@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"io/fs"
+	"maps"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"heartbeat/tools/patientzero/internal/app"
 	"heartbeat/tools/patientzero/internal/cluster"
@@ -200,5 +204,86 @@ func TestEveryScenarioHasAPlaceInTheOrder(t *testing.T) {
 	}
 	if order[len(order)-1] != "late-commits" {
 		t.Errorf("late-commits must run last: its late-row alert stays firing for 15 minutes")
+	}
+}
+
+// Every alert the chart ships is either fired by a scenario or listed in the
+// README's "Not covered" table, so the table says what the runs leave out.
+func TestEveryAlertIsFiredOrNotCovered(t *testing.T) {
+	const rules = "../../../infra/helm/heartbeat/files/prometheus/rules"
+	files, err := filepath.Glob(rules + "/*.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated, err := filepath.Glob(rules + "/generated/*.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shipped []string
+	for _, file := range append(files, generated...) {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Groups []struct {
+				Rules []struct {
+					Alert string `yaml:"alert"`
+				} `yaml:"rules"`
+			} `yaml:"groups"`
+		}
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		for _, g := range doc.Groups {
+			for _, r := range g.Rules {
+				if r.Alert != "" {
+					shipped = append(shipped, r.Alert)
+				}
+			}
+		}
+	}
+	if len(shipped) == 0 {
+		t.Fatalf("no alerts in %s", rules)
+	}
+	slices.Sort(shipped)
+
+	list, err := scenario.LoadDir(scenarios.FS, ".", registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fired := map[string]bool{}
+	for _, s := range list {
+		for _, sig := range s.Signals {
+			if sig.Kind() == scenario.KindAlert && sig.State == scenario.StateFiring {
+				fired[sig.Alert] = true
+			}
+		}
+	}
+
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := regexp.MustCompile(`(?ms)^### Not covered\n(.*?)^#`).FindSubmatch(readme)
+	if section == nil {
+		t.Fatal(`no "### Not covered" section in README.md`)
+	}
+	listed := map[string]bool{}
+	for _, m := range regexp.MustCompile("(?m)^\\| `(\\w+)` \\|").FindAllSubmatch(section[1], -1) {
+		listed[string(m[1])] = true
+	}
+
+	for _, alert := range slices.Compact(shipped) {
+		switch {
+		case fired[alert] && listed[alert]:
+			t.Errorf("%s: a scenario fires it; take it out of the README's Not covered table", alert)
+		case !fired[alert] && !listed[alert]:
+			t.Errorf("%s: no scenario fires it; add a scenario that does, or the alert to the README's Not covered table", alert)
+		}
+		delete(listed, alert)
+	}
+	for _, alert := range slices.Sorted(maps.Keys(listed)) {
+		t.Errorf("%s: in the README's Not covered table but not an alert in %s", alert, rules)
 	}
 }

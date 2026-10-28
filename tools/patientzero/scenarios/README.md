@@ -50,11 +50,8 @@ scenario with cluster faults it is also the run's host agent, which needs
 | [`sqlserver-outage`](sqlserver-outage.yaml) | The sandbox SQL Server stopped for 2 minutes | Both collector targets down, then up again; Loki holds every row PatientZero could write, once | about 7 minutes |
 
 The last five have cluster faults: `make patientzero-scenario` applies them
-as the run's host agent ([cluster faults](#cluster-faults)). A backfill
-within Loki's 168 hours is not a scenario yet ([TODO 16.5](../../../TODO.md));
-`make patientzero-scale-collect` and `make patientzero-scale-check` backfill a
-generated log and check it against its known answers
-([PatientZero](../README.md#in-loki)).
+as the run's host agent ([cluster faults](#cluster-faults)). What the
+scenarios leave out is under [not covered](#not-covered).
 
 ### SLO scenarios
 
@@ -89,6 +86,43 @@ nothing is shortened for kind. That sets their length:
 
 PatientZero's steady load stays inside both objectives without a fault:
 about 0.07% of its requests fail (refused orders) and none take 2 s.
+
+### Not covered
+
+No scenario fires these alerts from the chart's rules. The rules' unit tests
+([`heartbeat.rules.test.yml`](../../../infra/helm/heartbeat/files/prometheus/rules/tests/heartbeat.rules.test.yml),
+`make rules-check`) check each one against made-up series; no run shows it
+firing from a real fault. A test keeps the table in step with the rules and
+the scenarios.
+
+| Alert | Fires when | Why no scenario fires it |
+| --- | --- | --- |
+| `Watchdog` | Always: it is the dead-man's switch | It fires through every run, but no check reads it |
+| `HeartbeatCollectorConfigReloadFailed` | The db-collector rejects a config reload | No fault changes the collector's config |
+| `HeartbeatCollectorLoginElevated` | A collector login is in `sysadmin` or holds `CONTROL SERVER` | No fault changes the login's grants |
+| `OutSystemsDerivedSeriesOverflow` | A row needs a new derived series and the collector already holds `max_derived_series` | PatientZero's applications, modules and operations stay far below the budget |
+| `OutSystemsLogExtractionBehind` | A log type has not been extracted for 30 minutes | The longest outage lasts 4 minutes |
+| `OutSystemsLogRecountFailing` | Most recounts of a log type fail for 15 minutes | No fault breaks the recount for that long |
+| `OutSystemsDuplicateLogRows` | A recount finds rows delivered twice | `late-commits` and `restarts` check that it stays quiet |
+| `LokiDiscardingLogs` | Loki discards rows, for any reason but rate limiting | `log-growth` and `restarts` check that it stays quiet |
+
+`HeartbeatServiceDown` is covered, but only one of its two rules fires for
+the db-collector in a given cluster: `collector-outage` fires the `absent()`
+rule where every name on Prometheus' DNS search path answers NXDOMAIN, as on
+local kind, and the `up == 0` rule on GitHub's runners (the scenario's
+`collector-target-down` check).
+
+The `blocking` (with deadlocks), `slow-partner`, `timer-backlog` and
+`bad-front-end` scenarios come in phase 7, with the analyzer and alert work
+that uses them, and with what PatientZero does not do yet: timers,
+extension calls, a consumed REST partner, long-running screens, and
+`Instant` across daylight saving switches
+([TODO 16.5](../../../TODO.md#165-patientzero-test-application)).
+
+A backfill within Loki's 168 hours is not a scenario:
+`make patientzero-scale-collect` and `make patientzero-scale-check` backfill
+a generated log through the same extractor, Collector and Loki and check it
+against its known answers ([PatientZero](../README.md#in-loki)).
 
 ## Format
 
