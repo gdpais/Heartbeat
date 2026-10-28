@@ -141,15 +141,19 @@ host; the e2e script prints them on every run.
 | Singleton update drains the old pod first; gap and SQL concurrency measured | e2e samples running pods and SQL Server sessions every second during a rollout | Never more than 1 collector or 2 sessions; collection gap 12s and 31s in two runs at a 20s scrape interval |
 | Stateful restart keeps persistent data | e2e replaces the Prometheus and Alertmanager pods | TSDB and silences kept |
 | Concurrent CI runs isolated, cannot delete developer resources | e2e uses its own cluster name, kubeconfig and container names, and deletes only those | By construction |
-| Daily loop meets an agreed budget | Budget agreed 2026-10-28: the full profile holds at most 2.5 GiB of RAM in the kind node, the SQL Server sandbox not included; CI's `kind end-to-end` job finishes within 20 minutes and warns past it | Full profile about 2.0 GiB RAM in the kind node, measured idle (SQL Server sandbox +0.9 GiB idle, capped at 2 GiB); `kind end-to-end` 10–12 minutes in CI on 21–22 October, up to 18.6 on 28 October; redeploy under a minute; `minimal` profile for smaller machines |
+| Daily loop meets an agreed budget | Budget agreed 2026-10-28: the full profile holds at most 2.5 GiB of RAM in the kind node, the SQL Server sandbox and PatientZero not included. CI's `kind end-to-end` job times out after 25 minutes | Full profile about 2.0 GiB RAM in the kind node, measured idle, and 1.8 GiB after 12 hours up (SQL Server sandbox +0.9 GiB at first, 2.2 GiB after 12 hours: its 2 GiB cap limits SQL Server's own memory, not the container's); `kind end-to-end` 10–12 minutes in CI on 21–22 October, up to 18.6 on 28 October; redeploy under a minute; `minimal` profile for smaller machines |
 
 Update 2026-10-28: the local loop's budget is agreed (last row above).
 
 - Memory is the peak `docker stats` usage of the kind node container
   (`heartbeat-control-plane` for the default `KIND_CLUSTER`) over at least
-  30 minutes of `make patientzero-load` after a deploy. Prometheus's head
-  block and Loki's ingesters grow until they flush, so a few idle minutes
-  understate it; the 2.0 GiB above was measured idle, and the 4.1 chart
+  30 minutes of `make patientzero-load` after a deploy, less the
+  `patientzero` namespace: PatientZero and its k6 Job (up to 512 MiB) run in
+  the same node but are not part of the profile, and
+  `docker exec heartbeat-control-plane crictl stats --label io.kubernetes.pod.namespace=patientzero`
+  shows their share. Load grows Prometheus's head block and Loki's
+  ingesters until they flush, so an idle reading understates it; the
+  2.0 GiB above was measured idle, and the 4.1 chart
   change that adds the API, PostgreSQL and Valkey is the first measured
   this way. The budget plus the sandbox's 2 GiB cap is 4.5 GiB, which
   leaves this project's Docker host (7.6 GiB in `docker info`) room for
@@ -159,14 +163,14 @@ Update 2026-10-28: the local loop's budget is agreed (last row above).
   at their cap. It fits only while neither cluster runs a load flood; on
   2026-10-22, before SQL Server's memory was capped, a load flood and a
   second cluster each got it killed.
-- Time is the duration of CI's `kind end-to-end` job, which warns when it
-  passes 20 minutes. The job grew with its checks, not its pods, so the
-  levers are the checks: shorter `wait_for` windows, waits run in parallel,
-  or the job split in two.
+- Time is bounded by CI, not by this budget: the `kind end-to-end` job
+  fails after 25 minutes. It grew with its checks, not its pods, so when it
+  nears the timeout the levers are the checks: shorter `wait_for` windows,
+  waits run in parallel, or the job split in two.
 
-A change that would exceed either figure is trimmed first: smaller requests
-or the component off in the `kind` profile for memory, the levers above for
-time. Otherwise it asks for a new budget instead of growing past this one.
+A change that would exceed the budget is trimmed first: smaller requests, or
+the component off in the `kind` profile. Otherwise it asks for a new budget
+instead of growing past this one.
 
 Not covered by kind (risk 4): cloud storage classes, ingress and TLS, IAM and
 External Secrets, ECR pulls, and SQL connectivity from the EKS VPC.

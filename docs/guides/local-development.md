@@ -79,16 +79,17 @@ out a new pod and a stale image cannot hide behind a reused tag. Every deploy
 rebuilds first when the Go sources changed since the last build, for example
 after a pull ([Images](kubernetes-local.md#images)).
 
-The loop has a budget: the full profile holds at most 2.5 GiB of RAM in the
-kind node, and CI's `kind end-to-end` job finishes within 20 minutes (the
-job warns past them). To check memory, watch `docker stats
-heartbeat-control-plane` (`<cluster>-control-plane` for another
-`KIND_CLUSTER`) and take the peak over 30 minutes of
-`make patientzero-load`. With a second cluster running, such as
-`make kind-e2e`, keep load off one of them: two clusters and their SQL
-Servers at their caps need more memory than a 7.6 GiB Docker host has. A
-change that would exceed either figure is trimmed first, or asks for a new
-budget ([ADR 0003](../architecture/decisions/0003-helm-on-kind-and-production.md)).
+The loop has a memory budget: the full profile holds at most 2.5 GiB of RAM
+in the kind node. To check it, watch `docker stats heartbeat-control-plane`
+(`<cluster>-control-plane` for another `KIND_CLUSTER`), take the peak over
+30 minutes of `make patientzero-load`, and subtract PatientZero and its k6
+Job, which run in the same node (`docker exec heartbeat-control-plane crictl
+stats --label io.kubernetes.pod.namespace=patientzero`). With a second
+cluster running, such as `make kind-e2e`, keep load off one of them: two
+clusters and their SQL Servers at their caps need more memory than a
+7.6 GiB Docker host has. A change that would exceed the budget is trimmed
+first, or asks for a new one
+([ADR 0003](../architecture/decisions/0003-helm-on-kind-and-production.md)).
 
 ## SQL Server sandbox
 
