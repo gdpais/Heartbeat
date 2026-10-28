@@ -278,9 +278,26 @@ func TestEveryAlertIsFiredOrNotCovered(t *testing.T) {
 	if section == nil {
 		t.Fatal(`no "### Not covered" section in README.md`)
 	}
+	// The table's rows, after its header and separator line. A row in any
+	// other form fails here, not as an alert missing from the table.
+	var rows [][]byte
+	for _, line := range bytes.Split(section[1], []byte("\n")) {
+		if bytes.HasPrefix(line, []byte("|")) {
+			rows = append(rows, bytes.TrimRight(line, "\r"))
+		}
+	}
+	row := regexp.MustCompile("^\\| `(\\w+)` \\|")
 	listed := map[string]bool{}
-	for _, m := range regexp.MustCompile("(?m)^\\| `(\\w+)` \\|").FindAllSubmatch(section[1], -1) {
-		listed[string(m[1])] = true
+	for _, line := range rows[min(2, len(rows)):] {
+		m := row.FindSubmatch(line)
+		switch {
+		case m == nil:
+			t.Errorf("README's Not covered table: %q does not start with an alert name in backticks", line)
+		case listed[string(m[1])]:
+			t.Errorf("%s: in the README's Not covered table twice", m[1])
+		default:
+			listed[string(m[1])] = true
+		}
 	}
 
 	for _, alert := range shipped {
