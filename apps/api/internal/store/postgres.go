@@ -99,7 +99,9 @@ func (c Config) connString() string {
 }
 
 // connConfig parses the connection settings. The values Config sets win
-// over libpq's PG* environment variables, which pgx also reads.
+// over libpq's PG* environment variables, which pgx also reads; the ones it
+// leaves unset, such as PGSSLROOTCERT when SSLRootCert is empty, or
+// PGSSLCERT, still apply.
 func (c Config) connConfig() (*pgx.ConnConfig, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
@@ -154,24 +156,40 @@ type SchemaChecker struct {
 	Want int64
 }
 
-// Check returns nil when the schema version is at least Want and not
-// dirty. A newer version passes: migrations are expand then contract, so a
-// replica of the previous release keeps working while the next one rolls
-// out.
+// Check returns nil when the schema version is at least Want and the
+// migrations up to Want are complete. A newer version passes: migrations are
+// expand then contract, so a replica of the previous release keeps working
+// while the next one rolls out.
+//
+// golang-migrate marks a version dirty before it runs that migration, and
+// clean once it succeeds, so a dirty version V means the schema is complete
+// up to V-1. A dirty version above Want, a newer release migrating or one
+// whose migration failed, therefore still passes: otherwise every replica
+// would leave its Service for as long as each migration runs.
 func (s SchemaChecker) Check(ctx context.Context) error {
 	got, err := s.Queries.SchemaVersion(ctx)
-	var pgErr *pgconn.PgError
 	switch {
-	case errors.As(err, &pgErr) && pgErr.Code == "42P01": // undefined_table
+	case isUndefinedTable(err):
 		return errors.New("schema not migrated: no schema_migrations table; run api migrate up")
 	case errors.Is(err, pgx.ErrNoRows):
 		return errors.New("schema not migrated: schema_migrations is empty; run api migrate up")
 	case err != nil:
 		return err
-	case got.Dirty:
-		return fmt.Errorf("schema version %d is dirty: its migration failed partway and needs repair", got.Version)
+	case got.Dirty && got.Version <= s.Want:
+		return fmt.Errorf("schema version %d is dirty: its migration is running, or failed partway and needs repair", got.Version)
 	case got.Version < s.Want:
 		return fmt.Errorf("schema version %d is older than %d, the version this API needs; run api migrate up", got.Version, s.Want)
 	}
 	return nil
+}
+
+// notMigrated tells whether err, from the SchemaVersion query, means the
+// database was never migrated: schema_migrations is missing or empty.
+func notMigrated(err error) bool {
+	return isUndefinedTable(err) || errors.Is(err, pgx.ErrNoRows)
+}
+
+func isUndefinedTable(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42P01" // undefined_table
 }

@@ -61,6 +61,9 @@ func New(cfg Config, resolver credentials.Resolver) (*goredis.Client, error) {
 	opts := &goredis.Options{
 		Addr:                       cfg.Addr,
 		CredentialsProviderContext: credentialsProvider(resolver, cfg.CredentialRef),
+		// A command ends at its context's deadline, such as the readiness
+		// timeout, rather than at ReadTimeout (3s) when that comes first.
+		ContextTimeoutEnabled: true,
 		// CLIENT MAINT_NOTIFICATIONS announces upgrades of Redis's own
 		// managed offerings; Valkey does not have it, so don't send it.
 		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},

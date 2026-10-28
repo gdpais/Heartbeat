@@ -330,8 +330,10 @@ database has the newest version the API embeds, its readiness check fails,
 so a replica of a new release never serves an old schema. An older release
 started against a newer schema (a rollback) migrates nothing and is ready.
 
-If a migration fails, golang-migrate marks its version dirty, `migrate up`
-refuses to run, and readiness says so. PostgreSQL ran the file as one
+golang-migrate marks a version dirty while its migration runs. If the
+migration fails, the version stays dirty, `migrate up` refuses to run, and
+the readiness of a release that needs that version says so; an older
+release, whose schema is complete, stays ready. PostgreSQL ran the file as one
 implicit transaction, so none of it applied: fix the file, set the version
 back with `update schema_migrations set version = <previous>, dirty = false`
 (or `delete from schema_migrations` when it was the first), and run

@@ -4,11 +4,15 @@ package store_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/golang-migrate/migrate/v4/database"
 
 	"heartbeat/apps/api/internal/store"
 	"heartbeat/apps/api/internal/testenv"
@@ -29,7 +33,7 @@ func TestMigrateUpAppliesTheMigrations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if v, dirty, err := store.MigrationVersion(cfg, resolver, discard()); err != nil || v != 0 || dirty {
+	if v, dirty, err := store.MigrationVersion(context.Background(), cfg, resolver); err != nil || v != 0 || dirty {
 		t.Fatalf("fresh database: version %d dirty %v err %v, want 0", v, dirty, err)
 	}
 	result, err := store.MigrateUp(ctx, cfg, resolver, discard())
@@ -39,7 +43,7 @@ func TestMigrateUpAppliesTheMigrations(t *testing.T) {
 	if result.From != 0 || int64(result.To) != latest || result.Newer {
 		t.Fatalf("MigrateUp = %+v, want 0 to %d", result, latest)
 	}
-	if v, dirty, err := store.MigrationVersion(cfg, resolver, discard()); err != nil || int64(v) != latest || dirty {
+	if v, dirty, err := store.MigrationVersion(context.Background(), cfg, resolver); err != nil || int64(v) != latest || dirty {
 		t.Fatalf("after up: version %d dirty %v err %v, want %d", v, dirty, err, latest)
 	}
 	tables := pg.Exec(t, "psql", "-U", "heartbeat", "-d", "heartbeat", "-tAc",
@@ -88,6 +92,51 @@ func TestMigrateUpConcurrently(t *testing.T) {
 	}
 	if rows := strings.TrimSpace(pg.Exec(t, "psql", "-U", "heartbeat", "-d", "heartbeat", "-tAc", "select count(*) from schema_migrations")); rows != "1" {
 		t.Fatalf("schema_migrations has %s rows, want 1", rows)
+	}
+}
+
+// A replica started while another one migrates waits for the advisory
+// lock, but no longer than its context: golang-migrate's own wait, to
+// create schema_migrations, has no bound.
+func TestMigrateUpStopsWaitingForTheLock(t *testing.T) {
+	t.Parallel()
+	pg, cfg := testenv.Postgres(t)
+	resolver := testenv.Resolver{testenv.PostgresRef: pg.Credential}
+	pool, err := store.NewPool(cfg, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	// The lock golang-migrate's pgx v5 driver takes.
+	lockID, err := database.GenerateAdvisoryLockId(cfg.Database, "public", "schema_migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := pool.Acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Release()
+	if _, err := holder.Exec(context.Background(), "select pg_advisory_lock($1)", lockID); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err = store.MigrateUp(ctx, cfg, resolver, discard())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("MigrateUp while the lock is held = %v, want the context's deadline", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("MigrateUp returned after %s, want soon after the 2s deadline", elapsed)
+	}
+
+	if _, err := holder.Exec(context.Background(), "select pg_advisory_unlock($1)", lockID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MigrateUp(context.Background(), cfg, resolver, discard()); err != nil {
+		t.Fatalf("MigrateUp once the lock is free: %v", err)
 	}
 }
 
@@ -151,6 +200,12 @@ func TestSchemaCheckerAgainstPostgres(t *testing.T) {
 	pg.Exec(t, "psql", "-U", "heartbeat", "-d", "heartbeat", "-c", "update schema_migrations set dirty = true")
 	if err := check(); err == nil || !strings.Contains(err.Error(), "dirty") {
 		t.Fatalf("dirty: Check = %v", err)
+	}
+	// The next release's migration is running: this build's schema is
+	// complete, so it stays ready.
+	pg.Exec(t, "psql", "-U", "heartbeat", "-d", "heartbeat", "-c", fmt.Sprintf("update schema_migrations set version = %d, dirty = true", latest+1))
+	if err := check(); err != nil {
+		t.Fatalf("dirty newer version: Check = %v", err)
 	}
 }
 

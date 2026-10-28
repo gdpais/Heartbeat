@@ -217,6 +217,8 @@ func TestSchemaCheckerCheck(t *testing.T) {
 		{"newer: a previous release during a rollout", fakeRow{version: 4}, ""},
 		{"older: migrations not applied", fakeRow{version: 2}, "schema version 2 is older than 3"},
 		{"dirty", fakeRow{version: 3, dirty: true}, "schema version 3 is dirty"},
+		{"dirty and older", fakeRow{version: 2, dirty: true}, "schema version 2 is dirty"},
+		{"dirty and newer: the next release migrating", fakeRow{version: 4, dirty: true}, ""},
 		{"never migrated", fakeRow{err: &pgconn.PgError{Code: "42P01", Message: `relation "schema_migrations" does not exist`}}, "no schema_migrations table"},
 		{"empty table", fakeRow{err: pgx.ErrNoRows}, "schema_migrations is empty"},
 		{"unreachable", fakeRow{err: errors.New("dial tcp 10.0.0.7:5432: connect: connection refused")}, "connection refused"},

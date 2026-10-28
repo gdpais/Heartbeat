@@ -111,7 +111,7 @@ func execute(ctx context.Context, args []string, logger *slog.Logger, stdout io.
 		if err != nil {
 			return fmt.Errorf("invalid configuration: %w", err)
 		}
-		version, dirty, err := store.MigrationVersion(cfg, resolver, logger)
+		version, dirty, err := store.MigrationVersion(ctx, cfg, resolver)
 		if err != nil {
 			return err
 		}
@@ -219,9 +219,10 @@ func portNumber(value string) (int, error) {
 	return port, nil
 }
 
-// validRef checks a credential reference as the integrations file does: an
-// env/, kv/ or secret/ prefix, then letters, digits, ".", "-", "_" and "/"
-// only, so the file name it maps to stays inside the credentials directory.
+// validRef checks a credential reference: one of the prefixes the
+// integrations file accepts (env/, kv/ or secret/), then letters, digits,
+// ".", "-", "_" and "/" only, so the file name it maps to stays inside the
+// credentials directory. The integrations file checks the prefix only.
 func validRef(ref string) error {
 	rest, ok := "", false
 	for _, prefix := range []string{"env/", "kv/", "secret/"} {

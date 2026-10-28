@@ -411,8 +411,8 @@ then exit:
 
 | Command | Does |
 | --- | --- |
-| `api migrate up` | Applies, in order, each migration of [`db/migrations`](../../db/migrations) newer than the database's version, and records it in `schema_migrations`. Replicas may run it at once: a PostgreSQL advisory lock makes the others wait (up to 5 minutes) and each migration runs once. A database already past the newest migration it embeds (after rolling the API back) is left alone, and the command succeeds. A dirty version fails it ([repair](../guides/local-development.md#change-a-query-or-a-migration)) |
-| `api migrate version` | Prints the schema version, `0` when never migrated, with ` (dirty)` after a migration that failed partway. Creates an empty `schema_migrations` if there is none |
+| `api migrate up` | Applies, in order, each migration of [`db/migrations`](../../db/migrations) newer than the database's version, and records it in `schema_migrations`. Replicas may run it at once: a PostgreSQL advisory lock makes the others wait and each migration runs once. Each wait for the lock ends after 5 minutes, or on SIGTERM, and fails the command. A database already past the newest migration it embeds (after rolling the API back) is left alone, and the command succeeds. A dirty version fails it ([repair](../guides/local-development.md#change-a-query-or-a-migration)) |
+| `api migrate version` | Prints the schema version, `0` when never migrated, with ` (dirty)` while a migration runs or after one failed partway. It only reads `schema_migrations`: it creates nothing and does not wait for a migration in progress |
 
 ### Local development files
 
