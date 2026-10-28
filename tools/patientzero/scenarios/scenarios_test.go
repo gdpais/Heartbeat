@@ -209,6 +209,8 @@ func TestEveryScenarioHasAPlaceInTheOrder(t *testing.T) {
 
 // Every alert the chart ships is either fired by a scenario or listed in the
 // README's "Not covered" table, so the table says what the runs leave out.
+// Every alert a scenario checks is one the chart ships: a check that one
+// stays quiet would pass for good on a name the rules no longer have.
 func TestEveryAlertIsFiredOrNotCovered(t *testing.T) {
 	const rules = "../../../infra/helm/heartbeat/files/prometheus/rules"
 	files, err := filepath.Glob(rules + "/*.yml")
@@ -247,6 +249,7 @@ func TestEveryAlertIsFiredOrNotCovered(t *testing.T) {
 		t.Fatalf("no alerts in %s", rules)
 	}
 	slices.Sort(shipped)
+	shipped = slices.Compact(shipped)
 
 	list, err := scenario.LoadDir(scenarios.FS, ".", registry())
 	if err != nil {
@@ -255,7 +258,13 @@ func TestEveryAlertIsFiredOrNotCovered(t *testing.T) {
 	fired := map[string]bool{}
 	for _, s := range list {
 		for _, sig := range s.Signals {
-			if sig.Kind() == scenario.KindAlert && sig.State == scenario.StateFiring {
+			if sig.Kind() != scenario.KindAlert {
+				continue
+			}
+			if !slices.Contains(shipped, sig.Alert) {
+				t.Errorf("%s: checks %s, which is not an alert in %s", s.Name, sig.Alert, rules)
+			}
+			if sig.State == scenario.StateFiring {
 				fired[sig.Alert] = true
 			}
 		}
@@ -265,7 +274,7 @@ func TestEveryAlertIsFiredOrNotCovered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	section := regexp.MustCompile(`(?ms)^### Not covered\n(.*?)^#`).FindSubmatch(readme)
+	section := regexp.MustCompile(`(?ms)^### Not covered\r?\n(.*?)^#`).FindSubmatch(readme)
 	if section == nil {
 		t.Fatal(`no "### Not covered" section in README.md`)
 	}
@@ -274,7 +283,7 @@ func TestEveryAlertIsFiredOrNotCovered(t *testing.T) {
 		listed[string(m[1])] = true
 	}
 
-	for _, alert := range slices.Compact(shipped) {
+	for _, alert := range shipped {
 		switch {
 		case fired[alert] && listed[alert]:
 			t.Errorf("%s: a scenario fires it; take it out of the README's Not covered table", alert)

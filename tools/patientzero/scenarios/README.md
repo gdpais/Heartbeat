@@ -101,7 +101,7 @@ the scenarios.
 | `HeartbeatCollectorConfigReloadFailed` | The db-collector rejects a config reload | No fault changes the collector's config |
 | `HeartbeatCollectorLoginElevated` | A collector login is in `sysadmin` or holds `CONTROL SERVER` | No fault changes the login's grants |
 | `OutSystemsDerivedSeriesOverflow` | A row needs a new derived series and the collector already holds `max_derived_series` | PatientZero's applications, modules and operations stay far below the budget |
-| `OutSystemsLogExtractionBehind` | A log type has not been extracted for 30 minutes | The longest outage lasts 4 minutes |
+| `OutSystemsLogExtractionBehind` | A log type has not been extracted for about 40 minutes (30, then its `for: 10m`) | The longest outage lasts 4 minutes |
 | `OutSystemsLogRecountFailing` | Most recounts of a log type fail for 15 minutes | No fault breaks the recount for that long |
 | `OutSystemsDuplicateLogRows` | A recount finds rows delivered twice | `late-commits` and `restarts` check that it stays quiet |
 | `LokiDiscardingLogs` | Loki discards rows, for any reason but rate limiting | `log-growth` and `restarts` check that it stays quiet |
