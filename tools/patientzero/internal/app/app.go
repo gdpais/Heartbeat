@@ -131,13 +131,34 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("GET /readyz", s.readyz)
-	mux.HandleFunc("GET "+PathOrderList, limit(EntryOrderList, s.orderList))
+	mux.HandleFunc("GET "+PathOrderList, screen(limit(EntryOrderList, s.orderList)))
 	mux.HandleFunc("POST "+PathPlaceOrder, limit(EntryPlaceOrder, s.placeOrder))
 	mux.HandleFunc("GET "+PathAPIOrders, limit(EntryGetOrders, s.apiOrders))
 	if s.Admin != nil {
 		mux.Handle("/admin/", s.Admin)
 	}
 	return mux
+}
+
+// screenHeaders go on every response of the HTML screen, its error and shed
+// responses included: no MIME sniffing, and a Content-Security-Policy under
+// which the page loads nothing (it has no script, style, image or form of
+// its own), cannot be framed, and takes no base URL or form target from
+// injected markup. X-Frame-Options covers browsers without frame-ancestors.
+var screenHeaders = map[string]string{
+	"X-Content-Type-Options":  "nosniff",
+	"Content-Security-Policy": "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+	"X-Frame-Options":         "DENY",
+}
+
+// screen sets screenHeaders before an HTML screen's handler writes anything.
+func screen(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		for name, value := range screenHeaders {
+			w.Header().Set(name, value)
+		}
+		next(w, r)
+	}
 }
 
 // shedReportEvery is how often, at most, the server logs that it is shedding

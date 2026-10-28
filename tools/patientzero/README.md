@@ -105,6 +105,14 @@ slow-query row, a `general` row with `Module_Name` `SLOWSQL`
 fails `PlaceOrder` with HTTP 400. Every user is a `Customer` row in the
 business database, created on first use; its id is the `User_Id` in the logs.
 
+Every response of the order list, its errors and `503`s included, carries
+`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and a
+Content-Security-Policy under which the page loads nothing and cannot be
+framed (`default-src 'none'; base-uri 'none'; form-action 'none';
+frame-ancestors 'none'`): the page has no script, style, image or form of
+its own. Every entry point answers a failure with a generic message; the
+detail is only in the `error` row.
+
 `GET /healthz` reports that the process runs; `GET /readyz` that both
 databases answer and the schemas are in place. A pool whose every
 connection is in use counts as answering, so a slow SQL Server does not take

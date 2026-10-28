@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -190,6 +191,55 @@ func TestTraditionalScreenWritesAScreenRow(t *testing.T) {
 	}
 	if row["Duration"] != int64(250) || row["Screen"] != "OrderList" || row["Espace_Name"] != "PatientZero_Web" {
 		t.Errorf("row %v", row)
+	}
+}
+
+// The HTML screen cannot be sniffed or framed and loads nothing, on its page
+// and its error alike (the shed 503 is checked in
+// TestLimiterShedsExcessWith503). The page needs nothing that policy blocks:
+// no script, style, event handler, external resource, frame or form.
+func TestScreenSendsSecurityHeaders(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		store  *fakeStore
+		status int
+	}{
+		{"page", &fakeStore{}, http.StatusOK},
+		{"error", &fakeStore{fail: errors.New("Execution Timeout Expired")}, http.StatusInternalServerError},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, _ := newServer(t, c.store)
+			w := do(t, s, http.MethodGet, PathOrderList, "", maria)
+			if w.Code != c.status {
+				t.Fatalf("status %d, want %d: %s", w.Code, c.status, w.Body)
+			}
+			checkScreenHeaders(t, w)
+			if c.status != http.StatusOK {
+				return
+			}
+			if blocked := blockedMarkup.FindString(strings.ToLower(w.Body.String())); blocked != "" {
+				t.Errorf("the page has %q, which its Content-Security-Policy blocks:\n%s", blocked, w.Body)
+			}
+		})
+	}
+}
+
+// blockedMarkup is markup that default-src 'none' blocks or that loads
+// something: elements and attributes, not text.
+var blockedMarkup = regexp.MustCompile(`<(script|style|link|img|iframe|frame|object|embed|form|base|svg|video|audio|source)\b|\s(on[a-z]+|style|src|srcset|href|action)\s*=`)
+
+// checkScreenHeaders checks the HTML screen's security headers, each sent
+// once.
+func checkScreenHeaders(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	for name, want := range map[string]string{
+		"X-Content-Type-Options":  "nosniff",
+		"Content-Security-Policy": "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+		"X-Frame-Options":         "DENY",
+	} {
+		if got := w.Header().Values(name); len(got) != 1 || got[0] != want {
+			t.Errorf("%s: %q, want %q", name, got, want)
+		}
 	}
 }
 
