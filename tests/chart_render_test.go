@@ -405,6 +405,77 @@ var chartProfiles = []chartProfile{
 		wantError: "values don't meet the specifications of the schema",
 	},
 	{
+		// A misspelt key inside a component fails too: v0.1.0 ignored
+		// dbCollector.enabeld and deployed the collector anyway (TODO 0.4).
+		name:      "unknown-collector-key",
+		set:       []string{"dbCollector.enabeld=false"},
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		name:      "unknown-collector-nested-key",
+		inline:    "dbCollector: {persistance: {enabled: false}}",
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		// resources.limit (no s) rendered next to the default limits, so the
+		// raise to 1Gi never applied and the collector kept 256Mi.
+		name:      "unknown-collector-resources-key",
+		inline:    "dbCollector: {resources: {limit: {memory: 1Gi}}}",
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		// A misspelt security field was ignored: the defaults still applied,
+		// but a field they do not set, such as appArmorProfile, never reached
+		// the pods.
+		name:      "unknown-security-context-key",
+		inline:    "podSecurityContext: {runAsNonroot: true}",
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		name:      "unknown-container-security-context-key",
+		inline:    "containerSecurityContext: {readOnlyRootFileSystem: true}",
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		// A digest copied with its @ would render repository@@sha256:...
+		name:      "invalid-collector-digest",
+		inline:    "dbCollector: {image: {digest: \"@sha256:0000000000000000000000000000000000000000000000000000000000000000\"}}",
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		name:      "unknown-dashboards-key",
+		set:       []string{"grafanaDashboards.enable=false"},
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		name:      "unknown-queue-key",
+		inline:    "otelCollectorQueue: {persistance: {enabled: false}}",
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		// Every field the chart reads is still accepted.
+		name: "every-collector-value",
+		inline: "dbCollector:\n" +
+			"  image: {repository: registry.example.internal/db-collector, tag: \"1.2.3\", digest: \"sha256:0000000000000000000000000000000000000000000000000000000000000000\", pullPolicy: Always}\n" +
+			"  adminToken: {existingSecret: admin, key: token}\n" +
+			"  credentials: {existingSecret: creds}\n" +
+			"  configWatchInterval: 10s\n" +
+			"  sqlserver: {trustServerCertificate: false}\n" +
+			"  terminationGracePeriodSeconds: 60\n" +
+			"  service: {type: ClusterIP, port: 8082}\n" +
+			"  resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {memory: 512Mi}}\n" +
+			"  extraEnv: [{name: X, value: \"1\"}]\n" +
+			"  podAnnotations: {a: b}\n" +
+			"  nodeSelector: {kubernetes.io/os: linux}\n" +
+			"  tolerations: [{key: k, operator: Exists}]\n" +
+			"  affinity: {}\n" +
+			"podSecurityContext: {runAsNonRoot: true, runAsUser: 65532, fsGroup: 65532, seccompProfile: {type: RuntimeDefault}, supplementalGroups: [1]}\n" +
+			"containerSecurityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}\n",
+		present:        []string{"StatefulSet/db-collector"},
+		collectorPeers: []string{bundledPrometheusPeer},
+		goMemLimit:     "409MiB",
+	},
+	{
 		// Helm's global values still reach the subcharts, for example a
 		// registry mirror.
 		name:           "global-values",
