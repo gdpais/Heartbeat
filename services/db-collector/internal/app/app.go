@@ -67,6 +67,12 @@ type Config struct {
 	// created when the first watermark is saved, so the sqlserver kind, which
 	// keeps no state, never needs it.
 	StateDir string
+	// CredentialsDir holds one file per credential reference, normally the
+	// credentials Secret mounted as a directory.  Files are read on every
+	// connection, so a rotated credential needs no restart; references
+	// without a file, or every reference when it is empty, come from the
+	// environment ([connector.FileCredentialResolver]).
+	CredentialsDir string
 	// SQLServerTrustServerCertificate is a dev/test escape hatch for self-signed
 	// SQL Server containers. Production should keep this disabled; when set,
 	// startup logs a warning that GET /admin/config also lists.
@@ -156,7 +162,7 @@ func newRunDeps(cfg Config) (runDeps, error) {
 		return runDeps{}, err
 	}
 	exporter := collectorexport.NewPrometheusExporter(registry)
-	manager := connector.NewManager(connector.EnvCredentialResolver{})
+	manager := connector.NewManager(connector.FileCredentialResolver{Dir: cfg.CredentialsDir, Fallback: connector.EnvCredentialResolver{}})
 	manager.TrustServerCertificate = cfg.SQLServerTrustServerCertificate
 	logsClient := otlp.NewClient()
 	logsClient.Logger = logger

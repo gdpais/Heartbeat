@@ -26,7 +26,8 @@ Heartbeat {{ .Chart.AppVersion }} (release {{ .Release.Name }}, namespace {{ $ns
 {{- if $secrets }}
 
 Secrets: the chart does not create these. Create them in namespace {{ $ns }};
-until then the pods that need them wait in CreateContainerConfigError.
+until then the pods that need them wait in CreateContainerConfigError, or in
+ContainerCreating for a missing credentials Secret.
 {{ range $secrets }}
    - {{ index . 0 }} ({{ index . 1 }}): {{ index . 2 }}
 {{- end }}

@@ -166,15 +166,16 @@ its series after the reload.
 
 ## 3. Provide the credential
 
-`credential_ref: env/finance-prod` is read from the environment variable
-`HEARTBEAT_CREDENTIAL_ENV_FINANCE_PROD` with the value `username:password`
-([resolution rules](../reference/configuration.md#credential-resolution)). The
-variable must reach the collector **container**. Keep values out of version
-control.
+`credential_ref: env/finance-prod` is read from the key
+`HEARTBEAT_CREDENTIAL_ENV_FINANCE_PROD`, with the value `username:password`
+([resolution rules](../reference/configuration.md#credential-resolution)).
+Keep values out of version control.
 
-Put the variable in a Secret and name it in
-`dbCollector.credentials.existingSecret`; the chart loads every key of that
-Secret into the collector's environment.
+Put the key in a Secret and name it in
+`dbCollector.credentials.existingSecret`. The chart mounts that Secret into
+the collector **container** as files, which the collector reads on every
+connection: adding a key for a new target, or changing a password, needs no
+restart. The kubelet updates the files within about a minute.
 
 | Where the collector runs | How the Secret is created |
 | --- | --- |
@@ -194,10 +195,10 @@ Helm rejects values that fail the integrations schema before anything changes.
 A config-only change does not restart the collector: the ConfigMap reaches the
 pod within about a minute (kubelet sync) and the collector picks it up through
 file polling (5s). To apply it sooner, `POST /admin/config/reload` with the
-admin token. A change to the credentials Secret needs
-`kubectl -n heartbeat rollout restart statefulset/db-collector`. An invalid file
-is rejected and the previous config keeps running, so the change has not
-taken effect: step 5 shows how to tell.
+admin token. A change to the credentials Secret needs no restart either: the
+files reach the pod the same way, and the next connection uses them. An
+invalid file is rejected and the previous config keeps running, so the change
+has not taken effect: step 5 shows how to tell.
 
 ## 5. Verify
 

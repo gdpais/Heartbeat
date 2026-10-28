@@ -14,6 +14,12 @@
 //	HEARTBEAT_STATE_DIR                 Writable directory for state that must
 //	                                    survive restarts: the outsystems_logs
 //	                                    watermarks (default "/var/lib/heartbeat")
+//	HEARTBEAT_CREDENTIALS_DIR           Directory of HEARTBEAT_CREDENTIAL_<REF>
+//	                                    files, read on every connection; refs
+//	                                    without a file come from the
+//	                                    environment (default unset)
+//	HEARTBEAT_CREDENTIAL_<REF>          Credential for a credential_ref, as
+//	                                    username:password
 package main
 
 import (
@@ -36,6 +42,7 @@ func main() {
 		IntegrationsPath:                env("HEARTBEAT_INTEGRATIONS_PATH", "config/integrations.yaml"),
 		AdminToken:                      os.Getenv("HEARTBEAT_ADMIN_TOKEN"),
 		StateDir:                        env("HEARTBEAT_STATE_DIR", "/var/lib/heartbeat"),
+		CredentialsDir:                  os.Getenv("HEARTBEAT_CREDENTIALS_DIR"),
 		WatchInterval:                   durationEnv("HEARTBEAT_CONFIG_WATCH_INTERVAL", 0),
 		SQLServerTrustServerCertificate: boolEnv("HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE", false),
 		Logger:                          logger,

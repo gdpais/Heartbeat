@@ -231,9 +231,9 @@ curl -X POST -H "Authorization: Bearer local-admin-token" http://localhost:8082/
 ```
 
 `local-admin-token` is the kind-only value of the `heartbeat-runtime` Secret.
-Credential variables are read at startup; restart the collector
-(`kubectl -n heartbeat rollout restart statefulset/db-collector`) when they
-change. See the [configuration reference](../reference/configuration.md).
+Credentials need no restart either: the collector reads the mounted
+credentials Secret on every connection, and the kubelet updates it within
+about a minute. See the [configuration reference](../reference/configuration.md#credential-resolution).
 
 ## Troubleshooting
 

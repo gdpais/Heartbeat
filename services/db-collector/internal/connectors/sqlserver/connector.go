@@ -17,14 +17,16 @@
 // [WithSessionSettings]), so a collector query never waits long on a lock and
 // is always the preferred deadlock victim.
 //
-// The default credential resolver, [EnvCredentialResolver], reads credentials
-// from environment variables of the form:
+// A credential reference is resolved under the name
 //
 //	HEARTBEAT_CREDENTIAL_<REF>
 //
-// where <REF> is the credential reference string with all non-alphanumeric
-// characters replaced by underscores and converted to upper-case.  The value
-// must be a colon-separated "username:password" pair.
+// where <REF> is the credential reference string upper-cased, with "/", "-"
+// and "." replaced by underscores.  The value must be a colon-separated
+// "username:password" pair.  [FileCredentialResolver] reads it from a file of
+// that name in a directory, such as a mounted Kubernetes Secret, on every
+// [Manager.Open], so a rotated credential needs no restart;
+// [EnvCredentialResolver] reads it from the environment variable of that name.
 package sqlserver
 
 import (
@@ -37,6 +39,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/url"
@@ -68,21 +71,87 @@ type CredentialResolver interface {
 // EnvCredentialResolver resolves credentials from environment variables.
 type EnvCredentialResolver struct{}
 
-// Resolve implements [CredentialResolver].  It normalises ref to upper-snake
-// case and looks up the environment variable HEARTBEAT_CREDENTIAL_<REF>.
-// The variable must contain a "username:password" pair; an error is returned
-// when the variable is absent or malformed.
+// Resolve implements [CredentialResolver].  It looks up the environment
+// variable HEARTBEAT_CREDENTIAL_<REF> (see [credentialKey]), which must
+// contain a "username:password" pair; an error is returned when the variable
+// is absent or malformed.
 func (EnvCredentialResolver) Resolve(_ context.Context, ref string) (Credential, error) {
-	key := strings.NewReplacer("/", "_", "-", "_", ".", "_").Replace(strings.ToUpper(ref))
-	value := os.Getenv("HEARTBEAT_CREDENTIAL_" + key)
+	value := os.Getenv(credentialKey(ref))
 	if value == "" {
 		return Credential{}, fmt.Errorf("missing credential for ref %s", ref)
 	}
-	parts := strings.SplitN(value, ":", 2)
-	if len(parts) != 2 {
+	return parseCredential(ref, value)
+}
+
+// FileCredentialResolver resolves credentials from files in Dir, one per
+// reference, named like the variable [EnvCredentialResolver] reads
+// (HEARTBEAT_CREDENTIAL_<REF>) and holding the same "username:password"
+// pair; a trailing line break is ignored.  Dir is meant to be a Kubernetes
+// Secret mounted as a directory, whose keys are those names.
+//
+// Every Resolve reads the file again, and [Manager.Open] resolves on every
+// call, so a key added to the Secret, or a rotated one, is used by the next
+// connection once the kubelet has updated the volume, without a restart.
+// The kubelet swaps the whole volume at once, so a read never sees half an
+// update.
+//
+// A reference with no file, and every reference while Dir is empty or does
+// not exist, goes to Fallback, or is missing when Fallback is nil.  A file
+// that exists but cannot be read or parsed is an error and never falls back,
+// so a stale credential from elsewhere is not used in its place.
+type FileCredentialResolver struct {
+	// Dir is the directory holding the credential files.
+	Dir string
+	// Fallback resolves the references Dir has no file for, typically
+	// [EnvCredentialResolver].
+	Fallback CredentialResolver
+}
+
+// Resolve implements [CredentialResolver].
+func (r FileCredentialResolver) Resolve(ctx context.Context, ref string) (Credential, error) {
+	if r.Dir != "" {
+		value, err := readCredentialFile(r.Dir, credentialKey(ref))
+		switch {
+		case err == nil:
+			return parseCredential(ref, strings.TrimRight(value, "\r\n"))
+		case !errors.Is(err, fs.ErrNotExist):
+			return Credential{}, fmt.Errorf("read credential for ref %s: %w", ref, err)
+		}
+	}
+	if r.Fallback == nil {
+		return Credential{}, fmt.Errorf("missing credential for ref %s", ref)
+	}
+	return r.Fallback.Resolve(ctx, ref)
+}
+
+// readCredentialFile reads the file name in dir through an [os.Root], so no
+// reference can name a file outside dir, while the relative symlinks the
+// kubelet keeps inside a Secret volume are still followed.
+func readCredentialFile(dir, name string) (string, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	data, err := root.ReadFile(name)
+	return string(data), err
+}
+
+// credentialKey returns the name ref's credential is stored under, as an
+// environment variable or a file: HEARTBEAT_CREDENTIAL_ followed by ref
+// upper-cased, with "/", "-" and "." replaced by "_".
+func credentialKey(ref string) string {
+	return "HEARTBEAT_CREDENTIAL_" + strings.NewReplacer("/", "_", "-", "_", ".", "_").Replace(strings.ToUpper(ref))
+}
+
+// parseCredential splits a "username:password" value at its first colon.
+// Its error never quotes value.
+func parseCredential(ref, value string) (Credential, error) {
+	username, password, ok := strings.Cut(value, ":")
+	if !ok {
 		return Credential{}, fmt.Errorf("credential %s must be username:password", ref)
 	}
-	return Credential{Username: parts[0], Password: parts[1]}, nil
+	return Credential{Username: username, Password: password}, nil
 }
 
 // Connection pool limits applied to every pooled [database/sql.DB].  Probes

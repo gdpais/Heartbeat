@@ -621,6 +621,31 @@ wait_for 300 "target recovered" target_up sqlserver-dev 1
 pass "outage reported, recovered, restartCount unchanged ($restarts_before)"
 
 # ----------------------------------------------------------------------------
+step "a changed credential in the Secret is used without a restart"
+# The credentials Secret is mounted as files the collector reads on every
+# connection. A wrong password must take the target down and the right one
+# bring it back, through the kubelet's volume update alone. The recovery wait
+# covers the volume update (up to about two minutes) plus the failing target's
+# retry backoff, which doubles from the scrape interval with each failed cycle.
+credential_secret() {
+	# The credential reaches kubectl in a 0600 file, never on its command line.
+	(umask 077 && printf 'HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV=%s\n' "$1" >"$WORK/credential.env")
+	k -n "$NAMESPACE" create secret generic heartbeat-sqlserver-dev-credentials \
+		--from-env-file="$WORK/credential.env" --dry-run=client -o yaml | k apply -f - >/dev/null
+	rm -f "$WORK/credential.env"
+}
+restarts_before=$(collector_restarts)
+uid_before=$(collector_pod_uid)
+credential=$(sed -n 's/^HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_DEV=//p' "$SQLSERVER_ENV_FILE")
+credential_secret "${credential%%:*}:Wrong-$(openssl rand -hex 16)"
+wait_for 180 "wrong password takes the target down" target_up sqlserver-dev 0
+credential_secret "$credential"
+wait_for 420 "right password brings it back" target_up sqlserver-dev 1
+[ "$(collector_pod_uid)" = "$uid_before" ] || fail "collector pod was replaced by a credential change"
+[ "$(collector_restarts)" = "$restarts_before" ] || fail "collector restarted for a credential change"
+pass "both Secret changes used by the running collector, same pod, restartCount unchanged ($restarts_before)"
+
+# ----------------------------------------------------------------------------
 step "a collector update drains the old pod before the new one polls"
 # Samples, every second: running collector containers in the cluster, and
 # collector sessions in SQL Server's master database, the sqlserver-dev

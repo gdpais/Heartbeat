@@ -312,25 +312,45 @@ Rules:
 
 ## Credential resolution
 
-The DB collector resolves a `credential_ref` from an environment variable:
+The DB collector looks up a `credential_ref` under one name:
 
 ```text
 HEARTBEAT_CREDENTIAL_<REF>
 ```
 
 `<REF>` is the full reference upper-cased, with `/`, `-` and `.` replaced by
-`_`. The value must be `username:password`.
+`_`. The value must be `username:password`; the password is everything after
+the first `:`.
 
-| `credential_ref` | Environment variable |
+| `credential_ref` | Name |
 | --- | --- |
 | `env/sqlserver-b` | `HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_B` |
 | `kv/sqlserver-default` | `HEARTBEAT_CREDENTIAL_KV_SQLSERVER_DEFAULT` |
 
-The variable must be present in the **container's** environment; exporting it
-in your host shell does not pass it into Kubernetes. The chart loads every key
-of the Secret named by `dbCollector.credentials.existingSecret` as an
-environment variable. Changing it requires restarting the collector
-(`kubectl rollout restart statefulset/db-collector`).
+It is looked up, in order:
+
+1. A file of that name in `HEARTBEAT_CREDENTIALS_DIR`, when that is set. A
+   trailing line break is ignored.
+2. An environment variable of that name.
+
+The collector reads the file every time it opens a connection, never caches
+it, so a new or changed credential needs no restart. A file that exists but
+cannot be read, or holds no `:`, fails that target; it never falls back to
+the environment variable.
+
+In Kubernetes the chart mounts the Secret named by
+`dbCollector.credentials.existingSecret` as that directory
+(`/var/run/secrets/heartbeat/credentials`), one file per Secret key. After
+you add or change a key, the kubelet updates the files within about a minute,
+and the next collection cycle uses them; the collector is not restarted. A
+target whose credential is missing fails on its own, and the others keep
+running. The Secret is not loaded into the environment, so a
+`HEARTBEAT_CREDENTIAL_*` variable reaches the container only through
+`dbCollector.extraEnv`.
+
+Outside Kubernetes (`go run`, tests), leave `HEARTBEAT_CREDENTIALS_DIR` unset
+and export the variables; exporting them in your host shell does not pass them
+into a pod.
 
 ## Environment variables
 
@@ -344,7 +364,8 @@ environment variable. Changing it requires restarting the collector
 | `HEARTBEAT_CONFIG_WATCH_INTERVAL` | unset (off) | Go duration; poll the config file for changes (the chart sets `5s`, `dbCollector.configWatchInterval`) |
 | `HEARTBEAT_STATE_DIR` | `/var/lib/heartbeat` | Writable directory for state that must survive a restart: the `outsystems_logs` watermarks. Created on the first save; the `sqlserver` kind never uses it. The chart mounts the `dbCollector.persistence` volume there |
 | `HEARTBEAT_DB_COLLECTOR_SQLSERVER_TRUST_SERVER_CERTIFICATE` | `false` | Skip TLS certificate verification. **Local dev container only**; applies to every target. When set, startup logs a warning and `GET /admin/config` lists it under `warnings` |
-| `HEARTBEAT_CREDENTIAL_<REF>` | — | Target credentials, see above |
+| `HEARTBEAT_CREDENTIALS_DIR` | unset | Directory with one `HEARTBEAT_CREDENTIAL_<REF>` file per credential, read on every connection; references without a file come from the environment. The chart sets it to the mounted `dbCollector.credentials.existingSecret`. See [credential resolution](#credential-resolution) |
+| `HEARTBEAT_CREDENTIAL_<REF>` | — | Target credentials, see [credential resolution](#credential-resolution) |
 | `GOMEMLIMIT` | unset | Go's soft memory limit, such as `200MiB`. The chart sets 80% of `dbCollector.resources.limits.memory` (`204MiB` for the default `256Mi`), so the garbage collector works harder before the pod is OOM-killed; `dbCollector.goMemLimit` overrides it, `off` disables it |
 
 ### Local development files

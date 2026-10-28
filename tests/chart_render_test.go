@@ -58,6 +58,10 @@ type chartProfile struct {
 	// stateEmptyDir means the collector's state is an emptyDir instead of the
 	// db-collector-state claim (dbCollector.persistence.enabled=false).
 	stateEmptyDir bool
+	// credentialsSecret is the Secret the collector must mount as its
+	// credentials directory (dbCollector.credentials.existingSecret); empty
+	// means none.
+	credentialsSecret string
 	// queueEmptyDir means the OTel Collector's export queue is an emptyDir
 	// instead of the otel-collector-queue claim
 	// (otelCollectorQueue.persistence.enabled=false).
@@ -183,11 +187,12 @@ var chartProfiles = []chartProfile{
 		backendPolicies: withPairs(kindBackendPolicies, nil, "otel-collector", "loki"),
 	},
 	{
-		name:            "kind-sqlserver-dev",
-		values:          []string{"kind.yaml", "sqlserver-dev.yaml"},
-		present:         []string{"StatefulSet/db-collector", "NetworkPolicy/db-collector"},
-		collectorPeers:  []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
-		collectorEgress: kindCollectorEgress,
+		name:              "kind-sqlserver-dev",
+		values:            []string{"kind.yaml", "sqlserver-dev.yaml"},
+		present:           []string{"StatefulSet/db-collector", "NetworkPolicy/db-collector"},
+		collectorPeers:    []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
+		collectorEgress:   kindCollectorEgress,
+		credentialsSecret: "heartbeat-sqlserver-dev-credentials",
 		notes: []string{
 			"- heartbeat-sqlserver-dev-credentials (a HEARTBEAT_CREDENTIAL_<REF> key per credential_ref)",
 			"get secret heartbeat-runtime heartbeat-sqlserver-dev-credentials grafana-admin\n",
@@ -196,12 +201,13 @@ var chartProfiles = []chartProfile{
 		notesAbsent: []string{"No SQL Server target"},
 	},
 	{
-		name:            "production-example",
-		values:          []string{"production.example.yaml"},
-		present:         []string{"StatefulSet/db-collector", "Ingress/grafana", "NetworkPolicy/db-collector"},
-		collectorPeers:  []string{bundledPrometheusPeer, "ip 10.100.0.0/16"},
-		collectorEgress: []string{"UDP/53 -> " + kubeDNSPeer, "TCP/53 -> " + kubeDNSPeer, "TCP/4318 -> " + otelCollectorPeer, "TCP/1433 -> ip 10.20.0.0/16"},
-		backendPolicies: defaultBackendPolicies,
+		name:              "production-example",
+		values:            []string{"production.example.yaml"},
+		present:           []string{"StatefulSet/db-collector", "Ingress/grafana", "NetworkPolicy/db-collector"},
+		collectorPeers:    []string{bundledPrometheusPeer, "ip 10.100.0.0/16"},
+		collectorEgress:   []string{"UDP/53 -> " + kubeDNSPeer, "TCP/53 -> " + kubeDNSPeer, "TCP/4318 -> " + otelCollectorPeer, "TCP/1433 -> ip 10.20.0.0/16"},
+		backendPolicies:   defaultBackendPolicies,
+		credentialsSecret: "heartbeat-sqlserver-credentials",
 	},
 	{
 		// A shared Prometheus in another namespace replaces the bundled one.
@@ -566,9 +572,10 @@ var chartProfiles = []chartProfile{
 			"  affinity: {}\n" +
 			"podSecurityContext: {runAsNonRoot: true, runAsUser: 65532, fsGroup: 65532, seccompProfile: {type: RuntimeDefault}, supplementalGroups: [1]}\n" +
 			"containerSecurityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}\n",
-		present:        []string{"StatefulSet/db-collector"},
-		collectorPeers: []string{bundledPrometheusPeer},
-		goMemLimit:     "409MiB",
+		present:           []string{"StatefulSet/db-collector"},
+		collectorPeers:    []string{bundledPrometheusPeer},
+		goMemLimit:        "409MiB",
+		credentialsSecret: "creds",
 	},
 	{
 		// Helm's global values still reach the subcharts, for example a
@@ -773,6 +780,7 @@ func TestChartProfiles(t *testing.T) {
 			checkCollectorEgress(t, objects, profile.collectorEgress)
 			checkBackendNetworkPolicies(t, objects, profile.backendPolicies)
 			checkCollectorState(t, objects, profile.stateEmptyDir)
+			checkCollectorCredentials(t, objects, profile.credentialsSecret)
 			checkCollectorPipelines(t, objects, profile.collectorReceivers)
 			checkLogDelivery(t, objects)
 			checkExportQueue(t, objects, profile.queueEmptyDir)
@@ -783,6 +791,93 @@ func TestChartProfiles(t *testing.T) {
 			checkConfigReloadAlert(t, objects, profile.configReloadAlertOff)
 			checkCollectorMissingAlert(t, objects)
 		})
+	}
+}
+
+// The credentials Secret must reach the collector as a directory of files
+// named by HEARTBEAT_CREDENTIALS_DIR, never as environment variables: the
+// collector reads the files on every connection, so a rotated key needs no
+// restart (ADR 0002). A subPath mount would never see the kubelet's updates.
+func checkCollectorCredentials(t *testing.T, objects map[string]object, secret string) {
+	t.Helper()
+	sts, ok := objects["StatefulSet/db-collector"]
+	if !ok {
+		return
+	}
+	var spec struct {
+		Template struct {
+			Spec struct {
+				Containers []struct {
+					Env []struct {
+						Name  string `yaml:"name"`
+						Value string `yaml:"value"`
+					} `yaml:"env"`
+					EnvFrom      []any `yaml:"envFrom"`
+					VolumeMounts []struct {
+						Name      string `yaml:"name"`
+						MountPath string `yaml:"mountPath"`
+						SubPath   string `yaml:"subPath"`
+						ReadOnly  bool   `yaml:"readOnly"`
+					} `yaml:"volumeMounts"`
+				} `yaml:"containers"`
+				Volumes []struct {
+					Name   string `yaml:"name"`
+					Secret *struct {
+						SecretName  string `yaml:"secretName"`
+						DefaultMode int    `yaml:"defaultMode"`
+						Optional    bool   `yaml:"optional"`
+					} `yaml:"secret"`
+				} `yaml:"volumes"`
+			} `yaml:"spec"`
+		} `yaml:"template"`
+	}
+	if err := sts.Spec.Decode(&spec); err != nil {
+		t.Fatal(err)
+	}
+	container := spec.Template.Spec.Containers[0]
+	if len(container.EnvFrom) > 0 {
+		t.Error("db-collector loads envFrom; credentials must come from the mounted directory")
+	}
+	var dir string
+	for _, env := range container.Env {
+		if env.Name == "HEARTBEAT_CREDENTIALS_DIR" {
+			dir = env.Value
+		}
+	}
+	var mounts []string
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == "credentials" {
+			mounts = append(mounts, mount.MountPath)
+			if mount.MountPath != dir || mount.SubPath != "" || !mount.ReadOnly {
+				t.Errorf("credentials mount at %q (subPath %q, readOnly %v); want a read-only directory at HEARTBEAT_CREDENTIALS_DIR (%q)",
+					mount.MountPath, mount.SubPath, mount.ReadOnly, dir)
+			}
+		}
+	}
+	var volumes []string
+	for _, volume := range spec.Template.Spec.Volumes {
+		if volume.Name != "credentials" {
+			continue
+		}
+		if volume.Secret == nil {
+			t.Error("credentials volume is not a Secret")
+			continue
+		}
+		volumes = append(volumes, volume.Secret.SecretName)
+		// Readable by the pod's fsGroup only, and a missing Secret holds the
+		// pod back like the envFrom it replaced.
+		if volume.Secret.DefaultMode != 0o440 || volume.Secret.Optional {
+			t.Errorf("credentials volume defaultMode %#o, optional %v; want 0440, not optional", volume.Secret.DefaultMode, volume.Secret.Optional)
+		}
+	}
+	if secret == "" {
+		if dir != "" || len(mounts) > 0 || len(volumes) > 0 {
+			t.Errorf("no credentials Secret, but HEARTBEAT_CREDENTIALS_DIR %q, mounts %v, volumes %v", dir, mounts, volumes)
+		}
+		return
+	}
+	if dir == "" || len(mounts) != 1 || !slices.Equal(volumes, []string{secret}) {
+		t.Errorf("credentials: HEARTBEAT_CREDENTIALS_DIR %q, mounts %v, Secret volumes %v; want one directory mount of %s", dir, mounts, volumes, secret)
 	}
 }
 
