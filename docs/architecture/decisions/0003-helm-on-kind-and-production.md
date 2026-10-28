@@ -153,16 +153,19 @@ Update 2026-10-28: the local loop's budget is agreed (last row above).
   `docker exec heartbeat-control-plane crictl stats --label io.kubernetes.pod.namespace=patientzero`
   shows their share. Load grows Prometheus's head block and Loki's
   ingesters until they flush, so an idle reading understates it; the
-  2.0 GiB above was measured idle, and the 4.1 chart
-  change that adds the API, PostgreSQL and Valkey is the first measured
-  this way. The budget plus the sandbox's 2 GiB cap is 4.5 GiB, which
-  leaves this project's Docker host (7.6 GiB in `docker info`) room for
-  image builds. A second cluster with its own SQL Server, such as
-  `make kind-e2e` next to the dev cluster, adds as much again: about
-  6.8 GiB in all with both SQL Servers idle (0.9 GiB each), 9 GiB with both
-  at their cap. It fits only while neither cluster runs a load flood; on
-  2026-10-22, before SQL Server's memory was capped, a load flood and a
-  second cluster each got it killed.
+  2.0 GiB above was measured idle, and the 4.1 chart change that adds the
+  API, PostgreSQL and Valkey is the first measured this way.
+- The budget gives up a second local cluster. A sandbox that has run for
+  hours holds about 2.2 GiB, so the budget plus the sandbox is 4.7 GiB,
+  which leaves the rest of this project's Docker host (7.6 GiB in
+  `docker info`) for image builds. A second cluster with its own fresh SQL
+  Server, such as `make kind-e2e`, adds about 3.4 GiB at the budget:
+  8.1 GiB in all, more than the host has. Today's 2.0 GiB profile still
+  fits, with about 0.7 GiB to spare. Run the second cluster's checks in CI,
+  or `docker restart heartbeat-sqlserver-dev` first, which frees the
+  sandbox's memory and keeps its databases. On 2026-10-22, before SQL
+  Server's memory was capped, a load flood and a second cluster each got it
+  killed.
 - Time is bounded by CI, not by this budget: the `kind end-to-end` job
   fails after 25 minutes. It grew with its checks, not its pods, so when it
   nears the timeout the levers are the checks: shorter `wait_for` windows,
