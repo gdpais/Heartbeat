@@ -75,6 +75,10 @@ jobs:
         run: |
           kubectl --context kind-heartbeat get pods,statefulsets,deployments,jobs -A -o wide || true
           kubectl --context kind-heartbeat -n heartbeat logs statefulset/db-collector --tail 200 || true
+          # Prometheus' service discovery: where it resolves names, and the
+          # lookups that failed (a failed DNS lookup keeps the old targets).
+          kubectl --context kind-heartbeat -n heartbeat exec deployment/prometheus -c prometheus-server -- cat /etc/resolv.conf || true
+          kubectl --context kind-heartbeat -n heartbeat logs deployment/prometheus -c prometheus-server | grep -i -e dns -e discover | tail -50 || true
           docker ps -a || true
       - name: Keep the journals and the summary
         if: always()
