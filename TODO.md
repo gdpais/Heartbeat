@@ -240,7 +240,7 @@ Replica ownership and outage testing are section 19. Design details:
 - [x] Make readiness reflect expected collector state and add deployment health probes and restart/recovery policies
 - [x] Validate safe reloads, including partial reconciliation failure (rollback) and replacement-poller startup failure (unit-tested)
 - [x] Bound every probe with a hard deadline so a probe the driver cannot cancel never stalls the collector cycle; keep at most one abandoned call per target and bound dead connections with a driver socket timeout
-- [ ] Per-probe failure isolation: a failing probe fails only itself; today it fails its whole target for that cycle
+- [x] Per-probe failure isolation: a failing probe fails only itself (it failed its whole target for that cycle, and its backoff stopped every probe of the target). While other probes of the target succeed, the target is `degraded`, stays up and keeps collecting, and the failing probe backs off on its own; the target fails and backs off as a whole only when every probe that ran failed. `heartbeat_collector_probe_up` per probe, `targets_degraded` and each failing probe in `GET /admin/config`
 - [x] Cap the rows a probe reads (`max_rows`, default 10,000) and fail the probe past the cap, so a `query_template` that returns millions of rows cannot run the pod out of memory; `outsystems_logs` reads are already bounded by `batch_limit`
 - [ ] A global series budget per collector with an overflow counter: the per-label caps on applications, modules and operations multiply, so the worst case has no bound
 
@@ -272,7 +272,7 @@ Remaining work, in order: the first green nightly run of the scenarios
 workflow [16.5] → this stage's validation → the release [0.5]. The signal gaps
 the PatientZero scenarios found are closed [3.3, 9.1], and the workflow is on
 `master` since 2026-10-27. Not part of this exit, and done alongside stage 3 before
-the first production deploy [18]: per-probe failure isolation and a series
+the first production deploy [18]: a series
 budget [2.6], collector egress and exposure [2.7], unknown keys in component
 values [0.4], Alertmanager's rollout policy [9.4] and PatientZero's hardening
 [16.5].

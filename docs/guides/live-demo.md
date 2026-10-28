@@ -152,7 +152,7 @@ Recording rules and alerts:
 
 ```bash
 hb_prom 'heartbeat:sqlserver_sessions:sum'
-hb_prom 'heartbeat:sqlserver_blocked_requests:sum'   # 0, not empty: target is up and nothing is blocked
+hb_prom 'heartbeat:sqlserver_blocked_requests:sum'   # 0, not empty: the blocking probe is up and nothing is blocked
 hb_prom 'topk(5, heartbeat:sqlserver_wait_seconds:rate5m)'
 curl -s localhost:9090/api/v1/alerts | jq -c '.data.alerts[] | {alertname: .labels.alertname, state}'
 ```
@@ -319,7 +319,7 @@ until [ -z "$(hb_admin -r .last_reload_err)" ]; do sleep 3; done
 A valid change reloads without a restart: see the
 [walkthrough](kind-walkthrough.md#5-change-the-config-without-a-restart).
 
-### One probe fails, the whole target fails
+### One probe fails, only that probe
 
 A `query_template` override that divides by zero breaks only `blocking`:
 
@@ -329,19 +329,20 @@ EXTRA_VALUES=.tmp/demo-broken-probe.yaml make kind-deploy
 sleep 90
 for i in 1 2 3 4 5 6; do
   printf '%s %s exported=%s live=%s\n' "$(date +%T)" \
-    "$(hb_admin -c '.readiness.collectors[0].targets[0] | {state, consecutive_failures, has_error: (.error != null)}')" \
+    "$(hb_admin -c '.readiness.collectors[0].targets[0] | {state, probes: [.probes[]? | {name, state, consecutive_failures}]}')" \
     "$(hb_metrics batch_requests_total | awk '{print $2}')" "$(hb_probe throughput | sed -n 3p | cut -d'|' -f1)"
   sleep 20
 done
 ```
 
-`heartbeat_collector_target_up` is 0, although eight of the nine probes
-work. Watch the two numbers: in a `failed` cycle the healthy probes still
-run, so `exported` follows `live`; while the target is in `backoff` none of
-its probes run and their series are cleared, so `exported` is empty rather
-than a frozen value. `has_error` stays true through the backoff, because
-`/admin/config` keeps the last failed cycle's error. Restore with
-`make kind-deploy` and `hb_reload`.
+The target is `degraded`: `heartbeat_collector_target_up` stays 1 and the
+eight working probes keep collecting, so `exported` follows `live` in every
+cycle. Only `blocking` fails: `heartbeat_collector_probe_up{probe="blocking"}`
+is 0, its series are gone, and `/admin/config` lists it under the target's
+`probes`, `failed` on the cycles it runs and `backoff` while it waits out its
+own backoff, with its consecutive failures growing.
+`heartbeat:sqlserver_blocked_requests:sum` and the Blocked Requests panel go
+empty (unknown), not 0. Restore with `make kind-deploy` and `hb_reload`.
 
 ### The collector login gains sysadmin
 

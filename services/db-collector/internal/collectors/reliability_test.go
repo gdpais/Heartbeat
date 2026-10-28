@@ -508,7 +508,9 @@ func TestProbePanicIsRecoveredAndIsolated(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "panicked: nil map write") {
 		t.Fatalf("expected panic error, got %v", err)
 	}
-	if result.Targets[0].State != TargetFailed || result.Targets[1].State != TargetOK {
+	// The panic fails its probe only: the target's other probe ran.
+	if result.Targets[0].State != TargetDegraded || result.Targets[1].State != TargetOK ||
+		len(result.Targets[0].Probes) != 1 || result.Targets[0].Probes[0].Probe != "waits" {
 		t.Fatalf("unexpected results: %+v", result.Targets)
 	}
 	if _, ok := exporter.Value(testMetric, sampleLabels("boom", "sessions")); !ok {
@@ -755,7 +757,12 @@ func TestBlockedProbeIsNotAFailure(t *testing.T) {
 	failing = true
 	clock.Set(t0.Add(30 * time.Second))
 	result := runner.runCycle(context.Background(), collector, tracker)
-	if target := result.Targets[0]; target.State != TargetFailed || !errors.Is(target.Err, errDivideByZero) || errors.Is(target.Err, ErrBlocked) {
-		t.Fatalf("target %+v, want failed by the general probe only", target)
+	// The blocked log type ran, so the general one fails only itself.
+	if target := result.Targets[0]; target.State != TargetDegraded || !errors.Is(target.Err, errDivideByZero) ||
+		len(target.Probes) != 1 || target.Probes[0].Probe != "general" || target.Probes[0].State != ProbeFailed {
+		t.Fatalf("target %+v, want degraded by the general probe only", target)
+	}
+	if err := cycleError(result); !errors.Is(err, errDivideByZero) || errors.Is(err, ErrBlocked) {
+		t.Fatalf("cycle error %v, want the general probe's failure only", err)
 	}
 }

@@ -83,7 +83,10 @@ type backoffScenario struct {
 	tracker  *targetTracker
 	clock    *fakeClock
 	t0       time.Time
-	healthy  bool
+	// healthy false fails every probe, as an unreachable database does, or
+	// only broken when it is set.
+	healthy bool
+	broken  string
 }
 
 var errDivideByZero = errors.New("mssql: Divide by zero error encountered")
@@ -97,7 +100,7 @@ func newBackoffScenario(t *testing.T) *backoffScenario {
 		t0:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	executor := funcExecutor(func(_ context.Context, item collectormetadata.ScheduledProbe) ([]collectorexport.Sample, []collectormetadata.Evidence, error) {
-		if item.Definition.Name == "blocking" && !s.healthy {
+		if !s.healthy && (s.broken == "" || item.Definition.Name == s.broken) {
 			return nil, nil, errDivideByZero
 		}
 		return sampleFor(item), nil, nil
@@ -132,11 +135,14 @@ func (s *backoffScenario) healthyProbeExported() bool {
 // frozen for up to the backoff cap.  Its health series stay.
 func TestBackoffClearsSeriesOfHealthyProbes(t *testing.T) {
 	s := newBackoffScenario(t)
+	s.healthy = true
+	s.cycle(-10*time.Second, TargetOK)
+	if !s.healthyProbeExported() {
+		t.Fatalf("expected the probe's sample in a successful cycle")
+	}
+	s.healthy = false
 	s.cycle(0, TargetFailed)
 	s.cycle(10*time.Second, TargetFailed)
-	if !s.healthyProbeExported() {
-		t.Fatalf("expected the healthy probe's fresh sample in a failed cycle")
-	}
 
 	s.cycle(15*time.Second, TargetBackoff)
 	if s.healthyProbeExported() {
@@ -361,5 +367,129 @@ func TestCatalogProbesDecodeToBaseUnitsAndTypes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// probeUp returns the probe_up value of a probe of core-db.
+func (s *backoffScenario) probeUp(probe string) (float64, bool) {
+	labels := healthLabels("core-db")
+	labels["probe"] = probe
+	return s.exporter.Value(MetricProbeUp, labels)
+}
+
+// A probe that fails while its target's other probes succeed fails only
+// itself: the target stays up and keeps collecting, and the probe backs off
+// on its own, with its own failure count, until it recovers.
+func TestFailingProbeBacksOffAlone(t *testing.T) {
+	s := newBackoffScenario(t)
+	logger, logs := newCapturedLogger()
+	s.runner = s.runner.WithLogger(logger)
+	s.broken = "blocking"
+	for i, offset := range []time.Duration{0, 10 * time.Second} {
+		degraded := s.cycle(offset, TargetDegraded)
+		if len(degraded.Probes) != 1 || degraded.Probes[0].Probe != "blocking" || degraded.Probes[0].State != ProbeFailed ||
+			degraded.Probes[0].ConsecutiveFailures != i+1 || !errors.Is(degraded.Probes[0].Err, errDivideByZero) {
+			t.Fatalf("at %s: probes %+v, want blocking failed %d times", offset, degraded.Probes, i+1)
+		}
+		if degraded.ConsecutiveFailures != 0 || !degraded.NextAttempt.IsZero() {
+			t.Fatalf("at %s: the target backs off: %+v", offset, degraded)
+		}
+		if !degraded.LastSuccess.Equal(s.t0.Add(offset)) {
+			t.Fatalf("at %s: last success %s, want this cycle's", offset, degraded.LastSuccess)
+		}
+	}
+	// One log line per failure, with the probe's own failure count.
+	failures := logs.records(t, "probe failed")
+	for i, record := range failures {
+		if record["probe"] != "blocking" || record["consecutive_failures"] != float64(i+1) || record["target_state"] != string(TargetDegraded) {
+			t.Fatalf("probe failure log %d: %v", i, record)
+		}
+	}
+	if len(failures) != 2 {
+		t.Fatalf("got %d probe failure logs, want 2", len(failures))
+	}
+	if !s.healthyProbeExported() {
+		t.Fatal("the healthy probe stopped exporting")
+	}
+	if up, _ := s.exporter.Value(MetricTargetUp, healthLabels("core-db")); up != 1 {
+		t.Fatalf("target_up = %v, want 1", up)
+	}
+	if up, _ := s.probeUp("throughput"); up != 1 {
+		t.Fatalf("probe_up{throughput} = %v, want 1", up)
+	}
+	if up, ok := s.probeUp("blocking"); !ok || up != 0 {
+		t.Fatalf("probe_up{blocking} = %v (present %v), want 0", up, ok)
+	}
+
+	// Two failures: blocking waits 10s from the cycle at 10s, the healthy
+	// probe runs.
+	s.clock.Set(s.t0.Add(15 * time.Second))
+	collector := testCollector(10*time.Second, testTarget("core-db", "throughput", "blocking"))
+	var ran []string
+	s.runner.executor = funcExecutor(func(_ context.Context, item collectormetadata.ScheduledProbe) ([]collectorexport.Sample, []collectormetadata.Evidence, error) {
+		ran = append(ran, item.Definition.Name)
+		return sampleFor(item), nil, nil
+	})
+	result := s.runner.runCycle(context.Background(), collector, s.tracker)
+	waiting := result.Targets[0]
+	if waiting.State != TargetDegraded || len(waiting.Probes) != 1 || waiting.Probes[0].State != ProbeBackoff ||
+		!waiting.Probes[0].NextAttempt.Equal(s.t0.Add(20*time.Second)) || !errors.Is(waiting.Probes[0].Err, errDivideByZero) {
+		t.Fatalf("at 15s: %+v, want blocking backing off until 20s with its last error", waiting)
+	}
+	if len(ran) != 1 || ran[0] != "throughput" {
+		t.Fatalf("at 15s ran %v, want only throughput", ran)
+	}
+	if _, ok := s.exporter.Value(testMetric, sampleLabels("core-db", "blocking")); ok {
+		t.Fatal("at 15s blocking exports while it backs off")
+	}
+
+	// At 20s it runs again, and recovers.
+	s.clock.Set(s.t0.Add(20 * time.Second))
+	ran = nil
+	if result := s.runner.runCycle(context.Background(), collector, s.tracker); result.Targets[0].State != TargetOK || len(ran) != 2 {
+		t.Fatalf("at 20s: %+v ran %v, want ok with both probes", result.Targets[0], ran)
+	}
+	if up, _ := s.probeUp("blocking"); up != 1 {
+		t.Fatalf("probe_up{blocking} = %v after recovery, want 1", up)
+	}
+}
+
+// A target is failed, and backs off as a whole, only when every probe that
+// ran failed; its probes' own failures are then forgotten. When every probe
+// backs off on its own, they all run.
+func TestTargetFailsOnlyWhenEveryProbeFails(t *testing.T) {
+	s := newBackoffScenario(t)
+	s.broken = "blocking"
+	s.cycle(0, TargetDegraded)
+	s.cycle(10*time.Second, TargetDegraded) // blocking waits until 20s
+	s.broken = ""                           // the database goes away
+	failed := s.cycle(15*time.Second, TargetFailed)
+	if failed.ConsecutiveFailures != 1 {
+		t.Fatalf("target %+v, want its first failure", failed)
+	}
+	if _, waiting := s.tracker.probeWaiting("core-db", "blocking", s.t0.Add(15*time.Second)); waiting {
+		t.Fatal("the probe's own backoff outlived its target's failure")
+	}
+	if up, _ := s.probeUp("throughput"); up != 0 {
+		t.Fatalf("probe_up{throughput} = %v while its target failed, want 0", up)
+	}
+
+	// Both probes back off on their own: both run.
+	s.healthy = true
+	collector := testCollector(10*time.Second, testTarget("core-db", "throughput", "blocking"))
+	start := s.t0.Add(time.Minute)
+	for _, probe := range []string{"throughput", "blocking"} {
+		for range 3 {
+			s.tracker.probeFail("core-db", probe, start, 10*time.Second, errDivideByZero)
+		}
+	}
+	s.clock.Set(start)
+	var ran []string
+	s.runner.executor = funcExecutor(func(_ context.Context, item collectormetadata.ScheduledProbe) ([]collectorexport.Sample, []collectormetadata.Evidence, error) {
+		ran = append(ran, item.Definition.Name)
+		return sampleFor(item), nil, nil
+	})
+	if result := s.runner.runCycle(context.Background(), collector, s.tracker); result.Targets[0].State != TargetOK || len(ran) != 2 {
+		t.Fatalf("every probe backing off: %+v ran %v, want both run and ok", result.Targets[0], ran)
 	}
 }
