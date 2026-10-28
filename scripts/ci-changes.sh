@@ -43,6 +43,12 @@ while IFS= read -r path; do
 	# PatientZero's chart: make chart-check lints and renders it. Only
 	# make patientzero-up installs it, so no other job reads it.
 	tools/patientzero/chart/*) chart=true ;;
+	# Its load Job's pod labels are the peer the chart's NetworkPolicy
+	# admits; make chart-check checks that they match.
+	tools/patientzero/scripts/patientzero.sh)
+		db_collector=true
+		chart=true
+		;;
 	# PatientZero (ADR 0010), its own module: the always-run job tests it and
 	# make test-sqlserver runs its live test. No other job builds or deploys
 	# it.

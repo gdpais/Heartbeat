@@ -298,10 +298,13 @@ only does what needs its access.
 
 ## Admin endpoints
 
-PatientZero serves the runner on its own port (8080), under `/admin/`,
-behind a bearer token: `Authorization: Bearer <token>`, compared in constant
-time with `PATIENTZERO_ADMIN_TOKEN`, as the db-collector's admin endpoints
-do. The chart reads the token from a Secret (`admin.existingSecret`,
+PatientZero serves the runner on its own port (8080), under `/admin/`.
+Inside the cluster only the load Job's pods reach that port; the runner's
+callers come through `kubectl port-forward`, which NetworkPolicy does not
+filter ([who can reach it](../README.md#who-can-reach-it)). The admin
+endpoints are behind a bearer token: `Authorization: Bearer <token>`,
+compared in constant time with `PATIENTZERO_ADMIN_TOKEN`, as the
+db-collector's admin endpoints do. The chart reads the token from a Secret (`admin.existingSecret`,
 default `patientzero-admin`, key `admin-token`); `make patientzero-up`
 creates it once with a random token. Without a token every admin request
 gets 401. An unauthenticated request gets 401 before routing, so it learns

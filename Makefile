@@ -192,7 +192,7 @@ chart-check:
 	$(HELM) lint --strict $(CHART_DIR) -f infra/helm/values/kind.yaml
 	HELM=$(HELM) GOCACHE=$$(pwd)/.tmp/gocache go test -tags=chart -count=1 -run TestChartProfiles ./tests
 	$(HELM) lint --strict $(PATIENTZERO_CHART_DIR) $(PATIENTZERO_CHART_CHECK_VALUES)
-	$(HELM) template patientzero $(PATIENTZERO_CHART_DIR) $(PATIENTZERO_CHART_CHECK_VALUES) >/dev/null
+	HELM=$(HELM) GOCACHE=$$(pwd)/.tmp/gocache go test -tags=chart -count=1 -run TestPatientZeroChart ./tests
 
 rules-check:
 	docker run --rm -v "$$(pwd)/infra/helm/heartbeat/files/prometheus/rules:/rules:ro" --entrypoint promtool $(PROMETHEUS_IMAGE) check rules /rules/heartbeat.rules.yml /rules/heartbeat-config-reload.rules.yml /rules/heartbeat-collector-missing.rules.yml /rules/generated/heartbeat-rendered.rules.yml

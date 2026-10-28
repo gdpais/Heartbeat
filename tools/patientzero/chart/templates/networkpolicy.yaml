@@ -1,0 +1,44 @@
+# PatientZero takes the caller's user, session and client IP from request
+# headers, so anything that reaches port 8080 can write forged rows into its
+# logging database and, through the collector, into Loki. Every pod in the
+# namespace denies ingress, and PatientZero admits port 8080 only from the k6
+# load Job's pods: make patientzero-load, and the load make
+# patientzero-scenario starts (tools/patientzero/scripts/patientzero.sh gives
+# them these labels; tests/chart_patientzero_test.go checks that they match).
+# Kubelet probes and `kubectl port-forward`, how make patientzero-scenario
+# reaches the admin endpoints, are not subject to NetworkPolicy. Needs a CNI
+# that enforces NetworkPolicy (kind's kindnet); without one it has no effect.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "patientzero.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: patientzero
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "patientzero.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "patientzero.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 8080
+      from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: patientzero-load

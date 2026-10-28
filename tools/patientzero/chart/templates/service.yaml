@@ -6,6 +6,9 @@ metadata:
   labels:
     {{- include "patientzero.labels" . | nindent 4 }}
 spec:
+  # Never a NodePort or LoadBalancer: whoever reaches PatientZero chooses the
+  # user, session and client IP of the rows it writes (networkpolicy.yaml).
+  type: ClusterIP
   selector:
     {{- include "patientzero.selectorLabels" . | nindent 4 }}
   ports:
