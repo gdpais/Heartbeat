@@ -93,9 +93,9 @@ Runtime collection is configured in YAML and needs no API or UI.
   least-privilege login
 
 Not in this phase: API-driven probe assignments [2.5] join in phase 3, probe
-versioning with them [4.5], and evidence publication in phase 7 [12.4]. One
-failing probe still fails its whole target for that cycle; per-probe failure
-isolation is a follow-up.
+versioning with them [4.5], and evidence publication in phase 7 [12.4]. A
+failing probe fails only itself since 2026-10-27: its target stays up and
+keeps collecting while the probe backs off on its own [2.6].
 
 ## Phase 2 — OutSystems ingest
 
@@ -153,7 +153,7 @@ Left before the exit, in order:
 3. The release [0.5]
 
 Not in the exit, and done alongside phase 3 before the first production
-deploy: per-probe failure isolation and a series budget [2.6], collector
+deploy: a series budget [2.6], collector
 egress and exposure [2.7], unknown keys in component values [0.4],
 Alertmanager's rollout policy [9.4] and PatientZero's hardening [16.5].
 

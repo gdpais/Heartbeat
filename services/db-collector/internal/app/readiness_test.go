@@ -174,3 +174,35 @@ func TestEvaluateReadinessReportsBlockedTargets(t *testing.T) {
 		t.Fatalf("target %+v", target)
 	}
 }
+
+// A target whose probes partly fail is reported as degraded, with each failing
+// probe and, on the admin endpoints only, its error; the pod stays ready.
+func TestEvaluateReadinessReportsDegradedTargets(t *testing.T) {
+	now := time.Now()
+	next := now.Add(20 * time.Second)
+	state := collectorState{
+		Collector: collectorConfig("sql-a", "prod"), Phase: phaseRunning, Started: now, HasCycle: true,
+		LastCycle: collectors.CycleResult{CollectorID: "sql-a", Finished: now, Targets: []collectors.TargetResult{
+			{Target: "core-db", State: collectors.TargetDegraded, Err: errors.New("probe blocking: permission denied"),
+				Probes: []collectors.ProbeResult{{Probe: "blocking", State: collectors.ProbeBackoff, Err: errors.New("probe blocking: permission denied"), ConsecutiveFailures: 3, NextAttempt: next}}},
+		}},
+	}
+	for _, withErrors := range []bool{false, true} {
+		report, _ := evaluateReadiness(readinessInput{initialized: true, warm: true, collectors: []collectorState{state}, grace: time.Second, now: now, withErrors: withErrors})
+		if report.Status != statusReady {
+			t.Fatalf("status %s (%v), want ready", report.Status, report.Reasons)
+		}
+		c := report.Collectors[0]
+		if c.TargetsDegraded != 1 || c.TargetsFailed != 0 || c.TargetsOK != 0 {
+			t.Fatalf("counts %+v", c)
+		}
+		probes := c.Targets[0].Probes
+		if c.Targets[0].State != "degraded" || len(probes) != 1 || probes[0].Name != "blocking" || probes[0].State != "backoff" ||
+			probes[0].ConsecutiveFailures != 3 || probes[0].NextAttempt == nil || !probes[0].NextAttempt.Equal(next) {
+			t.Fatalf("target %+v", c.Targets[0])
+		}
+		if (probes[0].Error != "") != withErrors {
+			t.Fatalf("withErrors=%t: probe error text %q", withErrors, probes[0].Error)
+		}
+	}
+}

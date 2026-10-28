@@ -14,9 +14,10 @@ groups:
       - record: heartbeat:sqlserver_wait_seconds:rate5m
         expr: sum by (environment, target, wait_type) (rate(heartbeat_sqlserver_wait_seconds_total[5m]))
       # The blocking probe exports nothing while nothing is blocked; record 0
-      # for targets whose last cycle succeeded so absence means "unknown".
+      # for targets whose blocking probe succeeded in its last execution so
+      # absence means "unknown", also when only that probe fails.
       - record: heartbeat:sqlserver_blocked_requests:sum
-        expr: sum by (environment, target) (heartbeat_sqlserver_blocked_requests) or max by (environment, target) (heartbeat_collector_target_up == 1) * 0
+        expr: sum by (environment, target) (heartbeat_sqlserver_blocked_requests) or max by (environment, target) (heartbeat_collector_probe_up{probe="blocking"} == 1) * 0
       - record: heartbeat:sqlserver_sessions:sum
         expr: sum by (environment, target) (heartbeat_sqlserver_sessions)
 

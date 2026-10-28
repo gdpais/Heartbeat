@@ -33,12 +33,12 @@ tests:
           - labels: 'heartbeat:sqlserver_wait_seconds:rate5m{environment="dev",target="db1",wait_type="LCK_M_S"}'
             value: 1
 
-  - name: Blocked requests are 0 when idle, counted when blocked, absent when unreachable
+  - name: Blocked requests are 0 when idle, counted when blocked, absent when unreachable or the blocking probe fails
     interval: 1m
     input_series:
-      - series: 'heartbeat_collector_target_up{collector="c",environment="dev",target="idle"}'
+      - series: 'heartbeat_collector_probe_up{collector="c",environment="dev",target="idle",probe="blocking"}'
         values: '1x5'
-      - series: 'heartbeat_collector_target_up{collector="c",environment="dev",target="busy"}'
+      - series: 'heartbeat_collector_probe_up{collector="c",environment="dev",target="busy",probe="blocking"}'
         values: '1x5'
       - series: 'heartbeat_sqlserver_blocked_requests{collector="c",environment="dev",target="busy",blocking_session_id="61"}'
         values: '2x5'
@@ -46,6 +46,15 @@ tests:
         values: '1x5'
       - series: 'heartbeat_collector_target_up{collector="c",environment="dev",target="down"}'
         values: '0x5'
+      - series: 'heartbeat_collector_probe_up{collector="c",environment="dev",target="down",probe="blocking"}'
+        values: '0x5'
+      # Degraded: the target is up, but its blocking probe fails.
+      - series: 'heartbeat_collector_target_up{collector="c",environment="dev",target="broken"}'
+        values: '1x5'
+      - series: 'heartbeat_collector_probe_up{collector="c",environment="dev",target="broken",probe="blocking"}'
+        values: '0x5'
+      - series: 'heartbeat_collector_probe_up{collector="c",environment="dev",target="broken",probe="throughput"}'
+        values: '1x5'
     promql_expr_test:
       - expr: heartbeat:sqlserver_blocked_requests:sum
         eval_time: 5m
