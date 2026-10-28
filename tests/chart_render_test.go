@@ -477,9 +477,10 @@ var chartProfiles = []chartProfile{
 			"  affinity: {}\n" +
 			"podSecurityContext: {runAsNonRoot: true, runAsUser: 65532, fsGroup: 65532, seccompProfile: {type: RuntimeDefault}, supplementalGroups: [1]}\n" +
 			"containerSecurityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}\n",
-		present:        []string{"StatefulSet/db-collector"},
-		collectorPeers: []string{bundledPrometheusPeer},
-		goMemLimit:     "409MiB",
+		present:           []string{"StatefulSet/db-collector"},
+		collectorPeers:    []string{bundledPrometheusPeer},
+		goMemLimit:        "409MiB",
+		credentialsSecret: "creds",
 	},
 	{
 		// Helm's global values still reach the subcharts, for example a

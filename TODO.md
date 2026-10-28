@@ -361,8 +361,9 @@ inventory [4.3] → telemetry sources [4.4] → database targets and probe
 definitions [4.5] → probe assignments, rendered to `managedCollectors` and
 applied on kind [4.5, 2.5] → deep links [4.9] → this stage's validation.
 Alongside, needing no API: the `managedCollectors` chart key [2.5], after the
-[0.4], [2.6] and [2.7] work that touches the same chart files. ADR 0014's pull request
-output waits for `heartbeat-deploy` [18]; until then the output is `none`.
+[0.4], [2.6] and [2.7] work that touches the same chart files. ADR 0014's pull
+request output waits for `heartbeat-deploy` [18]; until then the output is
+`none`.
 
 Investigations, alerting and reporting [4.6–4.8] and the job/result
 contracts are built later, with their workers [6, 7, 12–14]: nothing consumes

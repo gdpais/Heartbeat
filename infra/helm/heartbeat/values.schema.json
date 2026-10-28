@@ -57,7 +57,7 @@
         "credentials": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Secret whose keys are HEARTBEAT_CREDENTIAL_<REF> variables; empty mounts none.",
+          "description": "Secret with a HEARTBEAT_CREDENTIAL_<REF> key per credential_ref, mounted as files the collector reads on every connection; empty mounts none.",
           "properties": {
             "existingSecret": {
               "type": "string"
