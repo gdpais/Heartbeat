@@ -79,6 +79,13 @@ out a new pod and a stale image cannot hide behind a reused tag. Every deploy
 rebuilds first when the Go sources changed since the last build, for example
 after a pull ([Images](kubernetes-local.md#images)).
 
+The loop has a budget: the full profile holds at most 2.5 GiB in the kind
+node (about 2.0 GiB today; check with `docker stats --no-stream
+heartbeat-control-plane` a few minutes after a deploy), and CI's
+`kind end-to-end` job finishes within 20 minutes (14–18 today). A change
+that would exceed either is trimmed first, or asks for a new budget
+([ADR 0003](../architecture/decisions/0003-helm-on-kind-and-production.md)).
+
 ## SQL Server sandbox
 
 A throwaway SQL Server runs as a Docker container on the kind network,

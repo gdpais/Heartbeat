@@ -141,7 +141,16 @@ host; the e2e script prints them on every run.
 | Singleton update drains the old pod first; gap and SQL concurrency measured | e2e samples running pods and SQL Server sessions every second during a rollout | Never more than 1 collector or 2 sessions; collection gap 12s and 31s in two runs at a 20s scrape interval |
 | Stateful restart keeps persistent data | e2e replaces the Prometheus and Alertmanager pods | TSDB and silences kept |
 | Concurrent CI runs isolated, cannot delete developer resources | e2e uses its own cluster name, kubeconfig and container names, and deletes only those | By construction |
-| Daily loop meets an agreed budget | Measured, budget not yet agreed | Full profile about 2.0 GiB RAM in the kind node (SQL Server sandbox +0.9 GiB); redeploy under a minute; `minimal` profile for smaller machines |
+| Daily loop meets an agreed budget | Budget agreed 2026-10-28: the full profile holds at most 2.5 GiB RAM in the kind node, the SQL Server sandbox not included; CI's `kind end-to-end` job finishes within 20 minutes | Full profile about 2.0 GiB RAM in the kind node (SQL Server sandbox +0.9 GiB, capped at 2 GiB); `kind end-to-end` 14–18 minutes in CI in October 2026; redeploy under a minute; `minimal` profile for smaller machines |
+
+Update 2026-10-28: the local loop's budget is agreed (last row above). The
+memory figure is the kind node container's usage in `docker stats`, a few
+minutes after `make kind-deploy` with no load running; the time is the CI
+job's duration. 2.5 GiB leaves room for the API, PostgreSQL and Valkey
+(phase 3) and keeps a second cluster possible on a 7.6 GiB Docker host next
+to the 2 GiB SQL Server sandbox. A change that would exceed either figure is
+trimmed first (smaller requests, or off in the `kind` profile); otherwise it
+asks for a new budget instead of growing past this one.
 
 Not covered by kind (risk 4): cloud storage classes, ingress and TLS, IAM and
 External Secrets, ECR pulls, and SQL connectivity from the EKS VPC.
