@@ -224,6 +224,10 @@ loki:
           index:
             prefix: index_
             period: 24h
+    # The chart deletes logs after 30 days (limits_config.retention_period);
+    # its delete requests live with the chunks.
+    compactor:
+      delete_request_store: s3
   singleBinary:
     persistence:
       storageClass: gp3

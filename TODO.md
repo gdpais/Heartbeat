@@ -614,7 +614,8 @@ Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 - [x] Keep high-cardinality investigation fields in log body/payload
 - [x] Keep user, session and request IDs and client IP as structured metadata: the Collector no longer deletes them; Loki indexes only service.name, service.namespace, deployment.environment.name and outsystems.log_type
 - [x] Decide how user IDs, session IDs and client IPs are kept in Loki: raw, with access to Loki and Grafana restricted [9.6] ([ADR 0012](docs/architecture/decisions/0012-personal-data-in-telemetry.md))
-- [ ] Compliance sign-off on raw identifiers, Loki retention and Grafana access before the first production deploy [18] ([ADR 0012](docs/architecture/decisions/0012-personal-data-in-telemetry.md))
+- [x] Loki deletes logs after 30 days by default (`loki.loki.limits_config.retention_period`, compactor retention with its delete requests in the chunks' store); `make chart-check` checks it in every profile ([application observability](docs/architecture/application-observability.md))
+- [ ] Compliance sign-off on raw identifiers, Loki retention (30 days by default) and Grafana access before the first production deploy [18] ([ADR 0012](docs/architecture/decisions/0012-personal-data-in-telemetry.md))
 
 ### 9.3 Grafana
 - [x] Provision datasources as code
