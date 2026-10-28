@@ -234,6 +234,8 @@ Current behavior:
   credential is used by the next connection without a restart, and falls
   back to an environment variable of the same name
   ([resolution rules](../../docs/reference/configuration.md#credential-resolution)).
+  The resolvers live in [`internal/credentials`](../../internal/credentials/credentials.go),
+  which the API uses too.
   A changed credential gets a new pool; the old one is closed once idle
 - the DSN enables TLS by default
 - each pool is verified when it is created with one query that also checks

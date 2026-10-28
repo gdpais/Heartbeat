@@ -1,17 +1,25 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"heartbeat/apps/api/internal/httpapi"
+	"heartbeat/apps/api/internal/redis"
+	"heartbeat/apps/api/internal/store"
 )
+
+// testSecret is a password the logs must never show.
+const testSecret = "s3cr3t-P@ssw0rd"
 
 // testTimeouts are the timeouts of run in tests: long enough for a slow CI
 // runner, short enough that a hang fails fast.
@@ -262,5 +270,132 @@ func eventually(t *testing.T, cond func() bool, msg string) {
 			t.Fatal(msg)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for a logger and a test to share.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// closedAddr returns a loopback address nothing listens on.
+func closedAddr(t *testing.T) *net.TCPAddr {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().(*net.TCPAddr)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
+}
+
+// With PostgreSQL and Redis down, the API still starts and stays alive; it
+// is not ready, and the log says why for each dependency. On shutdown it
+// closes their connections after the HTTP server has stopped.
+func TestRunWithDependenciesDown(t *testing.T) {
+	var logs syncBuffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	// PostgreSQL's credential is missing; Redis has one but is not there.
+	t.Setenv("HEARTBEAT_CREDENTIAL_SECRET_API_POSTGRES", "")
+	t.Setenv("HEARTBEAT_CREDENTIAL_SECRET_API_REDIS", "default:"+testSecret)
+	cfg := Config{
+		Postgres: store.Config{
+			Host: "127.0.0.1", Port: closedAddr(t).Port, Database: "heartbeat",
+			SSLMode: "disable", CredentialRef: "secret/api-postgres",
+		},
+		Redis:          redis.Config{Addr: closedAddr(t).String(), CredentialRef: "secret/api-redis"},
+		CredentialsDir: t.TempDir(),
+	}
+	checks, closeDeps, err := connect(cfg, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checks) != 2 || checks[0].Name != checkPostgreSQL || checks[1].Name != checkRedis {
+		t.Fatalf("checks = %v, want postgresql and redis", checks)
+	}
+	var f *runFixture
+	closed := make(chan bool, 1)
+	f = startRun(t, checks, func(deps *runDeps) {
+		deps.logger = logger
+		deps.closeDeps = func() {
+			// The HTTP server is already closed.
+			conn, err := net.DialTimeout("tcp", strings.TrimPrefix(f.url, "http://"), time.Second)
+			if err == nil {
+				_ = conn.Close()
+			}
+			closeDeps()
+			closed <- err != nil
+		}
+	})
+
+	if code, body := get(t, f.url+"/readyz"); code != http.StatusServiceUnavailable || strings.TrimSpace(body) != `{"status":"not_ready"}` {
+		t.Fatalf("GET /readyz = %d %s, want 503 not_ready", code, body)
+	}
+	if code, _ := get(t, f.url+"/healthz"); code != http.StatusOK {
+		t.Fatalf("GET /healthz = %d with both dependencies down, want 200", code)
+	}
+	for _, want := range []string{
+		`"msg":"readiness changed"`,
+		`postgresql: missing credential for ref secret/api-postgres`,
+		`redis: `,
+		`connection refused`,
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs lack %q:\n%s", want, logs.String())
+		}
+	}
+	if strings.Contains(logs.String(), testSecret) {
+		t.Fatal("logs contain the Redis password")
+	}
+
+	if _, err := f.stop(t); err != nil {
+		t.Fatalf("run returned %v after a clean shutdown", err)
+	}
+	select {
+	case afterHTTP := <-closed:
+		if !afterHTTP {
+			t.Fatal("dependencies closed while the HTTP server still accepted connections")
+		}
+	default:
+		t.Fatal("run returned without closing the PostgreSQL and Redis connections")
+	}
+}
+
+// Settings that cannot work fail Run at once instead of serving a
+// readiness that can never pass.
+func TestNewRunDepsRejectsInvalidSettings(t *testing.T) {
+	_, err := newRunDeps(Config{
+		ListenAddr: "127.0.0.1:0",
+		Postgres:   store.Config{Host: "db", Port: 5432, Database: "heartbeat", SSLMode: "prefer", CredentialRef: "secret/api-postgres"},
+		Redis:      redis.Config{Addr: "valkey:6379", CredentialRef: "secret/api-redis"},
+		Logger:     slog.New(slog.DiscardHandler),
+	})
+	if err == nil || !strings.Contains(err.Error(), "postgresql") {
+		t.Fatalf("newRunDeps = %v, want a postgresql settings error", err)
+	}
+	_, err = newRunDeps(Config{
+		ListenAddr: "127.0.0.1:0",
+		Postgres:   store.Config{Host: "db", Port: 5432, Database: "heartbeat", SSLMode: "disable", CredentialRef: "secret/api-postgres"},
+		Redis:      redis.Config{Addr: "valkey", CredentialRef: "secret/api-redis"},
+		Logger:     slog.New(slog.DiscardHandler),
+	})
+	if err == nil || !strings.Contains(err.Error(), "redis") {
+		t.Fatalf("newRunDeps = %v, want a redis settings error", err)
 	}
 }

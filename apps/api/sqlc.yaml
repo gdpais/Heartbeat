@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/sqlc-dev/sqlc/v1.31.1/internal/config/v_two.json
+# sqlc's settings for the API's queries (ADR 0013): typed Go for pgx v5 from
+# the .sql files in internal/store/queries. The schema is db/migrations (sqlc
+# reads the .up.sql files only) plus golang-migrate's own table. Run by
+# `make generate`; `make generate-check` runs `sqlc diff` instead, which
+# fails when the committed code is stale and writes nothing.
+version: "2"
+sql:
+  - engine: postgresql
+    schema:
+      - ../../db/migrations
+      - internal/store/schema
+    queries: internal/store/queries
+    gen:
+      go:
+        package: store
+        out: internal/store
+        sql_package: pgx/v5
+        # Models only for the tables a query reads, not for the whole schema.
+        omit_unused_structs: true
+        output_db_file_name: db.gen.go
+        output_models_file_name: models.gen.go
+        output_files_suffix: .gen
