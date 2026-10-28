@@ -786,6 +786,7 @@ func TestChartProfiles(t *testing.T) {
 			checkExportQueue(t, objects, profile.queueEmptyDir)
 			checkLogIdentifiers(t, objects)
 			checkLokiLabelPolicy(t, objects)
+			checkLokiRetention(t, objects)
 			checkGrafanaGzip(t, objects)
 			checkNotes(t, profile)
 			checkConfigReloadAlert(t, objects, profile.configReloadAlertOff)
@@ -1558,6 +1559,45 @@ func checkLokiLabelPolicy(t *testing.T, objects map[string]object) {
 	sort.Strings(labels)
 	if want := []string{"deployment.environment.name", "outsystems.log_type", "service.name", "service.namespace"}; !reflect.DeepEqual(labels, want) {
 		t.Errorf("Loki OTLP index labels = %q, want %q", labels, want)
+	}
+}
+
+// Loki holds personal data (ADR 0012), so its compactor deletes logs after
+// 30 days, the period compliance signs off on [9.2]. Loki refuses to start
+// with retention on and no delete request store; the store must be the one
+// that holds the chunks, or production's delete requests would live on the
+// pod's disk instead of S3.
+func checkLokiRetention(t *testing.T, objects map[string]object) {
+	t.Helper()
+	cm, ok := objects["ConfigMap/loki"]
+	if !ok {
+		return
+	}
+	var config struct {
+		Compactor struct {
+			RetentionEnabled   bool   `yaml:"retention_enabled"`
+			DeleteRequestStore string `yaml:"delete_request_store"`
+		} `yaml:"compactor"`
+		LimitsConfig struct {
+			RetentionPeriod string `yaml:"retention_period"`
+		} `yaml:"limits_config"`
+		SchemaConfig struct {
+			Configs []struct {
+				ObjectStore string `yaml:"object_store"`
+			} `yaml:"configs"`
+		} `yaml:"schema_config"`
+	}
+	mustUnmarshal(t, cm.Data["config.yaml"], &config)
+	if !config.Compactor.RetentionEnabled {
+		t.Error("Loki compactor.retention_enabled is not true; logs are never deleted")
+	}
+	if got := config.LimitsConfig.RetentionPeriod; got != "30d" {
+		t.Errorf("Loki limits_config.retention_period is %q, want 30d", got)
+	}
+	if n := len(config.SchemaConfig.Configs); n == 0 {
+		t.Error("Loki schema_config has no configs")
+	} else if store := config.SchemaConfig.Configs[n-1].ObjectStore; config.Compactor.DeleteRequestStore != store {
+		t.Errorf("Loki compactor.delete_request_store is %q, want the chunks' object_store %q", config.Compactor.DeleteRequestStore, store)
 	}
 }
 
