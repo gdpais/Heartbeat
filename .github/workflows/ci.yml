@@ -165,6 +165,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      # The local loop's budget gives this job 20 minutes (ADR 0003); the
+      # last step warns past it.
+      - name: Record the start time
+        run: echo "KIND_E2E_STARTED=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -184,6 +188,13 @@ jobs:
       # acceptance checks; removes everything it created on exit.
       - name: Run acceptance checks on kind
         run: make kind-e2e
+      - name: Compare the time with the local loop's budget
+        run: |
+          minutes=$(( ($(date +%s) - KIND_E2E_STARTED) / 60 ))
+          echo "kind end-to-end took $minutes minutes; the budget is 20 (ADR 0003)"
+          if [ "$minutes" -ge 20 ]; then
+            echo "::warning title=Local loop budget::kind end-to-end took $minutes minutes, past its 20-minute budget (ADR 0003)"
+          fi
 
   scenarios:
     name: PatientZero scenarios

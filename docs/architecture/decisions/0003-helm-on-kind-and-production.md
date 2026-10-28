@@ -141,16 +141,32 @@ host; the e2e script prints them on every run.
 | Singleton update drains the old pod first; gap and SQL concurrency measured | e2e samples running pods and SQL Server sessions every second during a rollout | Never more than 1 collector or 2 sessions; collection gap 12s and 31s in two runs at a 20s scrape interval |
 | Stateful restart keeps persistent data | e2e replaces the Prometheus and Alertmanager pods | TSDB and silences kept |
 | Concurrent CI runs isolated, cannot delete developer resources | e2e uses its own cluster name, kubeconfig and container names, and deletes only those | By construction |
-| Daily loop meets an agreed budget | Budget agreed 2026-10-28: the full profile holds at most 2.5 GiB RAM in the kind node, the SQL Server sandbox not included; CI's `kind end-to-end` job finishes within 20 minutes | Full profile about 2.0 GiB RAM in the kind node (SQL Server sandbox +0.9 GiB, capped at 2 GiB); `kind end-to-end` 14–18 minutes in CI in October 2026; redeploy under a minute; `minimal` profile for smaller machines |
+| Daily loop meets an agreed budget | Budget agreed 2026-10-28: the full profile holds at most 2.5 GiB of RAM in the kind node, the SQL Server sandbox not included; CI's `kind end-to-end` job finishes within 20 minutes and warns past it | Full profile about 2.0 GiB RAM in the kind node, measured idle (SQL Server sandbox +0.9 GiB idle, capped at 2 GiB); `kind end-to-end` 10–12 minutes in CI on 21–22 October, up to 18.6 on 28 October; redeploy under a minute; `minimal` profile for smaller machines |
 
-Update 2026-10-28: the local loop's budget is agreed (last row above). The
-memory figure is the kind node container's usage in `docker stats`, a few
-minutes after `make kind-deploy` with no load running; the time is the CI
-job's duration. 2.5 GiB leaves room for the API, PostgreSQL and Valkey
-(phase 3) and keeps a second cluster possible on a 7.6 GiB Docker host next
-to the 2 GiB SQL Server sandbox. A change that would exceed either figure is
-trimmed first (smaller requests, or off in the `kind` profile); otherwise it
-asks for a new budget instead of growing past this one.
+Update 2026-10-28: the local loop's budget is agreed (last row above).
+
+- Memory is the peak `docker stats` usage of the kind node container
+  (`heartbeat-control-plane` for the default `KIND_CLUSTER`) over at least
+  30 minutes of `make patientzero-load` after a deploy. Prometheus's head
+  block and Loki's ingesters grow until they flush, so a few idle minutes
+  understate it; the 2.0 GiB above was measured idle, and the 4.1 chart
+  change that adds the API, PostgreSQL and Valkey is the first measured
+  this way. The budget plus the sandbox's 2 GiB cap is 4.5 GiB, which
+  leaves this project's Docker host (7.6 GiB in `docker info`) room for
+  image builds. A second cluster with its own SQL Server, such as
+  `make kind-e2e` next to the dev cluster, adds as much again: about
+  6.8 GiB in all with both SQL Servers idle (0.9 GiB each), 9 GiB with both
+  at their cap. It fits only while neither cluster runs a load flood; on
+  2026-10-22, before SQL Server's memory was capped, a load flood and a
+  second cluster each got it killed.
+- Time is the duration of CI's `kind end-to-end` job, which warns when it
+  passes 20 minutes. The job grew with its checks, not its pods, so the
+  levers are the checks: shorter `wait_for` windows, waits run in parallel,
+  or the job split in two.
+
+A change that would exceed either figure is trimmed first: smaller requests
+or the component off in the `kind` profile for memory, the levers above for
+time. Otherwise it asks for a new budget instead of growing past this one.
 
 Not covered by kind (risk 4): cloud storage classes, ingress and TLS, IAM and
 External Secrets, ECR pulls, and SQL connectivity from the EKS VPC.
