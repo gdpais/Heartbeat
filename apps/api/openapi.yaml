@@ -1,0 +1,70 @@
+# The API's contract (ADR 0013), written by hand and reviewed like code.
+# `make generate` writes the server types in internal/openapi from it, and
+# `make test` fails when they differ. Keep to plain OpenAPI 3.1 constructs
+# (`type: [T, "null"]`, `oneOf` enums): oapi-codegen's 3.1 support is new.
+openapi: 3.1.0
+info:
+  title: Heartbeat API
+  # The contract's major version, the /api/v1 prefix of the resource
+  # operations. Changes within it are additive; a breaking change is v2.
+  version: v1
+  description: |
+    Heartbeat's control plane. The resource operations will live under
+    `/api/v1`; the health endpoints stay outside it. `GET /metrics`
+    (Prometheus exposition) is served beside this contract and not described
+    here.
+servers:
+  - url: /
+tags:
+  - name: health
+    description: Probes for Kubernetes. They need no login and say nothing about why.
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      tags: [health]
+      summary: Liveness
+      description: |
+        200 while the process serves HTTP. It checks no dependency, so a
+        PostgreSQL or Redis outage never restarts the pod; readiness takes it
+        out of its Service instead.
+      responses:
+        "200":
+          description: The process serves HTTP.
+          content:
+            text/plain:
+              schema:
+                type: string
+                enum: [ok]
+  /readyz:
+    get:
+      operationId: getReadyz
+      tags: [health]
+      summary: Readiness
+      description: |
+        200 when every dependency the API needs to serve requests works, 503
+        otherwise. The body carries only the status; which dependency failed
+        and why is logged.
+      responses:
+        "200":
+          description: Ready to serve requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        "503":
+          description: A dependency the API needs does not work.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+components:
+  schemas:
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]

@@ -1,0 +1,266 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"heartbeat/apps/api/internal/httpapi"
+)
+
+// testTimeouts are the timeouts of run in tests: long enough for a slow CI
+// runner, short enough that a hang fails fast.
+func testTimeouts() timeouts {
+	return timeouts{readiness: 5 * time.Second, httpShutdown: 2 * time.Second}
+}
+
+// runFixture is run started in the background.
+type runFixture struct {
+	cancel context.CancelFunc
+	result chan error
+	url    string
+}
+
+// startRun starts run with a fresh registry and the given readiness checks;
+// configure, when given, adjusts the dependencies first.
+func startRun(t *testing.T, checks []httpapi.Check, configure ...func(*runDeps)) *runFixture {
+	t.Helper()
+	registry, metrics, err := newRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := make(chan net.Addr, 1)
+	deps := runDeps{
+		cfg:            Config{ListenAddr: "127.0.0.1:0"},
+		registry:       registry,
+		requestMetrics: metrics,
+		checks:         checks,
+		timeouts:       testTimeouts(),
+		onListen:       func(a net.Addr) { addr <- a },
+	}
+	for _, fn := range configure {
+		fn(&deps)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	f := &runFixture{cancel: cancel, result: make(chan error, 1)}
+	go func() { f.result <- run(ctx, deps) }()
+	select {
+	case a := <-addr:
+		f.url = "http://" + a.String()
+	case err := <-f.result:
+		t.Fatalf("run returned before listening: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not listen")
+	}
+	return f
+}
+
+// stop cancels run's context and returns how long run took to return, and
+// what it returned.
+func (f *runFixture) stop(t *testing.T) (time.Duration, error) {
+	t.Helper()
+	start := time.Now()
+	f.cancel()
+	select {
+	case err := <-f.result:
+		return time.Since(start), err
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not return after its context was cancelled")
+		return 0, nil
+	}
+}
+
+func get(t *testing.T, url string) (int, string) {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	return resp.StatusCode, string(body)
+}
+
+func TestRunServesHealthReadinessAndMetrics(t *testing.T) {
+	f := startRun(t, nil)
+	if code, body := get(t, f.url+"/healthz"); code != http.StatusOK || body != "ok" {
+		t.Fatalf("GET /healthz = %d %q", code, body)
+	}
+	if code, body := get(t, f.url+"/readyz"); code != http.StatusOK || strings.TrimSpace(body) != `{"status":"ready"}` {
+		t.Fatalf("GET /readyz = %d %s", code, body)
+	}
+	code, body := get(t, f.url+"/metrics")
+	if code != http.StatusOK {
+		t.Fatalf("GET /metrics = %d", code)
+	}
+	for _, want := range []string{
+		"go_goroutines",
+		"process_start_time_seconds",
+		MetricHTTPRequests + `{code="200",method="GET",route="/healthz"} 1`,
+		MetricHTTPRequests + `{code="200",method="GET",route="/readyz"} 1`,
+		MetricHTTPRequestDuration + `_count{method="GET",route="/healthz"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("GET /metrics lacks %s", want)
+		}
+	}
+	if _, err := f.stop(t); err != nil {
+		t.Fatalf("run returned %v after a clean shutdown", err)
+	}
+	if resp, err := http.Get(f.url + "/healthz"); err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("http server still serving after run returned")
+	}
+}
+
+func TestRunReadinessFollowsItsChecks(t *testing.T) {
+	failing := httpapi.Check{Name: "postgres", Run: func(context.Context) error { return errors.New("connection refused") }}
+	f := startRun(t, []httpapi.Check{failing})
+	if code, body := get(t, f.url+"/readyz"); code != http.StatusServiceUnavailable || strings.TrimSpace(body) != `{"status":"not_ready"}` {
+		t.Fatalf("GET /readyz = %d %s, want 503 not_ready", code, body)
+	}
+	// A failing dependency never fails liveness.
+	if code, _ := get(t, f.url+"/healthz"); code != http.StatusOK {
+		t.Fatalf("GET /healthz = %d with a failing check, want 200", code)
+	}
+}
+
+// blockingCheck holds GET /readyz in flight: it reports when a request
+// reaches it and returns once released.
+func blockingCheck() (check httpapi.Check, reached <-chan struct{}, release func()) {
+	reachedCh := make(chan struct{}, 1)
+	releaseCh := make(chan struct{})
+	check = httpapi.Check{Name: "slow", Run: func(context.Context) error {
+		reachedCh <- struct{}{}
+		<-releaseCh
+		return nil
+	}}
+	return check, reachedCh, func() { close(releaseCh) }
+}
+
+func TestRunDrainsInFlightRequestsBeforeReturning(t *testing.T) {
+	check, reached, release := blockingCheck()
+	f := startRun(t, []httpapi.Check{check})
+
+	type response struct {
+		code int
+		err  error
+	}
+	inFlight := make(chan response, 1)
+	go func() {
+		resp, err := http.Get(f.url + "/readyz")
+		if err != nil {
+			inFlight <- response{err: err}
+			return
+		}
+		_ = resp.Body.Close()
+		inFlight <- response{code: resp.StatusCode}
+	}()
+	<-reached
+
+	f.cancel()
+	// Shutdown waits for the request: run must not return while it is in
+	// flight.
+	select {
+	case err := <-f.result:
+		t.Fatalf("run returned %v with a request in flight", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	// New connections are refused once shutdown starts.
+	eventually(t, func() bool {
+		conn, err := net.DialTimeout("tcp", strings.TrimPrefix(f.url, "http://"), time.Second)
+		if err == nil {
+			_ = conn.Close()
+		}
+		return err != nil
+	}, "the listener still accepts connections during shutdown")
+
+	release()
+	if got := <-inFlight; got.err != nil || got.code != http.StatusOK {
+		t.Fatalf("in-flight request = %d %v, want it answered 200", got.code, got.err)
+	}
+	select {
+	case err := <-f.result:
+		if err != nil {
+			t.Fatalf("run returned %v after a clean shutdown", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return after the in-flight request finished")
+	}
+}
+
+func TestRunShutdownIsBoundedWhenARequestHangs(t *testing.T) {
+	check, reached, release := blockingCheck()
+	t.Cleanup(release)
+	f := startRun(t, []httpapi.Check{check}, func(deps *runDeps) {
+		deps.timeouts.httpShutdown = 100 * time.Millisecond
+	})
+	requestErr := make(chan error, 1)
+	go func() {
+		resp, err := http.Get(f.url + "/readyz")
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		requestErr <- err
+	}()
+	<-reached
+
+	elapsed, err := f.stop(t)
+	if err != nil {
+		t.Fatalf("run returned %v; a drain that times out is still a shutdown", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("shutdown took %s with a 100ms drain bound", elapsed)
+	}
+	// The hung request's connection is closed rather than left open.
+	select {
+	case err := <-requestErr:
+		if err == nil {
+			t.Fatal("the hung request got a response after its connection was closed")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hung request's connection was left open")
+	}
+}
+
+func TestRunReturnsListenError(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	registry, metrics, err := newRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = run(context.Background(), runDeps{
+		cfg:            Config{ListenAddr: listener.Addr().String()},
+		registry:       registry,
+		requestMetrics: metrics,
+		timeouts:       testTimeouts(),
+	})
+	if err == nil {
+		t.Fatal("run did not return the error of a port already in use")
+	}
+}
+
+// eventually polls cond for up to 5 seconds.
+func eventually(t *testing.T, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal(msg)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
