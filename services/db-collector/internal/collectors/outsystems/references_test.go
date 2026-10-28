@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
+	collectorconfig "heartbeat/internal/config"
 	collectormetadata "heartbeat/services/db-collector/internal/metadata"
 )
 
@@ -43,6 +44,7 @@ func registeredMetrics(t *testing.T) map[string]bool {
 	if err != nil {
 		t.Fatal(err)
 	}
+	metrics.initCollector(collectorconfig.CollectorRuntimeConfig{ID: "c", Enabled: true})
 	item := collectormetadata.ScheduledProbe{CollectorID: "c", Definition: collectormetadata.ProbeDefinition{Name: "screen"}}
 	metrics.addRows(item, 1)
 	metrics.setLag(item, time.Second)
@@ -91,6 +93,7 @@ func TestEveryDeclaredMetricIsExported(t *testing.T) {
 		MetricRows, MetricLag, MetricExportFailures, MetricStuckBatches, MetricLogDelay, MetricExportBlocked,
 		MetricOperationDuration, MetricOperations, MetricOperationSeconds, MetricIntegrationDuration,
 		MetricErrors, MetricSlowEvents, MetricTimerDelay, MetricScreenState, MetricFrontEndOperations,
+		MetricDerivedSeries, MetricDerivedSeriesOverflow,
 	} {
 		if !names[name] {
 			t.Errorf("%s is declared but not exported", name)

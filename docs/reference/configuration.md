@@ -210,6 +210,7 @@ collectors:
       initial_lookback: 15m    # where a log type without a watermark starts; default 15m
       log_timezone: UTC        # IANA time zone Instant is stored in; default UTC
       recount_window: 10m      # recount behind the watermark; default 10m, 0s off
+      max_derived_series: 50000 # derived-metric series this collector may hold, 1–1000000; default 50000
       probes:
         - name: error
         - name: cyclic_job
@@ -229,6 +230,7 @@ collectors:
 | `initial_lookback` | `15m` | Go duration, > 0. Also used when the stored watermark is unreadable or belongs to another database |
 | `log_timezone` | `UTC` | IANA name such as `Europe/Lisbon`; `Local` is rejected. With a zone that has daylight saving time, rows logged in the hour that repeats when clocks go back can be missed: `Instant` itself is ambiguous then |
 | `recount_window` | `10m` | `0s` (off), or whole minutes from `2m` to `1h`. Once a minute, each log type counts again the rows in this window behind its watermark, to find rows committed past the `lag` (`heartbeat_outsystems_late_rows_total`) or read twice ([recount](metrics-and-endpoints.md#outsystems-log-extraction)). A wider window finds later commits and counts more index rows each minute |
+| `max_derived_series` | `50000` | 1–1000000. The most series the [derived metrics](metrics-and-endpoints.md#derived-outsystems-metrics) hold for this collector, counted as Prometheus stores them: one per counter, and a histogram's buckets, `+Inf`, sum and count (13 for the latency and timer histograms, 11 for screen state). Past it, a row that needs a new series is not counted in that metric, `heartbeat_outsystems_derived_series_overflow_total` grows and `OutSystemsDerivedSeriesOverflow` fires; series that exist keep counting. Each series takes about 690 bytes of the collector's memory, so 50000 is about 33 MiB. The default is a proposal, not a measured need: 29 times the 1,716 series of PatientZero's [production-sized profile](../../tools/patientzero/README.md#production-sized-logging-database) (6 applications, 14 modules, 8 screens each, 20 timers, 4 front-ends); size it from `heartbeat_outsystems_derived_series` on the real installation. Changing it restarts the collector, which deletes its derived series and starts counting again |
 
 Rules:
 
@@ -240,9 +242,9 @@ Rules:
 - A log type of one logging database (same host, port and database name,
   compared case-insensitively) can be extracted by one enabled collector
   only; two would send every row twice.
-- `lag`, `batch_limit`, `initial_lookback`, `log_timezone`, `recount_window`
-  and `probes[].lag` are rejected on other kinds, and `probes[].max_rows` on
-  this one.
+- `lag`, `batch_limit`, `initial_lookback`, `log_timezone`, `recount_window`,
+  `max_derived_series` and `probes[].lag` are rejected on other kinds, and
+  `probes[].max_rows` on this one.
 - With the recount on, a `query_template` must be one a derived table holds:
   no `WITH`, top-level `OPTION`, or `FOR XML`, `JSON` or `BROWSE`, an
   `ORDER BY` only with `TOP (@limit)` or `OFFSET`, and every column named.

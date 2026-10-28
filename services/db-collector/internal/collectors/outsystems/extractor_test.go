@@ -557,9 +557,11 @@ func TestMetricsFollowTheCollectorLifecycle(t *testing.T) {
 	executor.InitCollector(collector)
 	// Seven counters (rows, export failures, stuck batches, late rows,
 	// duplicate rows, recounts, recount failures) and the export-blocked
-	// gauge for each of the two selected log types, at 0.
-	if got := testutil.CollectAndCount(registry); got != 16 {
-		t.Fatalf("%d series after init, want 16", got)
+	// gauge for each of the two selected log types, at 0; the collector's
+	// derived series count, and its overflow counter for each of the nine
+	// derived metrics.
+	if got := testutil.CollectAndCount(registry); got != 16+1+9 {
+		t.Fatalf("%d series after init, want 26", got)
 	}
 	executor.ForgetCollector("oslogs")
 	if got := testutil.CollectAndCount(registry); got != 0 {

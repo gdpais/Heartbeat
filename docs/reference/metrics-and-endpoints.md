@@ -302,9 +302,25 @@ and the entry-point log types:
 
 They are deleted with their collector. Per application, each operation adds
 3 counter series (two outcomes and its seconds) and each module, log type and
-outcome 13 histogram series (11 buckets, sum, count); `operation` and `module`
-are capped at 100 values per application (and log type), so the worst case
-is bounded.
+outcome 13 histogram series (11 buckets, sum, count). The label caps bound
+each label, but they multiply: 100 modules and 100 operations per
+application and log type, up to 1,000 applications. So each collector holds
+at most `max_derived_series` of these series
+([configuration](configuration.md#outsystems_logs-collectors)), counted as
+Prometheus stores them. Past it, a row that needs a new series is not
+counted in that metric; series that exist keep counting, so the metrics of
+applications, modules and operations seen first stay right and later ones
+are missing. Each metric is admitted on its own: as the budget fills, a row
+can be counted in some metrics and not in others. The budget is freed with
+the series when the collector stops or a reload changes it.
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `heartbeat_outsystems_derived_series` | gauge | `collector` | Derived series the collector holds, as the budget counts them; at most its `max_derived_series` |
+| `heartbeat_outsystems_derived_series_overflow_total` | counter | `collector`, `metric` | Rows a derived metric (`metric`, its name) did not count because they needed a new series past `max_derived_series`: one per row and metric. `OutSystemsDerivedSeriesOverflow` fires on any |
+
+Both are created, the counter at 0 for each of the nine metrics, when a
+collector starts, and deleted when it stops.
 
 ### Prometheus scrape jobs and rules
 
@@ -337,6 +353,7 @@ for a db-collector with no pod):
 | `OutSystemsLogExportBlocked` | Alert (warning): `heartbeat_outsystems_export_blocked` 1 for 2m, one alert per target: the OTel Collector has not taken a batch, so its log types read nothing more, usually because Loki is down or slow. Nothing is lost while the rows are still in the logging database's views |
 | `OutSystemsLateLogRows` | Alert (warning): `heartbeat_outsystems_late_rows_total` grew in the last 15 minutes, per log type: rows committed later than the lag, not in Loki. Raise the log type's `lag` |
 | `OutSystemsDuplicateLogRows` | Alert (warning): `heartbeat_outsystems_duplicate_rows_total` grew in the last 15 minutes: rows the extraction read twice, a defect, or rows deleted from the logging database after they were sent |
+| `OutSystemsDerivedSeriesOverflow` | Alert (warning): `heartbeat_outsystems_derived_series_overflow_total` grew in the last 15 minutes, per collector: its derived series reached `max_derived_series`, so rows that need a new series (a new application, module, operation or front-end) are missing from the derived metrics, dashboards and SLO alerts. Raise `max_derived_series` if the collector's memory allows |
 | `OutSystemsLogRecountFailing` | Alert (warning): more than half of a log type's recounts failed in the last 15 minutes, of three or more, whatever the poll interval; the reason is in the collector's log |
 | `HeartbeatServiceDown` | Alert (warning): `up == 0` for 2m for the DB collector, the OTel Collector or Loki; and no `up` series at all for the DB collector, whose DNS discovery finds no target while it has no pod (`absent(up{job="db-collector"})`) |
 | `LokiDiscardingLogs` | Alert (warning): Loki discarded log rows in the last 10 minutes for a reason other than its rate limit (`loki_discarded_samples_total`); those rows are lost |

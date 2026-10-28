@@ -27,19 +27,27 @@ func TestIntegrationsSchemaProbeTimeoutMatchesConfigLimit(t *testing.T) {
 	}
 }
 
-// The schema's batch_limit maximum must match the limit the collector
-// enforces, for the same reason.
-func TestIntegrationsSchemaBatchLimitMatchesConfigLimit(t *testing.T) {
+// The schema's batch_limit and max_derived_series maximums must match the
+// limits the collector enforces, for the same reason.
+func TestIntegrationsSchemaCollectorLimitsMatchConfigLimits(t *testing.T) {
 	schema := mustReadJSONSchema(t, filepath.Join(repoRoot(t), "packages/config-schema/src/integrations.schema.json"))
 	collectors, _ := schema["properties"].(map[string]any)["collectors"].(map[string]any)
 	items, _ := collectors["items"].(map[string]any)
 	collectorConfig, _ := items["properties"].(map[string]any)["config"].(map[string]any)
-	batch, ok := collectorConfig["properties"].(map[string]any)["batch_limit"].(map[string]any)
-	if !ok {
-		t.Fatal("integrations schema has no collector config batch_limit")
-	}
-	if maximum, _ := batch["maximum"].(float64); int(maximum) != config.MaxLogBatchLimit {
-		t.Fatalf("schema batch_limit maximum = %v, want %d (config.MaxLogBatchLimit)", batch["maximum"], config.MaxLogBatchLimit)
+	for _, limit := range []struct {
+		name string
+		max  int
+	}{
+		{"batch_limit", config.MaxLogBatchLimit},
+		{"max_derived_series", config.MaxLogDerivedSeries},
+	} {
+		setting, ok := collectorConfig["properties"].(map[string]any)[limit.name].(map[string]any)
+		if !ok {
+			t.Fatalf("integrations schema has no collector config %s", limit.name)
+		}
+		if maximum, _ := setting["maximum"].(float64); int(maximum) != limit.max {
+			t.Fatalf("schema %s maximum = %v, want %d", limit.name, setting["maximum"], limit.max)
+		}
 	}
 }
 

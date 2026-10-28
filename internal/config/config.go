@@ -68,6 +68,15 @@ const (
 	DefaultLogRecountWindow = 10 * time.Minute
 	// MaxLogRecountWindow is the largest recount_window accepted.
 	MaxLogRecountWindow = time.Hour
+	// DefaultLogMaxDerivedSeries is the most derived-metric series an
+	// outsystems_logs collector holds, counted as Prometheus stores them.  A
+	// proposed default, not a measured need: 29 times the 1,716 series of
+	// PatientZero's production-scale profile, and about 33 MiB of the
+	// collector's memory at some 690 bytes a series
+	// (docs/reference/configuration.md#outsystems_logs-collectors).
+	DefaultLogMaxDerivedSeries = 50000
+	// MaxLogDerivedSeries is the largest max_derived_series accepted.
+	MaxLogDerivedSeries = 1000000
 )
 
 // Endpoint holds the connection details for an external service integration.
@@ -117,11 +126,12 @@ type collectorConfigDocument struct {
 	Targets        []targetDocument `yaml:"targets"`
 	Probes         []probeDocument  `yaml:"probes"`
 	// outsystems_logs settings.
-	Lag             string `yaml:"lag"`
-	BatchLimit      *int   `yaml:"batch_limit"`
-	InitialLookback string `yaml:"initial_lookback"`
-	LogTimezone     string `yaml:"log_timezone"`
-	RecountWindow   string `yaml:"recount_window"`
+	Lag              string `yaml:"lag"`
+	BatchLimit       *int   `yaml:"batch_limit"`
+	InitialLookback  string `yaml:"initial_lookback"`
+	LogTimezone      string `yaml:"log_timezone"`
+	RecountWindow    string `yaml:"recount_window"`
+	MaxDerivedSeries *int   `yaml:"max_derived_series"`
 }
 
 type targetDocument struct {
@@ -177,6 +187,12 @@ type OutSystemsLogsConfig struct {
 	// rows again, once a minute, to find rows committed past the lag; 0 turns
 	// the recount off.
 	RecountWindow time.Duration
+	// MaxDerivedSeries is the most derived-metric series the collector
+	// holds, counted as Prometheus stores them (a histogram's buckets, sum
+	// and count each).  Past it, a row that needs a new series is not
+	// counted in it, and the overflow counter says so; series that exist
+	// keep updating.
+	MaxDerivedSeries int
 	// LogsEndpoint is opentelemetry.endpoint, the OTLP/HTTP base URL the logs
 	// are sent to. It is copied here so a change restarts the collector.
 	LogsEndpoint string
@@ -474,6 +490,7 @@ func normalizeOutSystemsLogs(doc collectorDocument) (OutSystemsLogsConfig, error
 			{"initial_lookback", c.InitialLookback != ""},
 			{"log_timezone", c.LogTimezone != ""},
 			{"recount_window", c.RecountWindow != ""},
+			{"max_derived_series", c.MaxDerivedSeries != nil},
 		} {
 			if field.set {
 				return OutSystemsLogsConfig{}, fmt.Errorf("collector %s: %s applies only to %s collectors", doc.ID, field.name, KindOutSystemsLogs)
@@ -482,11 +499,12 @@ func normalizeOutSystemsLogs(doc collectorDocument) (OutSystemsLogsConfig, error
 		return OutSystemsLogsConfig{}, nil
 	}
 	cfg := OutSystemsLogsConfig{
-		Lag:             DefaultLogLag,
-		BatchLimit:      DefaultLogBatchLimit,
-		InitialLookback: DefaultLogInitialLookback,
-		LogTimezone:     DefaultLogTimezone,
-		RecountWindow:   DefaultLogRecountWindow,
+		Lag:              DefaultLogLag,
+		BatchLimit:       DefaultLogBatchLimit,
+		InitialLookback:  DefaultLogInitialLookback,
+		LogTimezone:      DefaultLogTimezone,
+		RecountWindow:    DefaultLogRecountWindow,
+		MaxDerivedSeries: DefaultLogMaxDerivedSeries,
 	}
 	for _, field := range []struct {
 		name  string
@@ -508,6 +526,9 @@ func normalizeOutSystemsLogs(doc collectorDocument) (OutSystemsLogsConfig, error
 	}
 	if c.BatchLimit != nil {
 		cfg.BatchLimit = *c.BatchLimit
+	}
+	if c.MaxDerivedSeries != nil {
+		cfg.MaxDerivedSeries = *c.MaxDerivedSeries
 	}
 	if tz := strings.TrimSpace(c.LogTimezone); tz != "" {
 		cfg.LogTimezone = tz
@@ -746,6 +767,9 @@ func validateOutSystemsLogs(collector CollectorRuntimeConfig, logsEndpoint strin
 	}
 	if logs.BatchLimit < 1 || logs.BatchLimit > MaxLogBatchLimit {
 		return fmt.Errorf("collector %s batch_limit must be between 1 and %d", collector.ID, MaxLogBatchLimit)
+	}
+	if logs.MaxDerivedSeries < 1 || logs.MaxDerivedSeries > MaxLogDerivedSeries {
+		return fmt.Errorf("collector %s max_derived_series must be between 1 and %d", collector.ID, MaxLogDerivedSeries)
 	}
 	if _, err := time.LoadLocation(logs.LogTimezone); err != nil || logs.LogTimezone == "Local" {
 		return fmt.Errorf("collector %s log_timezone %q must be an IANA time zone name such as UTC or Europe/Lisbon", collector.ID, logs.LogTimezone)

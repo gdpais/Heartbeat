@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 
+	collectorconfig "heartbeat/internal/config"
 	collectormetadata "heartbeat/services/db-collector/internal/metadata"
 )
 
@@ -46,6 +47,34 @@ const (
 	// MetricFrontEndOperations counts entry points per front-end server.
 	// Labels: front_end, outcome.
 	MetricFrontEndOperations = "heartbeat_outsystems_front_end_operations_total"
+)
+
+// derivedMetrics names every derived metric, the values of the metric label
+// of [MetricDerivedSeriesOverflow].
+var derivedMetrics = []string{
+	MetricOperationDuration, MetricOperations, MetricOperationSeconds, MetricIntegrationDuration,
+	MetricErrors, MetricSlowEvents, MetricTimerDelay, MetricScreenState, MetricFrontEndOperations,
+}
+
+// The series budget.  The label caps below bound each label, but they
+// multiply: up to 1,000 applications, 100 modules each and 100 operations
+// per application and log type, times log types and outcomes, and a
+// histogram costs 11 or 13 series per label set.  So each collector also
+// holds at most its max_derived_series derived series, counted as
+// Prometheus stores them: 1 per counter label set, and a histogram's
+// buckets, +Inf, sum and count per label set.  Past it, an observation that
+// needs a new series is dropped and counted in
+// [MetricDerivedSeriesOverflow]; series that exist keep updating.  The budget
+// is freed with the series when the collector stops, which also happens when
+// a reload changes it.
+const (
+	// MetricDerivedSeries is the number of derived series the collector
+	// holds, as the budget counts them.  Label: collector.
+	MetricDerivedSeries = "heartbeat_outsystems_derived_series"
+	// MetricDerivedSeriesOverflow counts the observations the derived
+	// metrics dropped because they needed a new series past the collector's
+	// budget: one per row and metric.  Labels: collector, metric.
+	MetricDerivedSeriesOverflow = "heartbeat_outsystems_derived_series_overflow_total"
 )
 
 // Label caps.  A value past its cap is counted under [otherValue], so a
@@ -133,7 +162,18 @@ type derived struct {
 	screenState         *prometheus.HistogramVec
 	frontEndOperations  *prometheus.CounterVec
 
+	// series and overflow report the series budget.
+	series   *prometheus.GaugeVec
+	overflow *prometheus.CounterVec
+
 	caps labelCaps
+
+	// mu guards budget and makes creating a derived series and counting it
+	// one step, and deleting a collector's series and freeing its budget
+	// another, so a series is never created past the budget or left out of
+	// it.
+	mu     sync.Mutex
+	budget seriesBudget
 }
 
 func newDerived() *derived {
@@ -178,6 +218,15 @@ func newDerived() *derived {
 			Name: MetricFrontEndOperations,
 			Help: "OutSystems entry points by front-end server.",
 		}, withDerivedLabels("front_end", "outcome")),
+		series: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: MetricDerivedSeries,
+			Help: "Series the derived OutSystems metrics hold for the collector, counted as Prometheus stores them; at most its max_derived_series.",
+		}, []string{"collector"}),
+		overflow: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: MetricDerivedSeriesOverflow,
+			Help: "Rows a derived OutSystems metric (the metric label) did not count because they needed a new series past the collector's max_derived_series; series that exist keep updating.",
+		}, []string{"collector", "metric"}),
+		budget: newSeriesBudget(),
 	}
 }
 
@@ -185,20 +234,39 @@ func (d *derived) collectors() []prometheus.Collector {
 	return []prometheus.Collector{
 		d.operationDuration, d.operations, d.operationSeconds, d.integrationDuration,
 		d.errors, d.slowEvents, d.timerDelay, d.screenState, d.frontEndOperations,
+		d.series, d.overflow,
 	}
 }
 
-// forget deletes every series and label cap of collectorID.
+// init sets the series budget of collector, its max_derived_series (the
+// default when unset), and creates its budget series: the series count, and
+// the overflow counters at 0, so increase() sees the first overflow.
+func (d *derived) init(collector collectorconfig.CollectorRuntimeConfig) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.budget.limits[collector.ID] = collector.OutSystemsLogs.MaxDerivedSeries
+	d.setSeriesLocked(collector.ID)
+	for _, metric := range derivedMetrics {
+		_, _ = d.overflow.GetMetricWithLabelValues(collector.ID, metric)
+	}
+}
+
+// forget deletes every series and label cap of collectorID and frees its
+// series budget.
 func (d *derived) forget(collectorID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	labels := prometheus.Labels{"collector": collectorID}
 	for _, vec := range []interface {
 		DeletePartialMatch(prometheus.Labels) int
 	}{
 		d.operationDuration, d.operations, d.operationSeconds, d.integrationDuration,
 		d.errors, d.slowEvents, d.timerDelay, d.screenState, d.frontEndOperations,
+		d.series, d.overflow,
 	} {
 		vec.DeletePartialMatch(labels)
 	}
+	d.budget.forget(collectorID)
 	d.caps.forget(collectorID)
 }
 
@@ -218,10 +286,10 @@ func (d *derived) observe(item collectormetadata.ScheduledProbe, batch Batch, ro
 
 		switch logType {
 		case errorLogType:
-			observeCounter(d.errors, append(base, module))
+			d.count(d.errors, MetricErrors, append(base, module), 1)
 		case logTypeGeneral:
 			if kind, ok := slowEventKinds[strings.ToUpper(strings.TrimSpace(optionalText(get(columnModule))))]; ok {
-				observeCounter(d.slowEvents, append(base, module, kind))
+				d.count(d.slowEvents, MetricSlowEvents, append(base, module, kind), 1)
 			}
 		case logTypeIntegration:
 			direction := "consume"
@@ -230,19 +298,19 @@ func (d *derived) observe(item collectormetadata.ScheduledProbe, batch Batch, ro
 			}
 			kind := d.caps.value(maxIntegrationTypes, labelText(get(columnType)), collector, "type")
 			if hasDuration {
-				observeHistogram(d.integrationDuration, append(base, direction, kind, outcome), duration)
+				d.observeValue(d.integrationDuration, MetricIntegrationDuration, latencySeries, append(base, direction, kind, outcome), duration)
 			}
 		case logTypeCyclicJob:
 			scheduled, ok := get(columnShouldHaveRun).(time.Time)
 			if ok && !scheduled.IsZero() {
 				delay := max(instants[r].Sub(scheduled).Seconds(), 0)
 				operation := d.caps.value(maxOperations, labelText(get(columnActionName)), collector, "operation", application, logType)
-				observeHistogram(d.timerDelay, append(base, operation), delay)
+				d.observeValue(d.timerDelay, MetricTimerDelay, timerDelaySeries, append(base, operation), delay)
 			}
 		case logTypeScreen:
 			for _, state := range []struct{ column, kind string }{{columnSessionBytes, "session"}, {columnViewstateBytes, "viewstate"}} {
 				if size, ok := number(get(state.column)); ok && size >= 0 {
-					observeHistogram(d.screenState, append(base, module, state.kind), size)
+					d.observeValue(d.screenState, MetricScreenState, stateSeries, append(base, module, state.kind), size)
 				}
 			}
 		}
@@ -255,26 +323,14 @@ func (d *derived) observe(item collectormetadata.ScheduledProbe, batch Batch, ro
 			operationColumn = columnScreen
 		}
 		operation := d.caps.value(maxOperations, labelText(get(operationColumn)), collector, "operation", application, logType)
-		// Both outcomes exist as soon as one does, so error ratios read 0
-		// rather than nothing before the first error.
-		for _, o := range []string{outcomeSuccess, outcomeError} {
-			if counter, err := d.operations.GetMetricWithLabelValues(append(base, module, logType, operation, o)...); err == nil && o == outcome {
-				counter.Inc()
-			}
-		}
+		d.countOutcome(d.operations, MetricOperations, append(base, module, logType, operation), outcome)
 		if hasDuration {
-			observeHistogram(d.operationDuration, append(base, module, logType, outcome), duration)
-			if counter, err := d.operationSeconds.GetMetricWithLabelValues(append(base, module, logType, operation)...); err == nil {
-				counter.Add(duration)
-			}
+			d.observeValue(d.operationDuration, MetricOperationDuration, latencySeries, append(base, module, logType, outcome), duration)
+			d.count(d.operationSeconds, MetricOperationSeconds, append(base, module, logType, operation), duration)
 		}
 		if server := labelText(get(columnServer)); server != unknownService {
 			frontEnd := d.caps.value(maxFrontEnds, server, collector, "front_end")
-			for _, o := range []string{outcomeSuccess, outcomeError} {
-				if counter, err := d.frontEndOperations.GetMetricWithLabelValues(append(base, frontEnd, o)...); err == nil && o == outcome {
-					counter.Inc()
-				}
-			}
+			d.countOutcome(d.frontEndOperations, MetricFrontEndOperations, append(base, frontEnd), outcome)
 		}
 	}
 }
@@ -362,19 +418,219 @@ func labelText(v any) string {
 	return unknownService
 }
 
-// observeCounter increments a counter, skipping label values Prometheus
-// rejects.
-func observeCounter(vec *prometheus.CounterVec, values []string) {
+// Series per histogram label set, as Prometheus stores them: the buckets,
+// +Inf, sum and count.
+var (
+	latencySeries    = len(latencyBuckets) + 3
+	timerDelaySeries = len(timerDelayBuckets) + 3
+	stateSeries      = len(stateBuckets) + 3
+)
+
+// The writes below create a series only within its collector's budget, and
+// skip label values Prometheus rejects.  values are the series' label
+// values, which start with the collector ID, as every derived metric's
+// labels do.  Each metric is admitted on its own, so a row that arrives as
+// the budget fills can be counted in some metrics and not in others.
+
+// count adds v to the counter of metric with values.
+func (d *derived) count(vec *prometheus.CounterVec, metric string, values []string, v float64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	fresh, ok := d.admitLocked(metric, 1, values)
+	if !ok {
+		return
+	}
 	if counter, err := vec.GetMetricWithLabelValues(values...); err == nil {
-		counter.Inc()
+		counter.Add(v)
+	} else {
+		d.releaseLocked(metric, 1, fresh, values)
 	}
 }
 
-// observeHistogram observes v, skipping label values Prometheus rejects.
-func observeHistogram(vec *prometheus.HistogramVec, values []string, v float64) {
+// countOutcome increments the counter of metric with values and outcome.
+// The series of both outcomes are created together, so an error ratio reads
+// 0 rather than nothing before the first error.
+func (d *derived) countOutcome(vec *prometheus.CounterVec, metric string, values []string, outcome string) {
+	withOutcome := func(o string) []string {
+		return append(append(make([]string, 0, len(values)+1), values...), o)
+	}
+	sets := [][]string{withOutcome(outcomeSuccess), withOutcome(outcomeError)}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	fresh, ok := d.admitLocked(metric, 1, sets...)
+	if !ok {
+		return
+	}
+	for i, set := range sets {
+		counter, err := vec.GetMetricWithLabelValues(set...)
+		if err != nil {
+			d.releaseLocked(metric, 1, fresh&(1<<i), set)
+			continue
+		}
+		if set[len(set)-1] == outcome {
+			counter.Inc()
+		}
+	}
+}
+
+// observeValue observes v in the histogram of metric with values, which
+// costs series series per label set.
+func (d *derived) observeValue(vec *prometheus.HistogramVec, metric string, series int, values []string, v float64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	fresh, ok := d.admitLocked(metric, series, values)
+	if !ok {
+		return
+	}
 	if histogram, err := vec.GetMetricWithLabelValues(values...); err == nil {
 		histogram.Observe(v)
+	} else {
+		d.releaseLocked(metric, series, fresh, values)
 	}
+}
+
+// admitLocked reports whether the series of metric with each label set in
+// sets may be written: the collector holds it already, or the new ones,
+// cost series each, fit in its budget together and are counted from now
+// on; fresh has bit i set when sets[i] is new.  Otherwise nothing is
+// written, and the overflow counter of metric grows by one.  d.mu must be
+// held.
+func (d *derived) admitLocked(metric string, cost int, sets ...[]string) (fresh uint64, ok bool) {
+	collectorID := sets[0][0]
+	fresh, ok = d.budget.admit(collectorID, metric, cost, sets...)
+	switch {
+	case !ok:
+		if counter, err := d.overflow.GetMetricWithLabelValues(collectorID, metric); err == nil {
+			counter.Inc()
+		}
+	case fresh != 0:
+		d.setSeriesLocked(collectorID)
+	}
+	return fresh, ok
+}
+
+// releaseLocked frees the budget of a series admitLocked counted (fresh not
+// 0) but Prometheus did not create.  d.mu must be held.
+func (d *derived) releaseLocked(metric string, cost int, fresh uint64, values []string) {
+	if fresh == 0 {
+		return
+	}
+	d.budget.release(values[0], metric, cost, values)
+	d.setSeriesLocked(values[0])
+}
+
+// setSeriesLocked exports the series collectorID holds.  d.mu must be held.
+func (d *derived) setSeriesLocked(collectorID string) {
+	if gauge, err := d.series.GetMetricWithLabelValues(collectorID); err == nil {
+		gauge.Set(float64(d.budget.used(collectorID)))
+	}
+}
+
+// seriesBudget is the bookkeeping of the series budget: per collector, its
+// limit, and the label sets of the derived series it holds with what they
+// cost.  It is not safe for concurrent use; derived.mu guards it.
+type seriesBudget struct {
+	limits map[string]int
+	held   map[string]*heldSeries
+	// key is reused to build series keys, so looking up a series that is
+	// held already does not allocate.
+	key []byte
+}
+
+// heldSeries are the derived series one collector holds.
+type heldSeries struct {
+	keys map[string]struct{}
+	// series is what keys cost, counted as Prometheus stores them.
+	series int
+}
+
+func newSeriesBudget() seriesBudget {
+	return seriesBudget{limits: map[string]int{}, held: map[string]*heldSeries{}}
+}
+
+// limit returns collectorID's budget: its max_derived_series, or the
+// default for a collector it was not told about.
+func (b *seriesBudget) limit(collectorID string) int {
+	if n := b.limits[collectorID]; n > 0 {
+		return n
+	}
+	return collectorconfig.DefaultLogMaxDerivedSeries
+}
+
+// used returns the series collectorID holds.
+func (b *seriesBudget) used(collectorID string) int {
+	if h := b.held[collectorID]; h != nil {
+		return h.series
+	}
+	return 0
+}
+
+// admit reports whether collectorID may write the series of metric with
+// each label set in sets: those it holds already, and the others if, at
+// cost series each, they fit in its budget together.  It then holds them,
+// and fresh has bit i set for each new sets[i].  At most 64 sets.
+func (b *seriesBudget) admit(collectorID, metric string, cost int, sets ...[]string) (fresh uint64, ok bool) {
+	h := b.held[collectorID]
+	need := 0
+	for i, set := range sets {
+		if h != nil {
+			if _, held := h.keys[string(b.keyOf(metric, set))]; held {
+				continue
+			}
+		}
+		fresh |= 1 << i
+		need += cost
+	}
+	if fresh == 0 {
+		return 0, true
+	}
+	if b.used(collectorID)+need > b.limit(collectorID) {
+		return 0, false
+	}
+	if h == nil {
+		h = &heldSeries{keys: map[string]struct{}{}}
+		b.held[collectorID] = h
+	}
+	for i, set := range sets {
+		if fresh&(1<<i) != 0 {
+			h.keys[string(b.keyOf(metric, set))] = struct{}{}
+		}
+	}
+	h.series += need
+	return fresh, true
+}
+
+// release stops holding the series of metric with values, which cost cost.
+func (b *seriesBudget) release(collectorID, metric string, cost int, values []string) {
+	h := b.held[collectorID]
+	if h == nil {
+		return
+	}
+	key := b.keyOf(metric, values)
+	if _, held := h.keys[string(key)]; held {
+		delete(h.keys, string(key))
+		h.series -= cost
+	}
+}
+
+// forget drops collectorID's limit and frees what it holds.
+func (b *seriesBudget) forget(collectorID string) {
+	delete(b.limits, collectorID)
+	delete(b.held, collectorID)
+}
+
+// keyOf builds the key of the series of metric with values into b.key and
+// returns it; it is valid until the next call.  Label values that are not
+// valid UTF-8, which could contain the separator, are rejected by
+// Prometheus and their fresh series released.
+func (b *seriesBudget) keyOf(metric string, values []string) []byte {
+	key := append(b.key[:0], metric...)
+	for _, v := range values {
+		key = append(key, 0xff)
+		key = append(key, v...)
+	}
+	b.key = key
+	return key
 }
 
 // labelCaps keeps the values each capped label has seen, per scope.  It is
