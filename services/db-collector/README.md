@@ -224,9 +224,13 @@ API for future alerting or investigation workflows.
 
 Current behavior:
 
-- credentials are resolved through a `CredentialResolver`
-- environment-based credentials use the `HEARTBEAT_CREDENTIAL_<REF>` naming
-  pattern ([resolution rules](../../docs/reference/configuration.md#credential-resolution))
+- credentials are resolved through a `CredentialResolver` on every `Open`:
+  `FileCredentialResolver` reads a `HEARTBEAT_CREDENTIAL_<REF>` file from
+  `HEARTBEAT_CREDENTIALS_DIR` (the mounted credentials Secret), so a rotated
+  credential is used by the next connection without a restart, and falls
+  back to an environment variable of the same name
+  ([resolution rules](../../docs/reference/configuration.md#credential-resolution)).
+  A changed credential gets a new pool; the old one is closed once idle
 - the DSN enables TLS by default
 - each pool is verified when it is created with one query that also checks
   whether the login is sysadmin-equivalent (`IS_SRVROLEMEMBER('sysadmin')` or

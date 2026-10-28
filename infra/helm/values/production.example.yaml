@@ -31,6 +31,9 @@ dbCollector:
       - ipBlock:
           cidr: 10.100.0.0/16
   # ExternalSecret-managed: HEARTBEAT_CREDENTIAL_ENV_SQLSERVER_<NAME>=<login>:<password>.
+  # Mounted as files read on every connection: a rotation in AWS Secrets
+  # Manager reaches the collector after the ExternalSecret's refresh and the
+  # kubelet's sync, without a restart.
   credentials:
     existingSecret: heartbeat-sqlserver-credentials
 

@@ -223,7 +223,7 @@ count.
 - [x] Read active target/probe runtime config from YAML/Kubernetes convention
 - [ ] Reintroduce API/PostgreSQL-driven probe assignments only after the control-plane workflow exists: approved assignments render to a generated values file proposed as a pull request to `heartbeat-deploy` ([ADR 0014](docs/architecture/decisions/0014-probe-assignments-to-runtime-config.md))
 - [ ] Chart key `managedCollectors`, appended to `integrations.collectors`; hand-written collector IDs may not start with `api-` ([ADR 0014](docs/architecture/decisions/0014-probe-assignments-to-runtime-config.md))
-- [ ] Resolve credentials from mounted Secret files, so a new or rotated credential needs no collector restart ([ADR 0002](docs/architecture/decisions/0002-runtime-config-in-yaml.md) follow-up, [ADR 0014](docs/architecture/decisions/0014-probe-assignments-to-runtime-config.md))
+- [x] Resolve credentials from mounted Secret files, so a new or rotated credential needs no collector restart ([ADR 0002](docs/architecture/decisions/0002-runtime-config-in-yaml.md) follow-up, [ADR 0014](docs/architecture/decisions/0014-probe-assignments-to-runtime-config.md))
 - [x] Keep desired state out of PostgreSQL
 
 ### 2.6 Collector reliability baseline
@@ -360,9 +360,8 @@ mutation is audited → login and sessions [4.2] → users and roles [4.2] →
 inventory [4.3] → telemetry sources [4.4] → database targets and probe
 definitions [4.5] → probe assignments, rendered to `managedCollectors` and
 applied on kind [4.5, 2.5] → deep links [4.9] → this stage's validation.
-Alongside, needing no API: the `managedCollectors` chart key and credentials
-from mounted Secret files [2.5], each after the [0.4], [2.6] and [2.7] work
-that touches the same chart and collector files. ADR 0014's pull request
+Alongside, needing no API: the `managedCollectors` chart key [2.5], after the
+[0.4], [2.6] and [2.7] work that touches the same chart files. ADR 0014's pull request
 output waits for `heartbeat-deploy` [18]; until then the output is `none`.
 
 Investigations, alerting and reporting [4.6–4.8] and the job/result

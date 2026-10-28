@@ -46,5 +46,8 @@ not stored in PostgreSQL.
   [ADR 0014](0014-probe-assignments-to-runtime-config.md).
 - Onboarding a database is a config change today; see the
   [database targets guide](../../guides/database-targets.md).
-- Credential rotation currently needs a restart because credentials come from
-  environment variables. A file-based resolver is a planned follow-up.
+- Credential rotation needed a restart while credentials came from
+  environment variables. Since [2.5] the chart mounts the credentials Secret
+  as files that the collector reads on every connection, so a new or rotated
+  credential needs none
+  ([credential resolution](../../reference/configuration.md#credential-resolution)).

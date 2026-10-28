@@ -29,9 +29,11 @@ dbCollector:
   adminToken:
     existingSecret: heartbeat-runtime
     key: admin-token
-  # Secret whose keys are HEARTBEAT_CREDENTIAL_<REF> variables, loaded with
-  # envFrom (docs/reference/configuration.md#credential-resolution). Empty
-  # means no SQL Server credentials are mounted.
+  # Secret with one HEARTBEAT_CREDENTIAL_<REF> key per credential_ref,
+  # mounted as files that the collector reads on every connection: a key added
+  # or rotated reaches it within about a minute, without a restart
+  # (docs/reference/configuration.md#credential-resolution). Empty means no
+  # SQL Server credentials are mounted.
   credentials:
     existingSecret: ""
   # How often the collector re-reads the mounted integrations.yaml. ConfigMap

@@ -288,8 +288,9 @@ cmd_sqlserver_up() {
 	mkdir -p "$STATE_DIR"
 	touch "$STATE_DIR/sqlserver-dev"
 	cmd_deploy
-	# Credential variables are read at startup.
-	kubectl_ -n "$NAMESPACE" rollout restart statefulset/db-collector >/dev/null
+	# The collector reads the credential from the mounted Secret on every
+	# connection, so a new password needs no restart; the first deploy with
+	# sqlserver-dev.yaml rolls the pod to mount it.
 	kubectl_ -n "$NAMESPACE" rollout status statefulset/db-collector --timeout 3m
 }
 

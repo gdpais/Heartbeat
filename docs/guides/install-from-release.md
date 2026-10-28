@@ -143,6 +143,7 @@ stays ready while every SQL Server target fails
 | Symptom | Cause and fix |
 | --- | --- |
 | `CreateContainerConfigError` on `db-collector-0` or the Grafana pod | A Secret from step 1 is missing or lacks a key; `kubectl -n heartbeat describe pod <pod>` names it. Create it; the pod then starts by itself |
+| `db-collector-0` stays `ContainerCreating` with a `FailedMount` event | The Secret named in `dbCollector.credentials.existingSecret` is missing. Create it ([step 5](#5-add-a-sql-server-target)); the pod then starts by itself |
 | `ImagePullBackOff` or `ErrImagePull` | The digest in `heartbeat.yaml` is wrong, or the cluster cannot reach `ghcr.io` (or Docker Hub, `quay.io` for the engines) |
 | Pods `Pending` with an unbound claim | No default StorageClass. Make one the default, or name a class for each claim in the values |
 | `values don't meet the specifications of the schema` | A value is misspelt or out of range; the message gives its path. Unknown top-level keys are rejected too |
@@ -185,11 +186,12 @@ helm upgrade heartbeat oci://ghcr.io/gdpais/charts/heartbeat --version "$VERSION
   --namespace heartbeat -f heartbeat.yaml -f targets.yaml --wait --timeout 10m
 ```
 
-Naming the Secret for the first time restarts the collector, which ends the
-step 4 port-forward (`error: lost connection to pod`): start it again. A later
-change to the target list hot-reloads without a restart; a change to the
-Secret's contents needs `kubectl -n heartbeat rollout restart statefulset/db-collector`.
-Then check the target as in [step 5](database-targets.md#5-verify).
+Naming the Secret for the first time restarts the collector to mount it,
+which ends the step 4 port-forward (`error: lost connection to pod`): start it
+again. Later changes need no restart: the target list hot-reloads, and a key
+added to the Secret, or a changed password, reaches the collector within about
+a minute, because it reads the mounted files on every connection. Then check
+the target as in [step 5](database-targets.md#5-verify).
 
 The collector verifies the server's TLS certificate. SQL Server's default
 self-signed certificate fails with `x509: certificate is not valid for any

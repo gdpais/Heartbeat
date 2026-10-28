@@ -61,6 +61,13 @@ spec:
               value: {{ $c.sqlserver.trustServerCertificate | quote }}
             - name: HEARTBEAT_STATE_DIR
               value: /var/lib/heartbeat
+            {{- if $c.credentials.existingSecret }}
+            # Credential files are read on every connection, so a key added to
+            # or rotated in the Secret is used once the kubelet updates the
+            # volume (about a minute), without a restart.
+            - name: HEARTBEAT_CREDENTIALS_DIR
+              value: /var/run/secrets/heartbeat/credentials
+            {{- end }}
             {{- if $c.adminToken.existingSecret }}
             - name: HEARTBEAT_ADMIN_TOKEN
               valueFrom:
@@ -77,13 +84,6 @@ spec:
             {{- with $c.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- with $c.credentials.existingSecret }}
-          # Credential variables are read at startup: restart the pod after
-          # changing this Secret.
-          envFrom:
-            - secretRef:
-                name: {{ . }}
-          {{- end }}
           ports:
             - name: http
               containerPort: 8082
@@ -114,10 +114,23 @@ spec:
             # The only writable path: the root filesystem stays read-only.
             - name: state
               mountPath: /var/lib/heartbeat
+            {{- if $c.credentials.existingSecret }}
+            # A directory mount (not subPath) so Secret updates reach the pod.
+            - name: credentials
+              mountPath: /var/run/secrets/heartbeat/credentials
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "heartbeat.integrationsConfigMap" . }}
+        {{- with $c.credentials.existingSecret }}
+        - name: credentials
+          secret:
+            secretName: {{ . }}
+            # Readable by the pod's fsGroup only.
+            defaultMode: 0440
+        {{- end }}
         - name: state
           {{- if $c.persistence.enabled }}
           persistentVolumeClaim:
