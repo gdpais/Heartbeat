@@ -71,7 +71,7 @@ Production delivery is section 18.
 - [x] Bump engines to latest stable under Compose first (Prometheus, Grafana, Loki, Alertmanager, otelcol); add Renovate
 - [x] Build the Helm chart and kind workflow; adapt Make and CI; pass the ADR 0003 acceptance criteria (`make chart-check`, `make kind-e2e`; evidence in ADR 0003)
 - [x] Retire the platform Compose definition and the Kustomize bundle
-- [ ] Install the Renovate GitHub App on the repository (config is in `renovate.json`)
+- [x] Install the Renovate GitHub App on the repository (config is in `renovate.json`); its [dependency dashboard](https://github.com/gdpais/Heartbeat/issues/86) lists the detected dependencies and the majors awaiting approval
 - [ ] Agree the local loop's time and resource budget (measured: about 2.0 GiB RAM for the full profile)
 - [x] Cap the sandbox SQL Server's memory (`MSSQL_MEMORY_LIMIT_MB` in `scripts/kind.sh` and `scripts/sqlserver-test.sh`), so that a load flood or a second cluster slows it down instead of getting it killed; on 2026-10-22 it was killed twice on an 8 GB Docker host, once under a PatientZero load flood and once when a second cluster started. 2048 MB by default, SQL Server's minimum (`SQLSERVER_MEMORY_LIMIT_MB`); an existing container keeps the cap it was created with, and `make sqlserver-dev-up` warns when it differs ([sandbox](docs/guides/local-development.md#sql-server-sandbox))
 - [x] Reject unknown keys inside each component's chart values (`dbCollector.enabeld` was ignored): `dbCollector`, `otelCollectorQueue`, `grafanaDashboards` and the two security contexts now list every key, so a misspelt one fails; `integrations`, `prometheusRules` and `backendNetworkPolicies` already did. The bundled engines' values stay their charts' own
@@ -86,7 +86,7 @@ the rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 - [x] Release workflows: release-please keeps a release pull request (`CHANGELOG.md`, `version.txt`, chart `version`/`appVersion`); a `vX.Y.Z` tag on `master` that passed CI publishes multi-arch images and the chart to GHCR and lists their digests in the GitHub release
 - [x] Change-based CI: slow jobs run only when a change can affect them, every job on `master`; one required check, `ci-ok` ([ADR 0007](docs/architecture/decisions/0007-change-based-ci-with-one-required-check.md))
 - [x] Switch the `master` ruleset's required checks from `test`, `Helm chart` and `kind end-to-end` to `ci-ok`
-- [x] Pin GitHub Actions by commit SHA, kept current by Renovate; `make test` fails on an unpinned `uses:` ([CONTRIBUTING.md](CONTRIBUTING.md#ci)). Renovate bumps the pins only once its app is installed [0.4]
+- [x] Pin GitHub Actions by commit SHA, kept current by Renovate; `make test` fails on an unpinned `uses:` ([CONTRIBUTING.md](CONTRIBUTING.md#ci)).
 - [ ] At the end of phase 2: create the release GitHub App; set `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY` ([setup](CONTRIBUTING.md#releases)). Until then the release-please job is skipped and no releases are cut, not even by hand; the first release pull request then covers every Conventional Commit since `v0.1.0`
 - [ ] At `1.0.0`, the first production release: remove `"prerelease": true` from `release-please-config.json`
 - [x] Tag ruleset on all tags (not only `v*`, so later component tags are covered): no updates or deletions

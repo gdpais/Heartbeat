@@ -88,7 +88,7 @@
     },
     {
       "customType": "regex",
-      "description": "kind node image in the Makefile (tracked so the dashboard lists it; updates disabled above).",
+      "description": "kind node image in the Makefile. Updates are disabled above, and Renovate leaves disabled dependencies off the dashboard, so it never lists this one.",
       "managerFilePatterns": ["/^Makefile$/"],
       "matchStrings": ["KIND_NODE_IMAGE := (?<depName>kindest/node):(?<currentValue>v[\\d.]+)@(?<currentDigest>sha256:[a-f0-9]+)"],
       "datasourceTemplate": "docker"
