@@ -24,7 +24,7 @@ All four workflows follow the same pattern:
 
 | Service | Owns | Status |
 | --- | --- | --- |
-| API / control plane (`apps/api`) | Inventory CRUD, telemetry source and database target onboarding, alert policy and report schedule CRUD, users/roles, investigation APIs, Grafana deep links from YAML templates, JSONL audit output. Uses PostgreSQL for durable data and Redis for queues, idempotency keys and cached summaries. | Planned |
+| API / control plane (`apps/api`) | Inventory CRUD, telemetry source and database target onboarding, alert policy and report schedule CRUD, users/roles, investigation APIs, Grafana deep links from YAML templates, audit records. Uses PostgreSQL for durable data and Redis for queues, idempotency keys and cached summaries. | Planned |
 | Web UI (`apps/web`) | Operator screens: environments/applications, telemetry sources, DB target onboarding, investigations, alert policies, reports, integrations. Investigation is app-first; drill-downs open Grafana/Loki. | Planned |
 | Session analyzer (`services/session-analyzer`) | Investigation jobs: correlation across Prometheus, Loki, collector evidence and metadata; anomaly windows; adaptive baseline computation. | Planned |
 | Reporting (`services/reporting`) | Scheduled and on-demand report jobs, rendering, delivery, run metadata. | Planned |
@@ -138,9 +138,13 @@ available. The first target is a weekly summary delivered by email.
 
 ## Audit
 
-Every operator or admin mutation appends one JSONL line (timestamp, actor,
-action, entity type and ID, before/after metadata, request ID, config version)
-to a dated audit file, for example `audit/heartbeat-audit-YYYY-MM-DD.jsonl`.
-Config reload results and collector add/remove/change decisions are logged the
-same way. Secrets never enter audit logs. Files are rotated and shipped to
-Loki/SIEM.
+Every operator or admin change writes one audit record (time, actor, action,
+entity type and ID, before and after, request ID, config version) in the
+same transaction as the change, to an outbox the API drains as OTLP log
+records through the OTel Collector to Loki
+([ADR 0016](decisions/0016-audit-records-through-an-outbox.md)). A change
+that rolls back leaves no record; while the Collector is down, changes still commit and
+records wait. Secrets never enter audit records. Records are searched in
+Grafana; a SIEM is added as a Collector exporter. Collector reload results
+and collector add, remove and change decisions stay in the collector's logs
+and its `heartbeat_collector_config_*` metrics.

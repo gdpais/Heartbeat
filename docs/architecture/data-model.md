@@ -25,7 +25,7 @@ See [ADR 0001](decisions/0001-postgresql-metadata-only.md) for the reasoning.
 | Alert grouping, deduplication, silencing, delivery | Alertmanager |
 | Queues, locks, retries, idempotency keys, short-lived caches, login sessions | Redis ([ADR 0013](decisions/0013-api-design-and-subsystem-boundaries.md)) |
 | Integration endpoints, Grafana URL templates, credential references, collector desired state | `config/integrations.yaml` / Kubernetes ConfigMaps |
-| Audit events | Append-only JSONL files (planned), shipped to Loki/SIEM |
+| Audit records | Loki, as OTLP log records; written first to a transient outbox in the change's transaction ([ADR 0016](decisions/0016-audit-records-through-an-outbox.md)) |
 | Report binaries | Object storage or filesystem (planned); PostgreSQL keeps only `artifact_uri` |
 
 Tables deliberately **not** created in the MVP:
@@ -35,7 +35,7 @@ Tables deliberately **not** created in the MVP:
 | `outsystems_sources` | OutSystems is a source type, not a domain object parallel to applications. Its settings live in `telemetry_sources.config`. Promote to a table only if the settings become large, queryable or constraint-heavy. |
 | `session_identity_mappings` | Sessions are high-volume, potentially sensitive and telemetry-derived; they are reconstructed from Loki/Prometheus at investigation time. |
 | `integration_connections`, `grafana_links` | Deployment-owned YAML and URL templates. Add only if operators need UI-editable mappings. |
-| `audit_events` | JSONL files in the MVP. Add only for relational audit search or compliance exports. |
+| `audit_events` | Audit records are OTLP log records in Loki; the API's `audit_outbox` only holds them until the OTel Collector accepts them ([ADR 0016](decisions/0016-audit-records-through-an-outbox.md)). Add only for relational audit search or compliance exports. |
 | `collector_instances`, `collector_assignments` | Would conflict with YAML/Kubernetes as the collector's desired state. Runtime state is exposed via `/metrics`, `/readyz` and logs. |
 | `assets`, `asset_relationships` | Deferred until SQL Server/host topology is in scope (see [deferred topology](#deferred-topology)). |
 
@@ -304,7 +304,7 @@ deleting them; foreign keys restrict deletion.
 | `environments` | Top ownership boundary; everything observable belongs to exactly one. | `prod`, `staging` |
 | `applications` | Business system operators care about. Belongs to one environment. | *Claims Portal* (`platform = outsystems_traditional`, `criticality = high`) |
 | `application_components` | A part of an application: *what part of the app it is*, not where it runs. | OutSystems module `ClaimsWeb`, screen flow `Login`, worker `auth-worker` |
-| `telemetry_sources` | A configured feed of telemetry for one application. No `environment_id`: it is derived through the application. | `source_type = outsystems`, `ingest_mode = api`, `config = {"log_labels":{"app":"Claims"}}` |
+| `telemetry_sources` | A configured feed of telemetry for one application: which logs and metrics are its own. No `environment_id`: it is derived through the application. For OutSystems 11, the extraction collector itself stays in YAML ([ADR 0017](decisions/0017-outsystems-sources-map-application-identity.md)). | `source_type = outsystems`, `ingest_mode = agentless`, `config = {"application_name":"Claims"}` |
 | `normalization_rules` | Versioned mappings from source-specific fields to Heartbeat's normalized fields. Scoped by source type and version, not environment. | `outsystems` / `default-log-v1`: `{"session_field":"SessionId","user_field":"UserId"}` |
 
 OutSystems Traditional and Reactive are represented through

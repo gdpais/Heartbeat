@@ -10,13 +10,14 @@ after foundations and schema prerequisites (sections 2–5). Later-service
 integrations are explicitly identified below; they do not block independent
 stage work, but they do block end-to-end completion of the dependent feature.
 Stage 3 does not wait for stage 2's release: its decisions are recorded
-(ADRs 0013–0015) and its prerequisites are done, so it starts while the
+(ADRs 0013–0017) and its prerequisites are done, so it starts while the
 release waits for the release app [0.5].
 
 Test each implementation action as it lands. Section 16 is a shared validation
 inventory used throughout delivery, not a final testing stage. Remaining
 delivery order after the Web UI: production delivery [18] → product workflows
-[10–11] → investigations, alerting and reporting [6, 7, 12–14] → advanced
+[10–11] → investigations, alerting and reporting, with their APIs [4.6–4.8,
+6, 7, 12–14] → advanced
 reliability [19] → fallback ingestion [20] → Oracle integration, gated by an
 Alloy coverage check [21] → final Alloy comparison [22].
 
@@ -267,9 +268,10 @@ inventory exists; API-managed onboarding [4.4, 10.1] follows in stage 3.
 Generic source expansion [3.4] remains later work. Grafana dashboards [10.4]
 follow the ingest path.
 
-Remaining work, in order: the signal gaps the PatientZero scenarios found
-[3.3, 9.1] → the scheduled scenario run [16.5] → this stage's validation →
-the release [0.5]. Not part of this exit, and done alongside stage 3 before
+Remaining work, in order: the first green nightly run of the scenarios
+workflow [16.5] → this stage's validation → the release [0.5]. The signal gaps
+the PatientZero scenarios found are closed [3.3, 9.1], and the workflow is on
+`master` since 2026-10-27. Not part of this exit, and done alongside stage 3 before
 the first production deploy [18]: a series
 budget [2.6], collector egress and exposure [2.7], unknown keys in component
 values [0.4], Alertmanager's rollout policy [9.4] and PatientZero's hardening
@@ -347,17 +349,31 @@ source (OutSystems Cloud or ODC) or the phase 7 investigation timeline.
 ## 4. Core system: API / control plane (`apps/api`)
 
 Delivery stage 3. PostgreSQL schema [1], Redis [0.2], runtime config [8]
-and collector contracts are prerequisites. CRUD, metadata persistence,
-queue submission and worker interfaces can be delivered before their workers.
-Investigation results [4.6] need analyzer/evidence assembly [6, 12]; adaptive
-baselines [4.7] need computation [6.3, 13.2]; report execution/status [4.8] needs
-reporting workers/delivery [7, 14]. Do not mark these workflows complete from
-endpoint or queue tests alone. Rule/route provisioning [4.7] needs [9.1, 9.4,
-13.1]; deep links [4.9] need YAML templates/datasources [8.1, 9.3, 15.1].
+and collector contracts are prerequisites, and its decisions are recorded
+(ADRs 0013–0017). Deep links [4.9] need YAML templates and datasources [8.1,
+9.3], which exist.
 
-- [ ] Define/version API-to-worker job/result contracts before queue producers and consumers; integration-test each complete workflow when its worker lands (envelope and delivery rules: [ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
+Remaining work, in order, one pull request each: API bootstrap [4.1] →
+PostgreSQL and Redis connectivity, migrations and sqlc [4.1] → the API,
+PostgreSQL and Valkey in the chart [4.1] → audit output [4.10], so every later
+mutation is audited → login and sessions [4.2] → users and roles [4.2] →
+inventory [4.3] → telemetry sources [4.4] → database targets and probe
+definitions [4.5] → probe assignments, rendered to `managedCollectors` and
+applied on kind [4.5, 2.5] → deep links [4.9] → this stage's validation.
+Alongside, needing no API: the `managedCollectors` chart key and credentials
+from mounted Secret files [2.5], each after the [0.4], [2.6] and [2.7] work
+that touches the same chart and collector files. ADR 0014's pull request
+output waits for `heartbeat-deploy` [18]; until then the output is `none`.
+
+Investigations, alerting and reporting [4.6–4.8] and the job/result
+contracts are built later, with their workers [6, 7, 12–14]: nothing consumes
+them before, and their shape depends on the correlation model [6.2] and the
+evidence design [12.4]. Do not mark those workflows complete from endpoint or
+queue tests alone.
+
+- [ ] Define/version API-to-worker job/result contracts before the first queue producer and consumer, with the first worker [6, 7]; integration-test each complete workflow when its worker lands (envelope and delivery rules: [ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
 - [x] Define how approved metadata probe assignments become YAML/Kubernetes runtime config [2.5, 8]; keep runtime desired state out of PostgreSQL ([ADR 0014](docs/architecture/decisions/0014-probe-assignments-to-runtime-config.md))
-- [ ] Validate this stage: auth/ownership/secret refs, CRUD persistence, audit redaction, queue contracts and collector onboarding [16.1–16.2]
+- [ ] Validate this stage: auth/ownership/secret refs, CRUD persistence, audit redaction and collector onboarding, with PatientZero registered through the API on kind and its database target's probes applied by the collector [16.1–16.2, 16.5]
 
 ### 4.1 Service bootstrap
 - [ ] Create Go service entrypoint `apps/api/cmd/api/`
@@ -381,8 +397,10 @@ endpoint or queue tests alone. Rule/route provisioning [4.7] needs [9.1, 9.4,
 - [ ] Enforce app -> environment ownership path
 
 ### 4.4 Telemetry source management
+- [x] Decide what an OutSystems 11 source is: a mapping from an application to its `service.name` (`config.application_name`, `ingest_mode = agentless`); the extraction collector per installation stays in YAML ([ADR 0017](docs/architecture/decisions/0017-outsystems-sources-map-application-identity.md))
 - [ ] Implement telemetry sources CRUD
-- [ ] Support OutSystems telemetry source registration
+- [ ] Support OutSystems telemetry source registration, with `config` checked against a JSON Schema per source type; within an environment, an `application_name` maps to one application
+- [ ] Show whether the collector observes the source: an enabled `outsystems_logs` collector reports its environment in `GET /admin/config`
 - [ ] Associate telemetry source to application
 - [ ] Derive environment through application
 - [ ] Validate ingest mode and required config
@@ -391,11 +409,15 @@ endpoint or queue tests alone. Rule/route provisioning [4.7] needs [9.1, 9.4,
 ### 4.5 Database target management
 - [ ] Implement database targets CRUD
 - [ ] Implement probe definition management/versioning
+- [ ] Seed the built-in probe definitions from the collector's catalogs, with no `query_template` (an expand migration makes it nullable); a test fails when the seed and the catalogs differ. Custom definitions carry a versioned `query_template`, checked as one read-only `SELECT` with the collector's validator
 - [ ] Implement probe assignment management, with approval states ([ADR 0014](docs/architecture/decisions/0014-probe-assignments-to-runtime-config.md))
 - [ ] Validate target config and safe probe policies
 - [ ] Store credential refs only
 
 ### 4.6 Investigations API
+
+Built with the session analyzer [6, 12], not in stage 3.
+
 - [ ] Implement create investigation endpoint
 - [ ] Implement read investigation status/results endpoint
 - [ ] Implement evidence links endpoint
@@ -403,12 +425,19 @@ endpoint or queue tests alone. Rule/route provisioning [4.7] needs [9.1, 9.4,
 - [ ] Queue jobs through Redis
 
 ### 4.7 Alerting API
+
+Built with alert rendering and baselines [13], not in stage 3. Rule and route
+provisioning needs [9.1, 9.4, 13.1].
+
 - [ ] Implement alert policies CRUD
 - [ ] Implement notification routes CRUD
 - [ ] Implement adaptive baseline metadata endpoints
 - [ ] Implement rule rendering/provisioning interface to Prometheus/Alertmanager
 
 ### 4.8 Reporting API
+
+Built with the reporting worker [7, 14], not in stage 3.
+
 - [ ] Implement report templates CRUD
 - [ ] Implement report schedules CRUD
 - [ ] Implement report run status/read endpoints
@@ -420,9 +449,11 @@ endpoint or queue tests alone. Rule/route provisioning [4.7] needs [9.1, 9.4,
 - [ ] Keep Grafana/Loki integration template-driven, not DB-driven
 
 ### 4.10 Audit output
-- [ ] Append admin/operator mutations to JSONL audit files
+- [x] Decide how audit records are written and delivered: in the change's transaction to an `audit_outbox`, drained as OTLP log records through the OTel Collector to Loki ([ADR 0016](docs/architecture/decisions/0016-audit-records-through-an-outbox.md))
+- [ ] Write a record for every admin/operator change in its transaction; drain the outbox to the OTel Collector, at least once, and delete rows once accepted; `audit_record.schema.json` in `packages/telemetry-contracts`
 - [ ] Include request ID, actor, entity type/id, before/after, config version when relevant
-- [ ] Ensure secrets never enter audit logs
+- [ ] Ensure secrets never enter audit records: a test changes each audited entity and fails on a password, hash, session ID or token
+- [ ] Export the outbox's row count and oldest age; alert when delivery stalls
 
 ---
 
@@ -431,13 +462,13 @@ endpoint or queue tests alone. Rule/route provisioning [4.7] needs [9.1, 9.4,
 Delivery stage 4. Bootstrap/auth/inventory/onboarding screens require API
 bootstrap, auth and CRUD [4.1–4.5]. Investigation screens require [4.6, 6, 12];
 alert screens require policy/rule/route integration [4.7, 9.4, 13]; reports need
-[4.8, 7, 14]. Deliver screen shells against contracts first, then validate real
-workflows as later services arrive; shells/mocks are not end-to-end completion.
+[4.8, 7, 14]. Those three are built with their APIs and workers, not as shells
+in stage 4; shells/mocks are not end-to-end completion.
 Grafana/Loki drill-down needs reachable datasources and templates [4.9, 9.3,
 15.1]. Minimal authorization [4.2] precedes operator access; later hardening
 [15.2] does not replace it.
 
-- [ ] Validate this stage: API-backed login, roles, inventory/onboarding and deep links; validate investigation/alert/report UI end to end with their later workers [16.3]
+- [ ] Validate this stage: API-backed login, roles, inventory/onboarding and deep links; investigation, alert and report screens are validated end to end with their workers [16.3]
 
 ### 5.1 UI bootstrap
 - [ ] Create React/TypeScript app
@@ -740,8 +771,7 @@ ownership and outage testing are in section 19.
 - [ ] add worker backoff behavior
 
 ### 15.3 Audit and runbooks
-- [ ] rotate audit JSONL files
-- [ ] ship audit logs to Loki/SIEM
+- [ ] ship audit records to a SIEM, as an OTel Collector exporter, when one is chosen; they reach Loki from stage 3 [4.10]
 - [x] write SQL Server onboarding runbook ([guide](docs/guides/database-targets.md))
 - [ ] write alert tuning runbook
 - [ ] write ops/runbook docs for reload failures, collector crashes, queue backlogs
@@ -805,11 +835,12 @@ First slice, with phase 2:
 - [x] Ingest scenarios: `rotation` (weekly rotation on demand), `log-backlog`, `log-growth`, backfill within Loki's 168h limit, commits held back past the `lag`, and restarts and outages of the db-collector, the OTel Collector, Loki and SQL Server; the collector's clock is never changed; the restarts and outages are cluster faults, applied on the host with the kubeconfig and Docker ([cluster faults](tools/patientzero/scenarios/README.md#cluster-faults)). Done: `rotation`, `log-backlog` (commits late within the `lag`), `late-commits` (held back past it: those rows are lost, as ADR 0008 accepts), `log-growth`, `restarts`, and the `loki-outage`, `otel-outage`, `collector-outage` and `sqlserver-outage`, each checked against the rows PatientZero committed ([delivery checks](tools/patientzero/scenarios/README.md#delivery-checks)); the restarts and outages are applied by `make patientzero-scenario` as the run's host agent. The backfill within Loki's 168h limit is not a scenario (2026-10-25): `make patientzero-scale-collect` and `-check` backfill a 48 h generated log through the same extractor, Collector and Loki, and every hour matches its known answer [10.4]
 - [x] SLO scenarios: `bad-deploy` and `slow-sql` fire the existing burn-rate alerts in Alertmanager, end to end, with the rules' real windows (`make patientzero-scenario NAME=bad-deploy`, `NAME=slow-sql`); new `deploy` and `sql-latency` faults, and PatientZero logs slow SQL as the platform does ([SLO scenarios](tools/patientzero/scenarios/README.md#slo-scenarios))
 - [x] A CI workflow runs every scenario against PatientZero on a fresh kind cluster and checks their signals (`.github/workflows/scenarios.yml`, `make patientzero-scenarios`, in a fixed order): nightly on `master`, by hand, and on the release pull request, where `ci-ok` fails while a scenario fails, so no release is tagged with one. Not in `make kind-e2e`: the thirteen scenarios take about two and a half hours and would gate every pull request on them
-- [ ] The first green nightly run of the scenarios workflow is this stage's validation evidence [3]; it can only run once the workflow is on `master`
+- [ ] The first green nightly run of the scenarios workflow is this stage's validation evidence [3]; the workflow is on `master` since 2026-10-27, so the first nightly run is on 2026-10-28
 - [ ] Replace the hand-run load in the [live demo](docs/guides/live-demo.md) with the scenarios [16.2, 16.3]
 
 Later, each with the phase that needs it:
-- [ ] Phases 3–4: onboard PatientZero through the API and the UI as the reference application [16.3]
+- [ ] Phase 3: register PatientZero through the API as the reference application: its environment, application, OutSystems source and business database target, with probes applied by the collector [4]
+- [ ] Phase 4: onboard PatientZero from the UI [5, 16.3]
 - [ ] Phase 7, with the analyzer and alert work that uses them: timers, extension calls and a fake consumed REST partner; long-running screens and timers; `Instant` in a configured time zone across daylight saving switches; the `blocking` (and deadlock), `slow-partner`, `timer-backlog` and `bad-front-end` scenarios [6, 13]
 - [ ] Phase 7: investigations and reports on PatientZero runs compared with their journals; decide soak runs or a Prometheus TSDB backfill for multi-day baselines and weekly reports [6, 13, 14]
 - [ ] OTLP mode for the OutSystems Cloud/ODC streams and traces [3.4, 3.6]; a MuleSoft-like source [3.4]; an Oracle-backed variant [21]
@@ -817,8 +848,8 @@ Later, each with the phase that needs it:
 Hardening, from the 2026-10-22 security and performance reviews. PatientZero
 trusts its caller by design, so these keep it on the load path:
 - [ ] Default-deny NetworkPolicy in the `patientzero` namespace that admits port 8080 only from its known callers, such as the k6 load Job. PatientZero takes the user, session and client IP from request headers, so anything that reaches it can write forged rows into Loki. It stays ClusterIP and is never exposed outside the cluster
-- [ ] `placeOrder` returns a generic error and logs the detail, as `orderList` and `apiOrders` do; the HTML screen sends `X-Content-Type-Options: nosniff`, a restrictive CSP and `X-Frame-Options`
-- [ ] Backpressure on the business-database path: a sized connection pool with an acquire timeout and a concurrency limit on the handlers, answering 503 with `Retry-After` when saturated. Under a flood it now returns 500s as fast as SQL Server fails, and the pressure helped push the sandbox SQL Server out of memory
+- [ ] The HTML screen sends `X-Content-Type-Options: nosniff`, a restrictive CSP and `X-Frame-Options`. `placeOrder` already returns a generic error and leaves the detail to the error log row, as `orderList` and `apiOrders` do
+- [x] Backpressure on the business-database path: both SQL Server pools are sized (`PATIENTZERO_SQL_MAX_OPEN_CONNS`, 20) and the entry points share a concurrency limit (`PATIENTZERO_MAX_IN_FLIGHT`, 64) that answers 503 with `Retry-After` past it, counted as `shed` in the journal; waits for a pool connection are bounded by that limit, not by a timeout. `/readyz` stays up while the pool is full ([PatientZero](tools/patientzero/README.md))
 
 ---
 
@@ -866,7 +897,7 @@ until ownership is validated. Design details:
 - [ ] Define per-target ownership/takeover across replicas with fencing or equivalent duplicate-polling protection
 - [ ] Define recovery-time/data-gap objectives and downstream buffering/replay limits separately from collector failover
 - [ ] Test target/process/node loss, network partitions, reloads during failure, and storage/downstream outages; measure recovery, gaps, duplicates and database load, and re-check the baseline [2.6] under these failures
-- [ ] Validate security, operational runbooks, audit rotation/shipping and restore procedures [15]
+- [ ] Validate security, operational runbooks, audit shipping and restore procedures [15]
 
 ## 20. Fallback file ingestion
 
