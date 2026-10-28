@@ -29,6 +29,37 @@ func TestChartValuesSchemaEmbedsIntegrationsSchema(t *testing.T) {
 	}
 }
 
+// managedCollectors (ADR 0014) must accept the same collectors as
+// integrations.collectors, so its items reference the embedded integrations
+// schema's collector by that schema's $id instead of keeping a copy that
+// could drift. Helm resolves the $id inside values.schema.json; a $ref it
+// could not resolve there would be fetched over the network.
+func TestChartValuesSchemaManagedCollectorsReuseCollectorSchema(t *testing.T) {
+	root := repoRoot(t)
+	source := mustReadJSONSchema(t, filepath.Join(root, "packages/config-schema/src/integrations.schema.json"))
+	chart := mustReadJSONSchema(t, filepath.Join(root, "infra/helm/heartbeat/values.schema.json"))
+
+	properties, _ := chart["properties"].(map[string]any)
+	managed, _ := properties["managedCollectors"].(map[string]any)
+	items, _ := managed["items"].(map[string]any)
+	allOf, _ := items["allOf"].([]any)
+	var refs []string
+	for _, schema := range allOf {
+		if ref, ok := schema.(map[string]any)["$ref"].(string); ok {
+			refs = append(refs, ref)
+		}
+	}
+	id, _ := source["$id"].(string)
+	want := id + "#/properties/collectors/items"
+	if len(refs) != 1 || refs[0] != want {
+		t.Fatalf("values.schema.json managedCollectors.items.allOf $refs = %q, want [%q]", refs, want)
+	}
+	collectors, _ := source["properties"].(map[string]any)["collectors"].(map[string]any)
+	if _, ok := collectors["items"].(map[string]any); !ok {
+		t.Fatalf("%s does not resolve: the integrations schema has no properties.collectors.items", want)
+	}
+}
+
 // The chart schema rejects unknown top-level keys, so a misspelt value
 // (`--set dbColector.enabled=false`) fails instead of being ignored. Every
 // top-level key that values.yaml or an environment's values file sets must

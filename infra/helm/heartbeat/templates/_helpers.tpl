@@ -39,9 +39,38 @@ Call with (dict "root" $ "image" .Values.dbCollector.image).
 {{/* Fixed name of the integrations ConfigMap. */}}
 {{- define "heartbeat.integrationsConfigMap" -}}heartbeat-integrations{{- end }}
 
+{{/*
+The collectors of the rendered integrations.yaml, as a YAML list (read it
+back with fromYamlArray): the hand-written integrations.collectors, then
+managedCollectors, which the Heartbeat API renders from approved probe
+assignments into a values file of its own (ADR 0014). Lists replace rather
+than merge across values files, so the API's file never touches the
+hand-written list. The schema reserves the api- id prefix for
+managedCollectors. An id listed twice, in one list or across both, fails
+here, compared trimmed as the collector compares them, instead of the
+collector rejecting the file at its next reload.
+*/}}
+{{- define "heartbeat.collectors" -}}
+{{- $lists := list (list "integrations.collectors" ((.Values.integrations | default dict).collectors | default list)) (list "managedCollectors" (.Values.managedCollectors | default list)) }}
+{{- $all := list }}
+{{- $seen := dict }}
+{{- range $lists }}
+{{- $name := index . 0 }}
+{{- range $i, $c := index . 1 }}
+{{- $id := trim (toString $c.id) }}
+{{- with get $seen $id }}
+{{- fail (printf "collector id %q is listed twice, at %s and %s[%d]; collector ids must be unique across integrations.collectors and managedCollectors" $id . $name $i) }}
+{{- end }}
+{{- $_ := set $seen $id (printf "%s[%d]" $name $i) }}
+{{- $all = append $all $c }}
+{{- end }}
+{{- end }}
+{{- toYaml $all }}
+{{- end }}
+
 {{/* The integrations.yaml document as rendered into the ConfigMap. */}}
 {{- define "heartbeat.integrationsYaml" -}}
-{{ toYaml .Values.integrations }}
+{{ toYaml (set (deepCopy .Values.integrations) "collectors" (include "heartbeat.collectors" . | fromYamlArray)) }}
 {{- end }}
 
 {{/*

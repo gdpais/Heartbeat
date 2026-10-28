@@ -37,6 +37,15 @@ type chartProfile struct {
 	set []string
 	// inline is a values document applied last.
 	inline string
+	// flags are more helm template arguments, such as
+	// --skip-schema-validation.
+	flags []string
+	// sameRenderAs names another profile whose render this one must match
+	// byte for byte.
+	sameRenderAs string
+	// collectorIDs are the ids of the collectors in the rendered
+	// integrations.yaml, in order; nil skips the check.
+	collectorIDs []string
 	// Objects (kind/name) the profile must and must not render.
 	present, absent []string
 	// collectorPeers are the sources the db-collector NetworkPolicy must
@@ -154,6 +163,7 @@ var chartProfiles = []chartProfile{
 		present:         []string{"StatefulSet/db-collector", "Deployment/prometheus", "StatefulSet/alertmanager", "Deployment/grafana", "StatefulSet/loki", "StatefulSet/otel-collector", "PersistentVolumeClaim/otel-collector-queue", "NetworkPolicy/db-collector"},
 		collectorPeers:  []string{bundledPrometheusPeer},
 		backendPolicies: defaultBackendPolicies,
+		collectorIDs:    []string{"sqlserver-default"},
 		notes: []string{
 			"- heartbeat-runtime (key admin-token)",
 			"- grafana-admin (keys admin-user, admin-password)",
@@ -616,7 +626,131 @@ var chartProfiles = []chartProfile{
 		inline:    "prometheusRules: {configReloadAlrt: {enabled: false}}",
 		wantError: "values don't meet the specifications of the schema",
 	},
+	{
+		// No managedCollectors (ADR 0014) renders exactly what the chart
+		// rendered before the key existed.
+		name:           "managed-collectors-empty",
+		inline:         "managedCollectors: []\n",
+		sameRenderAs:   "defaults",
+		collectorIDs:   []string{"sqlserver-default"},
+		collectorPeers: []string{bundledPrometheusPeer},
+	},
+	{
+		name:           "managed-collectors-null",
+		set:            []string{"managedCollectors=null"},
+		sameRenderAs:   "defaults",
+		collectorPeers: []string{bundledPrometheusPeer},
+	},
+	{
+		// The API's collectors follow the hand-written ones, and their
+		// targets count like any other: egress opens their ports, and NOTES
+		// no longer says no target is configured.
+		name: "managed-collectors-appended",
+		inline: managedCollectorsValues +
+			"dbCollector: {networkPolicy: {egress: {enabled: true, targets: [{ipBlock: {cidr: 10.20.0.0/16}}]}}}\n",
+		present:        []string{"NetworkPolicy/db-collector"},
+		collectorIDs:   []string{"sqlserver-default", "api-finance-prod-60s", "api-hr-prod-300s"},
+		collectorPeers: []string{bundledPrometheusPeer},
+		collectorEgress: []string{
+			"UDP/53 -> " + kubeDNSPeer, "TCP/53 -> " + kubeDNSPeer, "TCP/4318 -> " + otelCollectorPeer,
+			"TCP/1433 -> ip 10.20.0.0/16", "TCP/14331 -> ip 10.20.0.0/16",
+		},
+		notesAbsent: []string{"No SQL Server target"},
+	},
+	{
+		// Managed targets need the egress peers as much as hand-written ones.
+		name:      "managed-collectors-egress-without-targets",
+		inline:    managedCollectorsValues + "dbCollector: {networkPolicy: {egress: {enabled: true}}}\n",
+		wantError: "dbCollector.networkPolicy.egress.enabled needs egress.targets",
+	},
+	{
+		// The api- prefix is reserved for the API's collectors.
+		name:      "hand-written-collector-api-prefix",
+		inline:    "integrations: {collectors: [{id: api-finance-prod-60s, kind: sqlserver, enabled: true}]}\n",
+		wantError: "at '/integrations/collectors/0/id'",
+	},
+	{
+		// The collector trims ids, so leading spaces do not hide the prefix.
+		name:      "hand-written-collector-api-prefix-after-spaces",
+		inline:    "integrations: {collectors: [{id: \"  api-finance-prod-60s\", kind: sqlserver, enabled: true}]}\n",
+		wantError: "at '/integrations/collectors/0/id'",
+	},
+	{
+		name:      "managed-collector-without-api-prefix",
+		inline:    "managedCollectors: [{id: finance-prod-60s, kind: sqlserver, enabled: true}]\n",
+		wantError: "at '/managedCollectors/0/id'",
+	},
+	{
+		// The API renders sqlserver collectors only; outsystems_logs
+		// collectors stay hand-written (ADR 0017).
+		name:      "managed-collector-not-sqlserver",
+		inline:    "managedCollectors: [{id: api-logs-60s, kind: outsystems_logs, enabled: true}]\n",
+		wantError: "at '/managedCollectors/0/kind'",
+	},
+	{
+		// Managed collectors are checked like hand-written ones: a misspelt
+		// key fails.
+		name:      "managed-collector-unknown-key",
+		inline:    "managedCollectors: [{id: api-finance-prod-60s, kind: sqlserver, enabled: true, confg: {}}]\n",
+		wantError: "at '/managedCollectors/0'",
+	},
+	{
+		// The collector would reject the file at its next reload, or fail to
+		// start; the chart fails first.
+		name: "managed-collectors-duplicate-id",
+		inline: "managedCollectors:\n" +
+			"  - {id: api-finance-prod-60s, kind: sqlserver, enabled: true}\n" +
+			"  - {id: api-hr-prod-300s, kind: sqlserver, enabled: true}\n" +
+			"  - {id: api-finance-prod-60s, kind: sqlserver, enabled: false}\n",
+		wantError: `collector id "api-finance-prod-60s" is listed twice, at managedCollectors[0] and managedCollectors[2]`,
+	},
+	{
+		name: "hand-written-collectors-duplicate-id",
+		inline: "integrations:\n" +
+			"  collectors:\n" +
+			"    - {id: sql, kind: sqlserver, enabled: true}\n" +
+			"    - {id: \" sql\", kind: sqlserver, enabled: false}\n",
+		wantError: `collector id "sql" is listed twice, at integrations.collectors[0] and integrations.collectors[1]`,
+	},
+	{
+		// Across the lists the prefix rule already keeps ids apart.
+		name: "collectors-duplicate-id-across-lists",
+		inline: "integrations: {collectors: [{id: api-finance-prod-60s, kind: sqlserver, enabled: true}]}\n" +
+			"managedCollectors: [{id: api-finance-prod-60s, kind: sqlserver, enabled: true}]\n",
+		wantError: "at '/integrations/collectors/0/id'",
+	},
+	{
+		// Without the schema the templates still refuse it.
+		name: "collectors-duplicate-id-across-lists-without-schema",
+		inline: "integrations: {collectors: [{id: api-finance-prod-60s, kind: sqlserver, enabled: true}]}\n" +
+			"managedCollectors: [{id: api-finance-prod-60s, kind: sqlserver, enabled: true}]\n",
+		flags:     []string{"--skip-schema-validation"},
+		wantError: `collector id "api-finance-prod-60s" is listed twice, at integrations.collectors[0] and managedCollectors[0]`,
+	},
 }
+
+// managedCollectorsValues is a managedCollectors list as the Heartbeat API
+// renders it from approved probe assignments (ADR 0014): one sqlserver
+// collector per target and interval, with the id api-<target>-<interval>s.
+const managedCollectorsValues = "managedCollectors:\n" +
+	"  - id: api-finance-prod-60s\n" +
+	"    kind: sqlserver\n" +
+	"    enabled: true\n" +
+	"    config:\n" +
+	"      environment: prod\n" +
+	"      scrape_interval: 60s\n" +
+	"      probes: [{name: waits}, {name: blocking}]\n" +
+	"      targets:\n" +
+	"        - {name: finance-prod, host: finance-sql.example.internal, port: 1433, database_name: FinanceDB, credential_ref: env/finance-prod}\n" +
+	"  - id: api-hr-prod-300s\n" +
+	"    kind: sqlserver\n" +
+	"    enabled: true\n" +
+	"    config:\n" +
+	"      environment: prod\n" +
+	"      scrape_interval: 300s\n" +
+	"      probes: [{name: storage}]\n" +
+	"      targets:\n" +
+	"        - {name: hr-prod, host: 10.20.0.7, port: 14331, database_name: HR, credential_ref: env/hr-prod}\n"
 
 // Cluster-scoped kinds: the chart must install into a namespace it does not
 // own, with no cluster-wide side effects.
@@ -663,7 +797,7 @@ func runHelm(t *testing.T, profile chartProfile, command ...string) ([]byte, str
 	if helm == "" {
 		helm = "helm"
 	}
-	args := slices.Concat(command, []string{"heartbeat", filepath.Join(root, "infra/helm/heartbeat"), "--namespace", "heartbeat"})
+	args := slices.Concat(command, []string{"heartbeat", filepath.Join(root, "infra/helm/heartbeat"), "--namespace", "heartbeat"}, profile.flags)
 	for _, file := range profile.values {
 		args = append(args, "-f", filepath.Join(root, "infra/helm/values", file))
 	}
@@ -750,6 +884,15 @@ func TestChartProfiles(t *testing.T) {
 			if second := helmTemplate(t, profile); !bytes.Equal(first, second) {
 				t.Fatal("rendering is not deterministic")
 			}
+			if profile.sameRenderAs != "" {
+				i := slices.IndexFunc(chartProfiles, func(p chartProfile) bool { return p.name == profile.sameRenderAs })
+				if i < 0 {
+					t.Fatalf("no profile %q", profile.sameRenderAs)
+				}
+				if !bytes.Equal(first, helmTemplate(t, chartProfiles[i])) {
+					t.Errorf("render differs from profile %s", profile.sameRenderAs)
+				}
+			}
 			objects := parseObjects(t, first)
 
 			for _, id := range profile.present {
@@ -772,6 +915,7 @@ func TestChartProfiles(t *testing.T) {
 			}
 
 			checkIntegrations(t, objects)
+			checkCollectorIDs(t, objects, profile.collectorIDs)
 			checkCollectorSingleton(t, objects)
 			checkStatefulSetPolicies(t, objects)
 			checkCollectorGoMemLimit(t, objects, profile.goMemLimit)
@@ -1004,6 +1148,29 @@ func checkIntegrations(t *testing.T, objects map[string]object) {
 	}
 	if _, err := config.LoadRuntimeConfig(path); err != nil {
 		t.Errorf("rendered integrations.yaml does not load: %v", err)
+	}
+}
+
+// checkCollectorIDs checks the ids of the collectors in the rendered
+// integrations.yaml, in order: the hand-written integrations.collectors, then
+// managedCollectors (ADR 0014). nil skips the check.
+func checkCollectorIDs(t *testing.T, objects map[string]object, want []string) {
+	t.Helper()
+	if want == nil {
+		return
+	}
+	var doc struct {
+		Collectors []struct {
+			ID string `yaml:"id"`
+		} `yaml:"collectors"`
+	}
+	mustUnmarshal(t, objects["ConfigMap/heartbeat-integrations"].Data["integrations.yaml"], &doc)
+	got := []string{}
+	for _, collector := range doc.Collectors {
+		got = append(got, collector.ID)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("integrations.yaml collectors = %q, want %q", got, want)
 	}
 }
 

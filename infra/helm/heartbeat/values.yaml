@@ -158,8 +158,9 @@ containerSecurityContext:
 # The complete integrations.yaml for this environment, rendered into the
 # heartbeat-integrations ConfigMap. It must pass the integrations schema
 # (values.schema.json embeds packages/config-schema/src/integrations.schema.json)
-# and the Go loader (tests/chart_values_test.go). Lists replace, not merge,
-# when an environment file sets them.
+# and the Go loader (tests/chart_render_test.go). Lists replace, not merge,
+# when an environment file sets them. Collector ids starting with api- are
+# reserved for managedCollectors below.
 integrations:
   platform: grafana
   dashboards:
@@ -207,6 +208,16 @@ integrations:
           - name: buffer_cache
           - name: file_io
         targets: []
+
+# Collectors the Heartbeat API renders from approved probe assignments, in a
+# generated values file of its own, passed with the environment's values
+# (ADR 0014). Do not edit that file by hand: the API overwrites it.
+# The chart appends these to integrations.collectors in the rendered
+# integrations.yaml, so the API never touches the hand-written list. Each
+# entry is a sqlserver collector shaped like integrations.collectors, with an
+# id that starts with api- (api-<target id>-<interval>s); hand-written ids may
+# not use that prefix, and an id may appear only once across both lists.
+managedCollectors: []
 
 # Heartbeat content shipped as ConfigMaps. They are created even when the
 # bundled engines are off, so shared Prometheus and Grafana instances can load

@@ -9,10 +9,11 @@
 {{- end }}
 {{- $peers = concat $peers $np.scrapers $np.operators }}
 {{- /* The ports of the monitored databases, from the enabled collectors'
-targets; a collector without enabled: true is off, as the collector reads it. */}}
+targets, managedCollectors included; a collector without enabled: true is
+off, as the collector reads it. */}}
 {{- $ports := list }}
 {{- $targets := 0 }}
-{{- range ((.Values.integrations | default dict).collectors | default list) }}
+{{- range (include "heartbeat.collectors" . | fromYamlArray) }}
 {{- if .enabled }}
 {{- range ((.config | default dict).targets | default list) }}
 {{- $targets = add1 $targets }}
