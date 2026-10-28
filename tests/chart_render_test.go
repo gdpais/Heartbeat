@@ -417,14 +417,16 @@ var chartProfiles = []chartProfile{
 		wantError: "values don't meet the specifications of the schema",
 	},
 	{
-		// resources.limit (no s) would leave the collector without a memory
-		// limit, and GOMEMLIMIT unset.
+		// resources.limit (no s) rendered next to the default limits, so the
+		// raise to 1Gi never applied and the collector kept 256Mi.
 		name:      "unknown-collector-resources-key",
 		inline:    "dbCollector: {resources: {limit: {memory: 1Gi}}}",
 		wantError: "values don't meet the specifications of the schema",
 	},
 	{
-		// A misspelt security field would leave the pods without it.
+		// A misspelt security field was ignored: the defaults still applied,
+		// but a field they do not set, such as appArmorProfile, never reached
+		// the pods.
 		name:      "unknown-security-context-key",
 		inline:    "podSecurityContext: {runAsNonroot: true}",
 		wantError: "values don't meet the specifications of the schema",
@@ -432,6 +434,12 @@ var chartProfiles = []chartProfile{
 	{
 		name:      "unknown-container-security-context-key",
 		inline:    "containerSecurityContext: {readOnlyRootFileSystem: true}",
+		wantError: "values don't meet the specifications of the schema",
+	},
+	{
+		// A digest copied with its @ would render repository@@sha256:...
+		name:      "invalid-collector-digest",
+		inline:    "dbCollector: {image: {digest: \"@sha256:0000000000000000000000000000000000000000000000000000000000000000\"}}",
 		wantError: "values don't meet the specifications of the schema",
 	},
 	{

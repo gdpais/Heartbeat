@@ -29,7 +29,8 @@
             },
             "digest": {
               "type": "string",
-              "description": "An image digest such as sha256:...; set, it replaces the tag."
+              "description": "An image digest, sha256: and 64 hex digits, without the @; set, it replaces the tag.",
+              "pattern": "^$|^sha256:[a-f0-9]{64}$"
             },
             "pullPolicy": {
               "enum": [
