@@ -80,6 +80,14 @@
     },
     {
       "customType": "regex",
+      "description": "oapi-codegen in the Makefile (make generate). A bump fails make test until the regenerated API code is committed with it.",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": ["OAPI_CODEGEN_VERSION := (?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "github.com/oapi-codegen/oapi-codegen/v2",
+      "datasourceTemplate": "go"
+    },
+    {
+      "customType": "regex",
       "description": "kind node image in the Makefile (tracked so the dashboard lists it; updates disabled above).",
       "managerFilePatterns": ["/^Makefile$/"],
       "matchStrings": ["KIND_NODE_IMAGE := (?<depName>kindest/node):(?<currentValue>v[\\d.]+)@(?<currentDigest>sha256:[a-f0-9]+)"],

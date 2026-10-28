@@ -1,4 +1,4 @@
-.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down patientzero-up patientzero-down patientzero-load patientzero-load-stop patientzero-scenario patientzero-scenarios patientzero-scale patientzero-scale-measure patientzero-scale-collect patientzero-scale-check patientzero-scale-down chart-deps chart-check rules-check test test-integration test-sqlserver test-race vet vulncheck docs-site
+.PHONY: help tools-check install-tools kind-up kind-down kind-deploy kind-images kind-status kind-e2e health sqlserver-dev-init sqlserver-dev-up sqlserver-dev-down patientzero-up patientzero-down patientzero-load patientzero-load-stop patientzero-scenario patientzero-scenarios patientzero-scale patientzero-scale-measure patientzero-scale-collect patientzero-scale-check patientzero-scale-down chart-deps chart-check rules-check generate generate-check test test-integration test-sqlserver test-race vet vulncheck docs-site
 
 SQLSERVER_DEV_ENV_FILE := .env.sqlserver-dev
 # Health checks fail fast on HTTP errors (keeping the body) and never hang.
@@ -16,6 +16,9 @@ HELM3_VERSION := v3.22.0
 # go run fetches this exact version and checks it against the Go checksum
 # database, so there is nothing to install.
 GOVULNCHECK_VERSION := v1.9.0
+# oapi-codegen writes the API's server types from its OpenAPI spec (ADR 0013).
+# Fetched by go run like govulncheck, so its dependencies stay out of go.mod.
+OAPI_CODEGEN_VERSION := v2.8.1
 TOOLS_DIR ?= .tmp/bin
 HELM ?= helm
 CHART_DIR := infra/helm/heartbeat
@@ -38,6 +41,9 @@ PATIENTZERO_CHART_DIR := $(PATIENTZERO_MODULE)/chart
 PATIENTZERO_CHART_CHECK_VALUES := --set image.tag=ci --set sql.host=ci
 GOVULNCHECK := GOCACHE=$$(pwd)/.tmp/gocache go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 DOCSITE := GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) run ./cmd/docsite -root ../.. -repo-url $(DOCS_REPO_URL) -ref $(DOCS_REPO_REF)
+API_SPEC := apps/api/openapi.yaml
+API_GENERATED := apps/api/internal/openapi/openapi.gen.go
+OAPI_CODEGEN := GOCACHE=$$(pwd)/.tmp/gocache go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION) -config apps/api/oapi-codegen.yaml
 
 help:
 	@printf '%s\n' \
@@ -68,7 +74,9 @@ help:
 		'  make chart-deps          Fetch the chart dependencies listed in Chart.lock' \
 		'  make chart-check         Lint and render the chart for every values profile (needs chart-deps), and the PatientZero chart' \
 		'  make rules-check         Validate Prometheus rules and run their promtool unit tests (requires Docker)' \
-		'  make test                Run all Go tests without Docker integration tests' \
+		'  make generate            Regenerate the committed generated code: the API server types from apps/api/openapi.yaml' \
+		'  make generate-check      Fail when the committed generated code differs from what make generate writes' \
+		'  make test                Check the generated code, then run all Go tests without Docker integration tests' \
 		'  make test-integration    Run isolated PostgreSQL integration tests (requires Docker)' \
 		'  make test-sqlserver      Run every SQL Server probe and OutSystems log query against a disposable SQL Server container (requires Docker)' \
 		'  make test-race           Run all Docker-free tests with the race detector' \
@@ -198,7 +206,18 @@ rules-check:
 	docker run --rm -v "$$(pwd)/infra/helm/heartbeat/files/prometheus/rules:/rules:ro" --entrypoint promtool $(PROMETHEUS_IMAGE) check rules /rules/heartbeat.rules.yml /rules/heartbeat-config-reload.rules.yml /rules/heartbeat-collector-missing.rules.yml /rules/generated/heartbeat-rendered.rules.yml
 	docker run --rm -v "$$(pwd)/infra/helm/heartbeat/files/prometheus/rules:/rules:ro" -w /rules/tests --entrypoint promtool $(PROMETHEUS_IMAGE) test rules heartbeat.rules.test.yml
 
-test:
+generate:
+	$(OAPI_CODEGEN) -o $(API_GENERATED) $(API_SPEC)
+
+# Regenerates into .tmp and compares, so the working tree is never touched:
+# a spec edited, or the generator bumped, without make generate fails here.
+generate-check:
+	@mkdir -p .tmp/generate
+	$(OAPI_CODEGEN) -o .tmp/generate/openapi.gen.go $(API_SPEC)
+	@diff -u $(API_GENERATED) .tmp/generate/openapi.gen.go || { \
+		echo "error: $(API_GENERATED) is stale: run make generate and commit the result" >&2; exit 1; }
+
+test: generate-check
 	GOCACHE=$$(pwd)/.tmp/gocache go test ./...
 	GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) test ./...
 	GOCACHE=$$(pwd)/.tmp/gocache go -C $(PATIENTZERO_MODULE) test ./...
