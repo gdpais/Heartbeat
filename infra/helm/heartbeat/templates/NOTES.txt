@@ -17,7 +17,7 @@ instead of checking that they exist.
 {{- $secrets = append $secrets (list .Values.grafana.admin.existingSecret $keys "the Grafana login") -}}
 {{- end -}}
 {{- $targets := 0 -}}
-{{- range .Values.integrations.collectors -}}
+{{- range (include "heartbeat.collectors" . | fromYamlArray) -}}
 {{- if and .enabled .config -}}
 {{- $targets = add $targets (len (.config.targets | default list)) -}}
 {{- end -}}

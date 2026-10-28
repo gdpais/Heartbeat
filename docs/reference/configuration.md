@@ -32,6 +32,39 @@ Helm validates `integrations` against the integrations schema (embedded in the
 chart's `values.schema.json`) before anything is applied, and `make chart-check`
 loads each profile's rendered file with the Go loader.
 
+### Collectors rendered by the API
+
+Approved probe assignments reach the collector as collectors of their own,
+which the API renders into a generated values file it owns
+([ADR 0014](../architecture/decisions/0014-probe-assignments-to-runtime-config.md)).
+That file sets the chart key `managedCollectors`, not `integrations`, and the
+chart appends that list to `integrations.collectors` when it renders
+`integrations.yaml`. Because lists replace, the separate key keeps the two
+apart: the environment's values hold the hand-written collectors, the API's
+file holds its own, and neither overwrites the other. The rendered file has
+the same format either way; the collector loads it like any other and does
+not know which collectors came from the API.
+
+The API side, which renders the file from approved assignments, is not built
+yet, so `managedCollectors` is empty. Empty or absent, the chart renders
+exactly what `integrations` alone renders. Managed targets count like
+hand-written ones: the collector's egress NetworkPolicy opens their ports,
+and the install notes count them.
+
+Helm checks these rules whenever it renders the chart (`helm template`,
+`install` and `upgrade`, and Argo CD's render), before anything is applied:
+
+| Rule | Checked by | Helm's error |
+| --- | --- | --- |
+| Each `managedCollectors` entry is a [collector](#collectors) of kind `sqlserver`; `outsystems_logs` collectors stay hand-written ([ADR 0017](../architecture/decisions/0017-outsystems-sources-map-application-identity.md)) | values schema | ``at '/managedCollectors/0/kind': value must be 'sqlserver'`` |
+| A `managedCollectors` id starts with `api-`; the API writes `api-<target id>-<interval>s` | values schema | ``at '/managedCollectors/0/id': 'finance' does not match pattern '^api-'`` |
+| A hand-written id, in `integrations.collectors`, does not start with `api-`, leading spaces included | values schema | ``at '/integrations/collectors/0/id': 'not' failed`` |
+| An id appears once across both lists, compared without surrounding spaces, as the collector compares them | chart templates | ``collector id "sql" is listed twice, at integrations.collectors[0] and integrations.collectors[1]`` |
+
+The last rule covers the hand-written list on its own too: a duplicate id
+there used to render, and the collector then rejected the file at its next
+reload, or failed to start.
+
 ## `integrations.yaml`
 
 ### Endpoints
@@ -109,6 +142,9 @@ collectors:
           credential_ref: env/finance-prod   # optional; defaults to the collector's
           probes: []             # optional; defaults to config.probes
 ```
+
+In the chart's values, collector ids that start with `api-` are reserved for
+the [collectors the API renders](#collectors-rendered-by-the-api).
 
 `host` is a DNS name or IPv4 address (letters, digits, `.`, `-`, `_`) or a bare
 IPv6 address such as `2001:db8::5`, without brackets. A port (`db:1433`),

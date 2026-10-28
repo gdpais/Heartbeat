@@ -158,6 +158,8 @@ collectors:
 ```
 
 To run only some targets of a collector, list them in `config.target_names`.
+Collector ids that start with `api-` are reserved for the
+[collectors the API renders](../reference/configuration.md#collectors-rendered-by-the-api).
 
 To **change** a target, edit its entry: `host`/`port` for a new server,
 `database_name` for another database on the same server, `credential_ref` for a

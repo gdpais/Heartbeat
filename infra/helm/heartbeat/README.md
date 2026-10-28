@@ -37,10 +37,15 @@ version. Pin the digest from the release notes with
 `values.schema.json` checks them: a misspelt or unknown key fails the
 install instead of being ignored, at the top level and inside the chart's
 own components (`dbCollector`, `podSecurityContext`,
-`containerSecurityContext`, `integrations`, `prometheusRules`,
-`grafanaDashboards`, `backendNetworkPolicies`, `otelCollectorQueue`). The
-bundled engines' values (`prometheus`, `grafana`, `loki`, `otelCollector`)
-are their charts' own and are checked only as far as those charts check
-them.
+`containerSecurityContext`, `integrations`, `managedCollectors`,
+`prometheusRules`, `grafanaDashboards`, `backendNetworkPolicies`,
+`otelCollectorQueue`). The bundled engines' values (`prometheus`,
+`grafana`, `loki`, `otelCollector`) are their charts' own and are checked
+only as far as those charts check them.
+
+`managedCollectors` is the list of collectors the Heartbeat API renders
+from approved probe assignments, appended to `integrations.collectors`;
+collector ids starting with `api-` are reserved for it
+([collectors rendered by the API](https://github.com/gdpais/Heartbeat/blob/master/docs/reference/configuration.md#collectors-rendered-by-the-api)).
 
 Source: <https://github.com/gdpais/Heartbeat>
