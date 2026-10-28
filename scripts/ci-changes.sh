@@ -24,8 +24,10 @@ while IFS= read -r path; do
 	[ -n "$path" ] || continue
 	case $path in
 	# Checked by the always-run job only: docs, the docs generator, release
-	# bookkeeping, migrations (the PostgreSQL integration tests) and the live
-	# demo's shell helpers, which only the docs use.
+	# bookkeeping, migrations (the PostgreSQL integration tests, and the
+	# package that embeds them in the API) and the live demo's shell helpers,
+	# which only the docs use. Once the chart deploys the API [4.1], the
+	# migrations are part of its image and need kind_e2e like apps/api.
 	*.md | docs/* | tools/docsite/* | LICENSE | .gitignore | renovate.json | \
 		version.txt | release-please-config.json | .release-please-manifest.json | \
 		db/migrations/* | scripts/demo-helpers.sh) ;;
@@ -64,9 +66,10 @@ while IFS= read -r path; do
 		;;
 	# Read only by the Go tests, which always run.
 	packages/telemetry-contracts/*) ;;
-	# The API: the always-run job tests it and checks its generated code
-	# (make test). Nothing builds or deploys it yet; when the chart does
-	# [4.1], it needs kind_e2e like services/db-collector.
+	# The API: the always-run job tests it, checks its generated code (make
+	# test) and runs its PostgreSQL and Valkey integration tests (make
+	# test-integration). Nothing builds or deploys it yet; when the chart
+	# does [4.1], it needs kind_e2e like services/db-collector.
 	apps/api/*) ;;
 	# Everything else can affect every job: go.mod, go.sum, internal/, the
 	# config schema, the other tests and scripts, Makefile, .github/,

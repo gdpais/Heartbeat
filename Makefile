@@ -16,9 +16,13 @@ HELM3_VERSION := v3.22.0
 # go run fetches this exact version and checks it against the Go checksum
 # database, so there is nothing to install.
 GOVULNCHECK_VERSION := v1.9.0
-# oapi-codegen writes the API's server types from its OpenAPI spec (ADR 0013).
-# Fetched by go run like govulncheck, so its dependencies stay out of go.mod.
+# oapi-codegen writes the API's server types from its OpenAPI spec, and sqlc
+# its typed queries from SQL (ADR 0013). Fetched by go run like govulncheck,
+# so their dependencies stay out of go.mod. sqlc builds with cgo (its
+# PostgreSQL parser is C), so it needs a C compiler; the first build takes
+# about half a minute.
 OAPI_CODEGEN_VERSION := v2.8.1
+SQLC_VERSION := v1.31.1
 TOOLS_DIR ?= .tmp/bin
 HELM ?= helm
 CHART_DIR := infra/helm/heartbeat
@@ -44,6 +48,7 @@ DOCSITE := GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) run ./cmd/docsit
 API_SPEC := apps/api/openapi.yaml
 API_GENERATED := apps/api/internal/openapi/openapi.gen.go
 OAPI_CODEGEN := GOCACHE=$$(pwd)/.tmp/gocache go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION) -config apps/api/oapi-codegen.yaml
+SQLC := GOCACHE=$$(pwd)/.tmp/gocache CGO_ENABLED=1 go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION) -f apps/api/sqlc.yaml
 
 help:
 	@printf '%s\n' \
@@ -74,10 +79,10 @@ help:
 		'  make chart-deps          Fetch the chart dependencies listed in Chart.lock' \
 		'  make chart-check         Lint and render the chart for every values profile (needs chart-deps), and the PatientZero chart' \
 		'  make rules-check         Validate Prometheus rules and run their promtool unit tests (requires Docker)' \
-		'  make generate            Regenerate the committed generated code: the API server types from apps/api/openapi.yaml' \
+		'  make generate            Regenerate the committed generated code: the API server types from apps/api/openapi.yaml, its queries from apps/api/internal/store/queries' \
 		'  make generate-check      Fail when the committed generated code differs from what make generate writes' \
 		'  make test                Check the generated code, then run all Go tests without Docker integration tests' \
-		'  make test-integration    Run isolated PostgreSQL integration tests (requires Docker)' \
+		'  make test-integration    Run isolated PostgreSQL and Valkey integration tests (requires Docker)' \
 		'  make test-sqlserver      Run every SQL Server probe and OutSystems log query against a disposable SQL Server container (requires Docker)' \
 		'  make test-race           Run all Docker-free tests with the race detector' \
 		'  make vet                 Run Go static checks' \
@@ -208,22 +213,28 @@ rules-check:
 
 generate:
 	$(OAPI_CODEGEN) -o $(API_GENERATED) $(API_SPEC)
+	$(SQLC) generate
 
-# Regenerates into .tmp and compares, so the working tree is never touched:
-# a spec edited, or the generator bumped, without make generate fails here.
+# Regenerates into .tmp and compares, so the working tree is never touched: a
+# spec, query or migration edited, or a generator bumped, without make
+# generate fails here. sqlc diff compares in memory and writes nothing.
 generate-check:
 	@mkdir -p .tmp/generate
 	$(OAPI_CODEGEN) -o .tmp/generate/openapi.gen.go $(API_SPEC)
 	@diff -u $(API_GENERATED) .tmp/generate/openapi.gen.go || { \
 		echo "error: $(API_GENERATED) is stale: run make generate and commit the result" >&2; exit 1; }
+	@$(SQLC) diff || { \
+		echo "error: the sqlc code in apps/api/internal/store is stale: run make generate and commit the result" >&2; exit 1; }
 
 test: generate-check
 	GOCACHE=$$(pwd)/.tmp/gocache go test ./...
 	GOCACHE=$$(pwd)/.tmp/gocache go -C $(DOCSITE_MODULE) test ./...
 	GOCACHE=$$(pwd)/.tmp/gocache go -C $(PATIENTZERO_MODULE) test ./...
 
+# The tests in tests/ apply the migrations with psql in Compose projects; the
+# API's (apps/api) start their own PostgreSQL and Valkey containers.
 test-integration:
-	GOCACHE=$$(pwd)/.tmp/gocache go test -tags=integration -count=1 -timeout=10m ./tests
+	GOCACHE=$$(pwd)/.tmp/gocache go test -tags=integration -count=1 -timeout=10m ./tests ./apps/api/...
 
 test-sqlserver:
 	scripts/sqlserver-test.sh

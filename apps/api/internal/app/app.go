@@ -1,13 +1,15 @@
 // Package app wires together the API's subsystems and runs the service until
 // the context is cancelled.
 //
-// Run is the entry point. It serves the operations of the API's contract
-// (package httpapi) and the Prometheus metrics, and drains in-flight requests
-// on shutdown.
+// Run is the entry point. It connects to PostgreSQL (package store) and Redis
+// (package redis), serves the operations of the API's contract (package
+// httpapi) and the Prometheus metrics, and drains in-flight requests on
+// shutdown before closing the connections.
 package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,6 +20,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"heartbeat/apps/api/internal/httpapi"
+	"heartbeat/apps/api/internal/redis"
+	"heartbeat/apps/api/internal/store"
+	"heartbeat/internal/credentials"
 )
 
 // Config holds the top-level runtime parameters for the API service.
@@ -25,6 +30,14 @@ type Config struct {
 	// ListenAddr is the TCP address on which the HTTP server will listen
 	// (e.g. ":8081").
 	ListenAddr string
+	// Postgres says where the API's PostgreSQL database is.
+	Postgres store.Config
+	// Redis says where Redis (Valkey) is.
+	Redis redis.Config
+	// CredentialsDir holds one file per credential reference, normally the
+	// mounted credentials Secret, read on every new connection; references
+	// without a file come from the environment ([credentials.Files]).
+	CredentialsDir string
 	// Logger receives structured service logs. When nil, Run logs JSON to
 	// stderr.
 	Logger *slog.Logger
@@ -49,10 +62,15 @@ func defaultTimeouts() timeouts {
 // Run initialises the service and serves HTTP until ctx is cancelled or the
 // HTTP server fails.
 //
+// Run does not wait for PostgreSQL or Redis: it starts while either is
+// down, and GET /readyz answers 503 until both work. It fails at once only
+// on settings that cannot work.
+//
 // Shutdown is synchronous: after ctx is cancelled, Run stops accepting
 // connections, waits up to 10 seconds for in-flight requests to finish (see
-// defaultTimeouts), closes the connections still open, and only then
-// returns. Run returns nil on a clean shutdown.
+// defaultTimeouts), closes the connections still open, then the PostgreSQL
+// and Redis connections, and only then returns. Run returns nil on a clean
+// shutdown.
 func Run(ctx context.Context, cfg Config) error {
 	deps, err := newRunDeps(cfg)
 	if err != nil {
@@ -71,13 +89,67 @@ func newRunDeps(cfg Config) (runDeps, error) {
 	if err != nil {
 		return runDeps{}, err
 	}
+	checks, closeDeps, err := connect(cfg, logger)
+	if err != nil {
+		return runDeps{}, err
+	}
 	return runDeps{
 		cfg:            cfg,
 		logger:         logger,
 		registry:       registry,
 		requestMetrics: requestMetrics,
+		checks:         checks,
+		closeDeps:      closeDeps,
 		timeouts:       defaultTimeouts(),
 	}, nil
+}
+
+// Readiness check names, as logged when GET /readyz fails.
+const (
+	checkPostgreSQL = "postgresql"
+	checkRedis      = "redis"
+)
+
+// connect creates the PostgreSQL pool and the Redis client, without
+// connecting, and returns their readiness checks and a function that closes
+// both.
+//
+// The PostgreSQL check passes when a query reaches the database and its
+// schema is at least the newest migration this build embeds, so a replica
+// started before `api migrate up` has run stays out of its Service. The
+// Redis check is a PING.
+func connect(cfg Config, logger *slog.Logger) ([]httpapi.Check, func(), error) {
+	resolver := credentials.Files{Dir: cfg.CredentialsDir, Fallback: credentials.Env{}}
+	want, err := store.LatestVersion()
+	if err != nil {
+		return nil, nil, err
+	}
+	pool, err := store.NewPool(cfg.Postgres, resolver)
+	if err != nil {
+		return nil, nil, fmt.Errorf("postgresql: %w", err)
+	}
+	client, err := redis.New(cfg.Redis, resolver)
+	if err != nil {
+		pool.Close()
+		return nil, nil, fmt.Errorf("redis: %w", err)
+	}
+	logger.Info("dependencies configured",
+		"postgresql_host", cfg.Postgres.Host, "postgresql_port", cfg.Postgres.Port,
+		"postgresql_database", cfg.Postgres.Database, "postgresql_sslmode", cfg.Postgres.SSLMode,
+		"postgresql_schema_version", want,
+		"redis_addr", cfg.Redis.Addr, "redis_tls", cfg.Redis.TLS)
+	schema := store.SchemaChecker{Queries: store.New(pool), Want: want}
+	checks := []httpapi.Check{
+		{Name: checkPostgreSQL, Run: schema.Check},
+		{Name: checkRedis, Run: func(ctx context.Context) error { return redis.Ping(ctx, client) }},
+	}
+	closeDeps := func() {
+		pool.Close()
+		if err := client.Close(); err != nil {
+			logger.Warn("shutdown: close redis client", "error", err)
+		}
+	}
+	return checks, closeDeps, nil
 }
 
 // runDeps are the collaborators of run, injectable for tests.
@@ -87,10 +159,13 @@ type runDeps struct {
 	registry *prometheus.Registry
 	// requestMetrics, when set, records every request.
 	requestMetrics *requestMetrics
-	// checks are the readiness checks GET /readyz runs. PostgreSQL and Redis
-	// join them when the API connects to them [4.1].
-	checks   []httpapi.Check
-	timeouts timeouts
+	// checks are the readiness checks GET /readyz runs: PostgreSQL and
+	// Redis in production.
+	checks []httpapi.Check
+	// closeDeps, when set, closes the PostgreSQL and Redis connections once
+	// the HTTP server has drained.
+	closeDeps func()
+	timeouts  timeouts
 	// onListen, when set, receives the bound HTTP address.
 	onListen func(net.Addr)
 }
@@ -100,6 +175,9 @@ func run(ctx context.Context, deps runDeps) error {
 	logger := deps.logger
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
+	}
+	if deps.closeDeps != nil {
+		defer deps.closeDeps()
 	}
 	listener, err := net.Listen("tcp", deps.cfg.ListenAddr)
 	if err != nil {

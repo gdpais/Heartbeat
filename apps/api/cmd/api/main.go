@@ -1,42 +1,128 @@
 // Package main is the entry point for the API service, Heartbeat's control
 // plane (ADR 0013).
 //
-// The binary reads its configuration from environment variables, serves the
-// HTTP API, and blocks until it receives SIGINT or SIGTERM.
+// Usage:
+//
+//	api                  serve the HTTP API until SIGINT or SIGTERM
+//	api migrate up       apply the migrations in db/migrations, then exit
+//	api migrate version  print the database's schema version, then exit
+//
+// `api migrate up` is what the API's init container runs before the API
+// starts; it needs only the PostgreSQL settings.
 //
 // Environment variables:
 //
-//	HEARTBEAT_API_LISTEN_ADDR  HTTP listen address, host:port (default ":8081")
+//	HEARTBEAT_API_LISTEN_ADDR              HTTP listen address, host:port (default ":8081")
+//	HEARTBEAT_API_POSTGRES_HOST            PostgreSQL host (required)
+//	HEARTBEAT_API_POSTGRES_PORT            PostgreSQL port (default 5432)
+//	HEARTBEAT_API_POSTGRES_DATABASE        database name (default "heartbeat")
+//	HEARTBEAT_API_POSTGRES_SSLMODE         disable, require, verify-ca or verify-full (default verify-full)
+//	HEARTBEAT_API_POSTGRES_SSLROOTCERT     PEM CA bundle for verify-ca and verify-full (default: the system's)
+//	HEARTBEAT_API_POSTGRES_CREDENTIAL_REF  credential reference of the login (default "secret/api-postgres")
+//	HEARTBEAT_API_REDIS_ADDR               Redis (Valkey) host:port (required)
+//	HEARTBEAT_API_REDIS_TLS                true or false (default true)
+//	HEARTBEAT_API_REDIS_CREDENTIAL_REF     credential reference of the login (default "secret/api-redis")
+//	HEARTBEAT_CREDENTIALS_DIR              directory of HEARTBEAT_CREDENTIAL_<REF> files (default: none)
+//	HEARTBEAT_CREDENTIAL_<REF>             "username:password" for a reference without a file
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
 	"os/signal"
+	"slices"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"heartbeat/apps/api/internal/app"
+	"heartbeat/apps/api/internal/redis"
+	"heartbeat/apps/api/internal/store"
+	"heartbeat/internal/credentials"
 )
+
+// Environment variables.
+const (
+	envListenAddr            = "HEARTBEAT_API_LISTEN_ADDR"
+	envPostgresHost          = "HEARTBEAT_API_POSTGRES_HOST"
+	envPostgresPort          = "HEARTBEAT_API_POSTGRES_PORT"
+	envPostgresDatabase      = "HEARTBEAT_API_POSTGRES_DATABASE"
+	envPostgresSSLMode       = "HEARTBEAT_API_POSTGRES_SSLMODE"
+	envPostgresSSLRootCert   = "HEARTBEAT_API_POSTGRES_SSLROOTCERT"
+	envPostgresCredentialRef = "HEARTBEAT_API_POSTGRES_CREDENTIAL_REF"
+	envRedisAddr             = "HEARTBEAT_API_REDIS_ADDR"
+	envRedisTLS              = "HEARTBEAT_API_REDIS_TLS"
+	envRedisCredentialRef    = "HEARTBEAT_API_REDIS_CREDENTIAL_REF"
+	envCredentialsDir        = "HEARTBEAT_CREDENTIALS_DIR"
+)
+
+// errUsage marks a command line that names no command.
+var errUsage = errors.New(`usage: api | api migrate up | api migrate version`)
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	slog.SetDefault(logger)
-	cfg, err := loadConfig()
-	if err != nil {
-		logger.Error("invalid configuration", "error", err)
-		os.Exit(1)
-	}
-	cfg.Logger = logger
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	err = app.Run(ctx, cfg)
+	err := execute(ctx, os.Args[1:], logger, os.Stdout)
 	stop()
-	if err != nil {
+	switch {
+	case errors.Is(err, errUsage):
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	case err != nil:
 		logger.Error("api exited with error", "error", err)
 		os.Exit(1)
 	}
+}
+
+// execute runs the command args name.
+func execute(ctx context.Context, args []string, logger *slog.Logger, stdout io.Writer) error {
+	switch {
+	case len(args) == 0:
+		cfg, err := loadConfig()
+		if err != nil {
+			return fmt.Errorf("invalid configuration: %w", err)
+		}
+		cfg.Logger = logger
+		redis.SetLogger(logger)
+		return app.Run(ctx, cfg)
+	case slices.Equal(args, []string{"migrate", "up"}):
+		cfg, resolver, err := loadMigrateConfig()
+		if err != nil {
+			return fmt.Errorf("invalid configuration: %w", err)
+		}
+		result, err := store.MigrateUp(ctx, cfg, resolver, logger)
+		if err != nil {
+			return err
+		}
+		if result.Newer {
+			logger.Info("migrate: schema is newer than this build's migrations; nothing to apply", "version", result.To)
+			return nil
+		}
+		logger.Info("migrate: schema up to date", "from", result.From, "to", result.To)
+		return nil
+	case slices.Equal(args, []string{"migrate", "version"}):
+		cfg, resolver, err := loadMigrateConfig()
+		if err != nil {
+			return fmt.Errorf("invalid configuration: %w", err)
+		}
+		version, dirty, err := store.MigrationVersion(cfg, resolver, logger)
+		if err != nil {
+			return err
+		}
+		if dirty {
+			_, err = fmt.Fprintf(stdout, "%d (dirty)\n", version)
+			return err
+		}
+		_, err = fmt.Fprintf(stdout, "%d\n", version)
+		return err
+	}
+	return errUsage
 }
 
 // loadConfig reads the service configuration from the environment. Unset
@@ -45,12 +131,115 @@ func main() {
 // setting nobody chose.
 func loadConfig() (app.Config, error) {
 	cfg := app.Config{
-		ListenAddr: env("HEARTBEAT_API_LISTEN_ADDR", ":8081"),
+		ListenAddr:     env(envListenAddr, ":8081"),
+		CredentialsDir: os.Getenv(envCredentialsDir),
 	}
 	if _, port, err := net.SplitHostPort(cfg.ListenAddr); err != nil || port == "" {
-		return app.Config{}, fmt.Errorf("HEARTBEAT_API_LISTEN_ADDR %q: want host:port, such as :8081 or 127.0.0.1:8081", cfg.ListenAddr)
+		return app.Config{}, fmt.Errorf("%s %q: want host:port, such as :8081 or 127.0.0.1:8081", envListenAddr, cfg.ListenAddr)
+	}
+	var err error
+	if cfg.Postgres, err = loadPostgresConfig(); err != nil {
+		return app.Config{}, err
+	}
+	if cfg.Redis, err = loadRedisConfig(); err != nil {
+		return app.Config{}, err
 	}
 	return cfg, nil
+}
+
+// loadMigrateConfig reads what `api migrate` needs: the PostgreSQL settings
+// and the credential lookup.
+func loadMigrateConfig() (store.Config, credentials.Resolver, error) {
+	cfg, err := loadPostgresConfig()
+	if err != nil {
+		return store.Config{}, nil, err
+	}
+	return cfg, credentials.Files{Dir: os.Getenv(envCredentialsDir), Fallback: credentials.Env{}}, nil
+}
+
+func loadPostgresConfig() (store.Config, error) {
+	cfg := store.Config{
+		Host:          os.Getenv(envPostgresHost),
+		Database:      env(envPostgresDatabase, "heartbeat"),
+		SSLMode:       env(envPostgresSSLMode, "verify-full"),
+		SSLRootCert:   os.Getenv(envPostgresSSLRootCert),
+		CredentialRef: env(envPostgresCredentialRef, "secret/api-postgres"),
+	}
+	if cfg.Host == "" {
+		return store.Config{}, fmt.Errorf("%s is required: the PostgreSQL server's host name or address", envPostgresHost)
+	}
+	if strings.ContainsAny(cfg.Host, "/:@?# \t") && net.ParseIP(cfg.Host) == nil {
+		return store.Config{}, fmt.Errorf("%s %q: want a host name or IP address, without a port, scheme or credentials", envPostgresHost, cfg.Host)
+	}
+	port, err := portNumber(env(envPostgresPort, "5432"))
+	if err != nil {
+		return store.Config{}, fmt.Errorf("%s: %w", envPostgresPort, err)
+	}
+	cfg.Port = port
+	if !slices.Contains(store.SSLModes, cfg.SSLMode) {
+		return store.Config{}, fmt.Errorf("%s %q: want one of %s", envPostgresSSLMode, cfg.SSLMode, strings.Join(store.SSLModes, ", "))
+	}
+	if err := validRef(cfg.CredentialRef); err != nil {
+		return store.Config{}, fmt.Errorf("%s: %w", envPostgresCredentialRef, err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return store.Config{}, fmt.Errorf("PostgreSQL settings (HEARTBEAT_API_POSTGRES_*): %w", err)
+	}
+	return cfg, nil
+}
+
+func loadRedisConfig() (redis.Config, error) {
+	cfg := redis.Config{
+		Addr:          os.Getenv(envRedisAddr),
+		CredentialRef: env(envRedisCredentialRef, "secret/api-redis"),
+	}
+	if cfg.Addr == "" {
+		return redis.Config{}, fmt.Errorf("%s is required: the Redis (Valkey) server's host:port", envRedisAddr)
+	}
+	tls, err := strconv.ParseBool(env(envRedisTLS, "true"))
+	if err != nil {
+		return redis.Config{}, fmt.Errorf("%s %q: want true or false", envRedisTLS, os.Getenv(envRedisTLS))
+	}
+	cfg.TLS = tls
+	if err := validRef(cfg.CredentialRef); err != nil {
+		return redis.Config{}, fmt.Errorf("%s: %w", envRedisCredentialRef, err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return redis.Config{}, fmt.Errorf("%s: %w", envRedisAddr, err)
+	}
+	return cfg, nil
+}
+
+// portNumber parses a TCP port, 1-65535.
+func portNumber(value string) (int, error) {
+	port, err := strconv.Atoi(value)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("%q: want a port number, 1-65535", value)
+	}
+	return port, nil
+}
+
+// validRef checks a credential reference as the integrations file does: an
+// env/, kv/ or secret/ prefix, then letters, digits, ".", "-", "_" and "/"
+// only, so the file name it maps to stays inside the credentials directory.
+func validRef(ref string) error {
+	rest, ok := "", false
+	for _, prefix := range []string{"env/", "kv/", "secret/"} {
+		if after, found := strings.CutPrefix(ref, prefix); found {
+			rest, ok = after, true
+		}
+	}
+	if !ok || rest == "" {
+		return fmt.Errorf("%q: want env/, kv/ or secret/ followed by a name", ref)
+	}
+	for _, c := range rest {
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9', c == '.', c == '-', c == '_', c == '/':
+		default:
+			return fmt.Errorf("%q: only letters, digits, \".\", \"-\", \"_\" and \"/\" may follow the prefix", ref)
+		}
+	}
+	return nil
 }
 
 // env returns the value of the environment variable named key, or fallback if
