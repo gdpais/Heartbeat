@@ -103,7 +103,7 @@
     },
     {
       "customType": "regex",
-      "description": "kind node image in the Makefile (tracked so the dashboard lists it; updates disabled above).",
+      "description": "kind node image in the Makefile. Updates are disabled above, so Renovate proposes none and the dashboard lists the Makefile without it; the pin is updated by hand.",
       "managerFilePatterns": ["/^Makefile$/"],
       "matchStrings": ["KIND_NODE_IMAGE := (?<depName>kindest/node):(?<currentValue>v[\\d.]+)@(?<currentDigest>sha256:[a-f0-9]+)"],
       "datasourceTemplate": "docker"
