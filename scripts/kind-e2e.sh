@@ -50,6 +50,15 @@ cleanup() {
 		echo "--- diagnostics"
 		kubectl --context "$CONTEXT" -n "$NAMESPACE" get pods -o wide || true
 		kubectl --context "$CONTEXT" -n "$NAMESPACE" logs statefulset/db-collector --tail 50 || true
+		# Where log rows went: the Collector's export attempts and errors, its
+		# logs exporter's queue and counts, and the rows Loki discarded.
+		echo "--- OTel Collector"
+		kubectl --context "$CONTEXT" -n "$NAMESPACE" logs otel-collector-0 --tail 100 || true
+		kubectl --context "$CONTEXT" get --raw "/api/v1/namespaces/$NAMESPACE/pods/otel-collector-0:8888/proxy/metrics" 2>/dev/null |
+			grep -E '^otelcol_(exporter|receiver)_[a-z_]*log_records|^otelcol_exporter_(queue_size|in_flight_requests)' || true
+		echo "--- Loki discarded samples, by reason"
+		kubectl --context "$CONTEXT" get --raw "/api/v1/namespaces/$NAMESPACE/services/loki:3100/proxy/metrics" 2>/dev/null |
+			grep '^loki_discarded_samples_total' || true
 	fi
 	docker rm -f "$SQL_CONTAINER" >/dev/null 2>&1 || true
 	docker volume rm "$SQL_CONTAINER-data" >/dev/null 2>&1 || true
@@ -198,6 +207,27 @@ otel_queue_size() {
 		awk '/^otelcol_exporter_queue_size[{]/ && /exporter="otlp_http\/logs"/ { printf "%.0f\n", $2; exit }'
 }
 otel_queue_holds() { size=$(otel_queue_size) && [ -n "$size" ] && gt "$size" 0; }
+# The Collector's logs exporter as key=value words: requests queued and in
+# flight (in_flight counts a request in its retry backoff too), and log
+# records sent and dropped for good (send_failed: Loki refused them with a
+# permanent error). ? when the Collector does not answer.
+otel_logs_state() {
+	k get --raw "/api/v1/namespaces/$NAMESPACE/pods/otel-collector-0:8888/proxy/metrics" |
+		awk '/exporter="otlp_http\/logs"/ {
+			if (/^otelcol_exporter_queue_size[{]/) queued = $NF + 0
+			if (/^otelcol_exporter_in_flight_requests[{]/) in_flight = $NF + 0
+			if (/^otelcol_exporter_sent_log_records(_total)?[{]/) sent += $NF
+			if (/^otelcol_exporter_send_failed_log_records(_total)?[{]/) dropped += $NF
+		} END { printf "queued=%s in_flight=%s sent=%d dropped=%d\n", (queued == "" ? "?" : queued), (in_flight == "" ? "?" : in_flight), sent, dropped }'
+}
+# The rows Loki discarded since it started, as <reason>=<rows> words, or
+# none. Rows refused with a 429 (rate_limited, per_stream_rate_limit) count
+# too, though the Collector retries them.
+loki_discarded() {
+	svc_get loki:3100 /metrics | awk '/^loki_discarded_samples_total[{]/ {
+		match($0, /reason="[^"]*"/); rows[substr($0, RSTART + 8, RLENGTH - 9)] += $NF
+	} END { for (reason in rows) { printf "%s%s=%d", sep, reason, rows[reason]; sep = " " } print (sep == "" ? "none" : "") }'
+}
 otel_pod_uid() { k -n "$NAMESPACE" get pod otel-collector-0 -o jsonpath='{.metadata.uid}'; }
 otel_replacement_ready() {
 	[ "$(otel_pod_uid)" != "$1" ] &&
@@ -849,32 +879,71 @@ k -n "$NAMESPACE" scale statefulset/loki --replicas=1 >/dev/null
 k -n "$NAMESPACE" rollout status statefulset/loki --timeout 5m >/dev/null
 # Distinct rows by their Request_Key, and lines in total: a batch the
 # Collector sent again after the restart (delivery is at least once) would
-# count twice in the total if Loki kept both copies. Waits for every row of
-# both backlogs, or until no count moves for 90s.
+# count twice in the total if Loki kept both copies. The total keeps only
+# service_name, so it is one series rather than one per row, cheap to poll.
 distinct_query() { echo "count(sum by (Request_Key) (count_over_time({service_name=\"E2eBacklog$1\"}[$(($2 / 60 + 30))m])))"; }
-total_query() { echo "sum(count_over_time({service_name=\"E2eBacklog$1\"}[$(($2 / 60 + 30))m]))"; }
-# Prints "<name>=<rows read>/<distinct rows in Loki> " per backlog.
-backlog_counts() {
+total_query() { echo "sum(count_over_time({service_name=\"E2eBacklog$1\"} | keep service_name [$(($2 / 60 + 30))m]))"; }
+# The delivery as key=value words: per backlog the rows the Collector
+# accepted, whether the db-collector waits for it and the lines Loki holds,
+# then the Collector's logs exporter (otel_logs_state).
+delivery_state() {
 	for backlog in $backlogs; do
 		name=${backlog%%:*} span_s=${backlog#*:}
-		printf '%s=%s/%s ' "$name" "$(backlog_read "$name")" "$(loki_value "$(distinct_query "$name" "$span_s")")"
+		printf '%s_read=%s %s_blocked=%s %s_loki=%s ' "$name" "$(backlog_read "$name")" \
+			"$name" "$(prom_value "max(heartbeat_outsystems_export_blocked{collector=\"oslogs-backlog-$name\"}) or vector(0)")" \
+			"$name" "$(loki_value "$(total_query "$name" "$span_s")")"
 	done
+	otel_logs_state
 }
-start=$(date +%s) since=$start last=
-while :; do
-	counts=$(backlog_counts)
-	complete=true
+# state_value <state> <key>
+state_value() { printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p"; }
+# Drained: the Collector accepted every row, the db-collector waits for none,
+# and the Collector holds no request, queued or in flight. Every row is then
+# in Loki or lost.
+drained() {
 	for backlog in $backlogs; do
-		case "$counts " in *"${backlog%%:*}=$backlog_rows/$backlog_rows "*) ;; *) complete=false ;; esac
+		name=${backlog%%:*}
+		[ "$(state_value "$1" "${name}_read")" = "$backlog_rows" ] && [ "$(state_value "$1" "${name}_blocked")" = 0 ] || return 1
 	done
-	$complete && break
-	[ "$counts" = "$last" ] || { last=$counts; since=$(date +%s); }
-	[ $(($(date +%s) - since)) -lt 90 ] && [ $(($(date +%s) - start)) -lt 600 ] || break
-	sleep 5
+	[ "$(state_value "$1" queued)" = 0 ] && [ "$(state_value "$1" in_flight)" = 0 ]
+}
+# Delivered: drained, and Loki holds a line for every row of both backlogs.
+delivered() {
+	drained "$1" || return 1
+	for backlog in $backlogs; do
+		gt "$backlog_rows" "$(state_value "$1" "${backlog%%:*}_loki")" && return 1
+	done
+	true
+}
+# Waits on the delivery, not on a fixed time: it ends complete once
+# delivered, stalled once no word of the state has changed for 90s (a
+# drained delivery with rows missing in Loki ends this way too), or at a
+# 900s cap while it keeps moving. A delivery takes under a minute (6 to 38s
+# over 20 CI runs). Each change of the state is kept, to show the course of
+# a delivery that fails.
+start=$(date +%s) since=$start last= ended=
+while :; do
+	state=$(delivery_state 2>/dev/null)
+	now=$(date +%s)
+	if [ "$state" != "$last" ]; then
+		last=$state since=$now
+		printf '      %ss: %s\n' $((now - start)) "$state" >>"$WORK/backlog-delivery.txt"
+	fi
+	if delivered "$state"; then
+		ended=complete
+	elif [ $((now - since)) -ge 90 ]; then
+		ended="stalled 90s"
+	elif [ $((now - start)) -ge 900 ]; then
+		ended="cap 900s"
+	else
+		sleep 5
+		continue
+	fi
+	break
 done
-behind=$(svc_get loki:3100 /metrics | awk '/^loki_discarded_samples_total[{]/ && /reason="too_far_behind"/ { sum += $2 } END { print sum + 0 }')
-printf '      after %ss: Loki rejected %s rows as too far behind\n' $(($(date +%s) - start)) "$behind"
-failed=
+printf '      delivery ended after %ss (%s): %s\n' $(($(date +%s) - start)) "$ended" "$state"
+printf '      Loki discarded, by reason: %s\n' "$(loki_discarded)"
+failed= missing=
 for backlog in $backlogs; do
 	name=${backlog%%:*} span_s=${backlog#*:}
 	read_rows=$(backlog_read "$name")
@@ -884,12 +953,21 @@ for backlog in $backlogs; do
 	if [ "$read_rows" != "$backlog_rows" ]; then
 		failed="$failed; the db-collector read $read_rows of the $backlog_rows rows of the $name backlog"
 	elif [ "$distinct" != "$read_rows" ]; then
-		failed="$failed; Loki holds $distinct of the $read_rows rows of the $name backlog"
+		failed="$failed; Loki holds $distinct of the $read_rows rows of the $name backlog" missing=true
 	elif [ "$total" != "$read_rows" ]; then
 		failed="$failed; Loki holds $total lines for the $read_rows rows of the $name backlog: a row was stored twice"
 	fi
 done
-[ -z "$failed" ] || fail "${failed#; }"
+if [ -n "$failed" ]; then
+	echo "      the delivery at each change:"
+	cat "$WORK/backlog-delivery.txt"
+	# Drained, a row missing in Loki is lost: neither collector holds it.
+	drained "$state" ||
+		fail "the delivery had not finished when the wait ended ($ended), so no row is known lost: ${failed#; }"
+	[ -z "$missing" ] ||
+		fail "rows lost: nothing is left to deliver in the db-collector or the Collector, yet ${failed#; }"
+	fail "${failed#; }"
+fi
 pass "the Collector restarted during two backlogs (45 minutes and three hours); Loki holds all $backlog_rows rows of each, once"
 
 printf '\nAll kind e2e checks passed on %s.\n' "$CLUSTER"
