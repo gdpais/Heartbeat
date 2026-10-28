@@ -103,9 +103,10 @@ const (
 	// when it failed or is backing off.  Labels: collector, environment,
 	// target.
 	MetricTargetUp = "heartbeat_collector_target_up"
-	// MetricTargetLastSuccess is the Unix time of the target's last fully
-	// successful cycle.  Absent until the first success.  Labels: collector,
-	// environment, target.
+	// MetricTargetLastSuccess is the Unix time of the target's last
+	// successful cycle, a blocked or degraded one included: the last time
+	// MetricTargetUp was 1.  Absent until the first success.  Labels:
+	// collector, environment, target.
 	MetricTargetLastSuccess = "heartbeat_collector_target_last_success_timestamp_seconds"
 	// MetricTargetConsecutiveFailures counts failed cycles since the target's
 	// last success.  Labels: collector, environment, target.
@@ -252,18 +253,25 @@ func NewRunner(executor ProbeExecutor, exporter collectorexport.Recorder, sink E
 // RunOnce executes one scrape cycle for collector and returns its result.
 // Backoff state is not carried between RunOnce calls; use [Poller] for
 // repeated scraping.  The returned error joins the errors of every failed
-// target and is nil when all targets succeeded or collector.Enabled is false.
-// A failing target never prevents the other targets from running.
+// target and failed probe of a degraded one, and is nil when all targets
+// succeeded or collector.Enabled is false.  A failing target never prevents
+// the other targets from running.
 func (r Runner) RunOnce(ctx context.Context, collector collectorconfig.CollectorRuntimeConfig) (CycleResult, error) {
 	result := r.runCycle(ctx, collector, newTargetTracker())
 	return result, cycleError(result)
 }
 
-// cycleError joins the errors of every failed target in result.
+// cycleError joins the errors of every failed target in result, and of the
+// failed probes of degraded ones, leaving out their [ErrBlocked] errors.
 func cycleError(result CycleResult) error {
 	var errs []error
 	for _, target := range result.Targets {
-		if target.Err != nil && target.State != TargetBlocked {
+		switch {
+		case target.State == TargetDegraded:
+			for _, probe := range target.Probes {
+				errs = append(errs, fmt.Errorf("target %s: %w", target.Target, probe.Err))
+			}
+		case target.Err != nil && target.State != TargetBlocked:
 			errs = append(errs, fmt.Errorf("target %s: %w", target.Target, target.Err))
 		}
 	}
@@ -373,18 +381,6 @@ func (t *targetTracker) resetProbes(target string) {
 			delete(t.probes, key)
 		}
 	}
-}
-
-// degrade resets target's failures after a cycle in which some of its
-// probes succeeded and others failed, and returns the state before.  Its
-// last full success stays.
-func (t *targetTracker) degrade(target string) (previous, current targetState) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	previous = t.targets[target]
-	current = targetState{lastSuccess: previous.lastSuccess}
-	t.targets[target] = current
-	return previous, current
 }
 
 // get returns the current state of target.
@@ -531,9 +527,6 @@ func (r Runner) runTarget(ctx context.Context, collector collectorconfig.Collect
 	if acquire(ctx, sem) {
 		defer func() { <-sem }()
 	}
-	// Failure count this target will have if this cycle fails; every probe
-	// error log carries it.
-	failures := tracker.get(group.name).consecutiveFailures + 1
 	runs := make([]probeRun, len(group.items))
 	waitingAll := true
 	for i, item := range group.items {
@@ -552,7 +545,7 @@ func (r Runner) runTarget(ctx context.Context, collector collectorconfig.Collect
 			continue
 		}
 		runs[i].waiting = nil
-		items, err := r.runScopedProbe(ctx, collector, item, failures)
+		items, err := r.runScopedProbe(ctx, collector, item)
 		switch {
 		case errors.Is(err, ErrBlocked):
 			blocked = append(blocked, err)
@@ -580,11 +573,12 @@ func acquire(ctx context.Context, sem chan struct{}) bool {
 }
 
 // runScopedProbe executes one probe and records its samples under the probe's
-// exporter scope.  A failed probe is logged and its series are cleared.  A
-// blocked probe ([ErrBlocked]) records its samples like a successful one and
-// returns its error, logged at debug level only: the executor logs when the
-// wait starts and ends.
-func (r Runner) runScopedProbe(ctx context.Context, collector collectorconfig.CollectorRuntimeConfig, item collectormetadata.ScheduledProbe, failures int) ([]collectormetadata.Evidence, error) {
+// exporter scope.  A failed probe's series are cleared; finishTarget logs
+// it, once the target's outcome says which failure count applies.  A blocked
+// probe ([ErrBlocked]) records its samples like a successful one and returns
+// its error, logged at debug level only: the executor logs when the wait
+// starts and ends.
+func (r Runner) runScopedProbe(ctx context.Context, collector collectorconfig.CollectorRuntimeConfig, item collectormetadata.ScheduledProbe) ([]collectormetadata.Evidence, error) {
 	scope := collectorexport.Scope{Collector: collector.ID, Target: item.Target.Name, Probe: item.Definition.Name}
 	samples, evidence, err := r.executeProbe(ctx, item, collector.ScrapeInterval)
 	if errors.Is(err, ErrBlocked) {
@@ -597,12 +591,6 @@ func (r Runner) runScopedProbe(ctx context.Context, collector collectorconfig.Co
 		return evidence, err
 	}
 	if err != nil {
-		r.log().Warn("probe failed",
-			"collector", scope.Collector,
-			"target", scope.Target,
-			"probe", scope.Probe,
-			"error", err,
-			"consecutive_failures", failures)
 		r.clearScope(scope)
 		return nil, err
 	}
@@ -879,11 +867,12 @@ func (c *probeCalls) finish(item collectormetadata.ScheduledProbe, call *probeCa
 }
 
 // finishTarget updates the backoff state of a target and its probes after
-// they ran, logs recovery or backoff entry, and records the health series.
-// runs holds each probe's outcome; blocked joins the [ErrBlocked] errors,
-// which count as success but make the target [TargetBlocked].  The target
-// fails only when every probe that ran failed; otherwise its failing probes
-// back off on their own and it is [TargetDegraded].
+// they ran, logs each probe failure and the target's recovery or backoff
+// entry, and records the health series.  runs holds each probe's outcome;
+// blocked joins the [ErrBlocked] errors, which count as success but make the
+// target [TargetBlocked].  The target fails only when every probe that ran
+// failed; otherwise its failing probes back off on their own and it is
+// [TargetDegraded], a success of the target.
 func (r Runner) finishTarget(collector collectorconfig.CollectorRuntimeConfig, group targetGroup, tracker *targetTracker, cycleStart time.Time, runs []probeRun, blocked error) TargetResult {
 	var errs []error
 	ran, failed := 0, 0
@@ -896,10 +885,12 @@ func (r Runner) finishTarget(collector collectorconfig.CollectorRuntimeConfig, g
 			errs = append(errs, run.err)
 		}
 	}
-	err := errors.Join(errs...)
+	// Probes backing off on their own did not run, so they do not count: when
+	// a single probe ran, its one failure fails the target and forgets the
+	// others' backoffs, and they all run on the target's next attempt.
 	if failed > 0 && failed == ran {
 		tracker.resetProbes(group.name)
-		return r.failTarget(collector, group, tracker, cycleStart, err)
+		return r.failTarget(collector, group, tracker, cycleStart, runs, errors.Join(errs...))
 	}
 	var probes []ProbeResult
 	for _, run := range runs {
@@ -911,11 +902,8 @@ func (r Runner) finishTarget(collector collectorconfig.CollectorRuntimeConfig, g
 			errs = append(errs, run.waiting.lastErr)
 		case run.err != nil:
 			state, backoff := tracker.probeFail(group.name, name, cycleStart, collector.ScrapeInterval, run.err)
-			r.log().Warn("probe failed while its target's other probes succeeded; it backs off on its own",
-				"collector", collector.ID,
-				"target", group.name,
-				"probe", name,
-				"consecutive_failures", state.consecutiveFailures,
+			r.logProbeFailure(collector.ID, run, state.consecutiveFailures,
+				"target_state", TargetDegraded,
 				"backoff", backoff.String(),
 				"next_attempt", state.nextAttempt)
 			probes = append(probes, ProbeResult{Probe: name, State: ProbeFailed, Err: run.err,
@@ -930,38 +918,47 @@ func (r Runner) finishTarget(collector collectorconfig.CollectorRuntimeConfig, g
 			}
 		}
 	}
-	if len(probes) > 0 {
-		previous, current := tracker.degrade(group.name)
-		if previous.consecutiveFailures > 0 {
-			r.log().Info("target recovered, with failing probes",
-				"collector", collector.ID,
-				"target", group.name,
-				"previous_failures", previous.consecutiveFailures)
-		}
-		result := TargetResult{Target: group.name, State: TargetDegraded, Err: errors.Join(append(errs, blocked)...),
-			LastSuccess: current.lastSuccess, Probes: probes}
-		r.recordHealth(collector.ID, group, result)
-		return result
-	}
 	previous, current := tracker.succeed(group.name, tracker.now())
 	if previous.consecutiveFailures > 0 {
 		r.log().Info("target recovered",
 			"collector", collector.ID,
 			"target", group.name,
-			"previous_failures", previous.consecutiveFailures)
+			"previous_failures", previous.consecutiveFailures,
+			"failing_probes", len(probes))
 	}
 	result := TargetResult{Target: group.name, State: TargetOK, LastSuccess: current.lastSuccess}
-	if blocked != nil {
+	switch {
+	case len(probes) > 0:
+		result.State, result.Err, result.Probes = TargetDegraded, errors.Join(append(errs, blocked)...), probes
+	case blocked != nil:
 		result.State, result.Err = TargetBlocked, blocked
 	}
 	r.recordHealth(collector.ID, group, result)
 	return result
 }
 
+// logProbeFailure logs a probe that failed in this cycle with the failure
+// count that applies to it: its target's when the target failed, its own
+// when it backs off on its own.  attrs say which.
+func (r Runner) logProbeFailure(collectorID string, run probeRun, failures int, attrs ...any) {
+	r.log().Warn("probe failed", append([]any{
+		"collector", collectorID,
+		"target", run.item.Target.Name,
+		"probe", run.item.Definition.Name,
+		"error", run.err,
+		"consecutive_failures", failures,
+	}, attrs...)...)
+}
+
 // failTarget records a cycle in which every probe of the target that ran
-// failed: the target backs off as a whole.
-func (r Runner) failTarget(collector collectorconfig.CollectorRuntimeConfig, group targetGroup, tracker *targetTracker, cycleStart time.Time, err error) TargetResult {
+// failed: it logs each failure, and the target backs off as a whole.
+func (r Runner) failTarget(collector collectorconfig.CollectorRuntimeConfig, group targetGroup, tracker *targetTracker, cycleStart time.Time, runs []probeRun, err error) TargetResult {
 	state, backoff := tracker.fail(group.name, cycleStart, collector.ScrapeInterval, err)
+	for _, run := range runs {
+		if run.err != nil {
+			r.logProbeFailure(collector.ID, run, state.consecutiveFailures, "target_state", TargetFailed)
+		}
+	}
 	r.log().Warn("target failed",
 		"collector", collector.ID,
 		"target", group.name,
@@ -1014,7 +1011,7 @@ func (r Runner) recordHealth(collectorID string, group targetGroup, result Targe
 	if !result.LastSuccess.IsZero() {
 		samples = append(samples, collectorexport.Sample{
 			Metric: MetricTargetLastSuccess,
-			Help:   "Unix time of the target's last fully successful collector cycle.",
+			Help:   "Unix time of the target's last successful collector cycle, waiting for downstream or with some probes failing included.",
 			Value:  float64(result.LastSuccess.UnixNano()) / float64(time.Second),
 			Labels: labels(),
 		})

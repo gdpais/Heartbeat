@@ -152,7 +152,7 @@ Recording rules and alerts:
 
 ```bash
 hb_prom 'heartbeat:sqlserver_sessions:sum'
-hb_prom 'heartbeat:sqlserver_blocked_requests:sum'   # 0, not empty: target is up and nothing is blocked
+hb_prom 'heartbeat:sqlserver_blocked_requests:sum'   # 0, not empty: the blocking probe is up and nothing is blocked
 hb_prom 'topk(5, heartbeat:sqlserver_wait_seconds:rate5m)'
 curl -s localhost:9090/api/v1/alerts | jq -c '.data.alerts[] | {alertname: .labels.alertname, state}'
 ```
@@ -340,8 +340,9 @@ eight working probes keep collecting, so `exported` follows `live` in every
 cycle. Only `blocking` fails: `heartbeat_collector_probe_up{probe="blocking"}`
 is 0, its series are gone, and `/admin/config` lists it under the target's
 `probes`, `failed` on the cycles it runs and `backoff` while it waits out its
-own backoff, with its consecutive failures growing. Restore with
-`make kind-deploy` and `hb_reload`.
+own backoff, with its consecutive failures growing.
+`heartbeat:sqlserver_blocked_requests:sum` and the Blocked Requests panel go
+empty (unknown), not 0. Restore with `make kind-deploy` and `hb_reload`.
 
 ### The collector login gains sysadmin
 

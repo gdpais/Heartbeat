@@ -382,6 +382,8 @@ func (s *backoffScenario) probeUp(probe string) (float64, bool) {
 // on its own, with its own failure count, until it recovers.
 func TestFailingProbeBacksOffAlone(t *testing.T) {
 	s := newBackoffScenario(t)
+	logger, logs := newCapturedLogger()
+	s.runner = s.runner.WithLogger(logger)
 	s.broken = "blocking"
 	for i, offset := range []time.Duration{0, 10 * time.Second} {
 		degraded := s.cycle(offset, TargetDegraded)
@@ -392,6 +394,19 @@ func TestFailingProbeBacksOffAlone(t *testing.T) {
 		if degraded.ConsecutiveFailures != 0 || !degraded.NextAttempt.IsZero() {
 			t.Fatalf("at %s: the target backs off: %+v", offset, degraded)
 		}
+		if !degraded.LastSuccess.Equal(s.t0.Add(offset)) {
+			t.Fatalf("at %s: last success %s, want this cycle's", offset, degraded.LastSuccess)
+		}
+	}
+	// One log line per failure, with the probe's own failure count.
+	failures := logs.records(t, "probe failed")
+	for i, record := range failures {
+		if record["probe"] != "blocking" || record["consecutive_failures"] != float64(i+1) || record["target_state"] != string(TargetDegraded) {
+			t.Fatalf("probe failure log %d: %v", i, record)
+		}
+	}
+	if len(failures) != 2 {
+		t.Fatalf("got %d probe failure logs, want 2", len(failures))
 	}
 	if !s.healthyProbeExported() {
 		t.Fatal("the healthy probe stopped exporting")
@@ -423,6 +438,9 @@ func TestFailingProbeBacksOffAlone(t *testing.T) {
 	}
 	if len(ran) != 1 || ran[0] != "throughput" {
 		t.Fatalf("at 15s ran %v, want only throughput", ran)
+	}
+	if _, ok := s.exporter.Value(testMetric, sampleLabels("core-db", "blocking")); ok {
+		t.Fatal("at 15s blocking exports while it backs off")
 	}
 
 	// At 20s it runs again, and recovers.

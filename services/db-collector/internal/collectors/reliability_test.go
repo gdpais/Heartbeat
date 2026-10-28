@@ -762,4 +762,7 @@ func TestBlockedProbeIsNotAFailure(t *testing.T) {
 		len(target.Probes) != 1 || target.Probes[0].Probe != "general" || target.Probes[0].State != ProbeFailed {
 		t.Fatalf("target %+v, want degraded by the general probe only", target)
 	}
+	if err := cycleError(result); !errors.Is(err, errDivideByZero) || errors.Is(err, ErrBlocked) {
+		t.Fatalf("cycle error %v, want the general probe's failure only", err)
+	}
 }

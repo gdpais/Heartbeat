@@ -161,24 +161,27 @@ that overrides a probe's `query_template` must return the same columns in the
 same units.
 
 A failed probe clears its series instead of exporting stale values, and a
-removed collector's series are deleted. A failing probe fails only itself:
-while the target's other probes succeed, the target is `degraded`, stays up
+removed collector's series are deleted. A failing probe fails only itself.
+For example, `storage` and `file_io` read `sys.master_files`, which a long
+`RESTORE` or schema change can lock until the probe times out. While the
+target's other probes succeed, the target is `degraded`, stays up
 (`heartbeat_collector_target_up` 1) and keeps collecting, and the failing
 probe (`heartbeat_collector_probe_up` 0) backs off on its own, with the same
 schedule as a target (the next cycle, then doubling up to 5m, with jitter)
 and its series cleared until it succeeds again. A target fails, and backs off
 as a whole, only when every probe that ran failed, as when its database is
 unreachable or its login is refused; the probes' own backoffs are then
-forgotten. While a target backs off none of its probes run and all its probe
+forgotten. When every probe of a target is backing off on its own, they all
+run. While a target backs off none of its probes run and all its probe
 series are cleared, so they leave a gap instead of a frozen value; only the
 `heartbeat_collector_target_*` and `heartbeat_collector_probe_up` series stay.
-When every probe of a target is backing off on its own, they all run. For example, `storage` and
-`file_io` read `sys.master_files`, which a long `RESTORE` or schema change
-can lock until the probe times out. A probe that returns no rows exports no
-series: `heartbeat_sqlserver_blocked_requests` is absent, not 0, while nothing
-is blocked. Queries that need a zero fall back to targets whose last cycle
-succeeded (`heartbeat_collector_target_up == 1`), as the dashboard's Blocked
-Requests panel does, so an unreachable target never reads as 0. The catalog lives in
+
+A probe that returns no rows exports no series:
+`heartbeat_sqlserver_blocked_requests` is absent, not 0, while nothing is
+blocked. Queries that need a zero fall back to targets whose `blocking` probe
+succeeded (`heartbeat_collector_probe_up{probe="blocking"} == 1`), as the
+dashboard's Blocked Requests panel does, so neither an unreachable target nor
+a failing `blocking` probe reads as 0. The catalog lives in
 [`catalog.go`](../../services/db-collector/internal/probes/sqlserver/catalog.go).
 
 ### Collector self-observability
@@ -188,7 +191,7 @@ Requests panel does, so an unreachable target never reads as 0. The catalog live
 | `heartbeat_collector_target_up` | gauge | `collector`, `environment`, `target` | 1 if the last cycle for the target succeeded, including an `outsystems_logs` target that waits for the OTel Collector (`blocked`) and one with some probes failing (`degraded`) |
 | `heartbeat_collector_probe_up` | gauge | `collector`, `environment`, `target`, `probe` | 1 if the probe's last execution succeeded, waiting for the OTel Collector included; 0 if it failed, backs off on its own, or its target failed or backs off |
 | `heartbeat_collector_target_consecutive_failures` | gauge | `collector`, `environment`, `target` | Failed cycles in a row; a `degraded` cycle is not one |
-| `heartbeat_collector_target_last_success_timestamp_seconds` | gauge | `collector`, `environment`, `target` | Unix time of the last cycle in which every probe succeeded; use it for freshness alerts |
+| `heartbeat_collector_target_last_success_timestamp_seconds` | gauge | `collector`, `environment`, `target` | Unix time of the last cycle that did not fail the target (`ok`, `blocked` or `degraded`); use it for freshness alerts, and `heartbeat_collector_probe_up` for a single probe |
 | `heartbeat_collector_cycle_duration_seconds` | gauge | `collector` | Duration of the last collection cycle |
 | `heartbeat_collector_target_login_sysadmin` | gauge | `collector`, `environment`, `target` | 1 if the collector's login for the target is sysadmin-equivalent: a member of `sysadmin`, or holding `CONTROL SERVER` (it should be 0; see [login permissions](../guides/database-targets.md#collector-login-permissions)). Checked when the collector first connects to the target and about every 10 minutes after; absent until the first check, and while SQL Server cannot tell |
 | `heartbeat_collector_probe_duration_seconds` | histogram | `collector`, `environment`, `target`, `probe` | Probe execution time, failed and timed-out executions included (an abandoned probe is observed at the time it was abandoned); buckets 5ms, 10ms, 50ms, 100ms, 500ms, 1s, 5s, 10s, 30s, 60s |
@@ -323,7 +326,7 @@ for a db-collector with no pod):
 | --- | --- |
 | `heartbeat:up:count`, `heartbeat:service_up:ratio` | Recording |
 | `heartbeat:sqlserver_wait_seconds:rate5m` | Recording: wait seconds per second by `wait_type`, `rate()` of `heartbeat_sqlserver_wait_seconds_total` |
-| `heartbeat:sqlserver_blocked_requests:sum` | Recording: blocked requests per target; 0 when the target's last cycle succeeded and nothing is blocked |
+| `heartbeat:sqlserver_blocked_requests:sum` | Recording: blocked requests per target; 0 when the target's `blocking` probe succeeded and nothing is blocked |
 | `heartbeat:sqlserver_sessions:sum` | Recording: sessions per target, all statuses |
 | `heartbeat:outsystems_operations:rate5m`, `heartbeat:outsystems_errors:rate5m` | Recording: OutSystems entry points per second by log type and outcome; error log rows per second by module |
 | `heartbeat:outsystems_request_duration_seconds:p95_5m`, `heartbeat:outsystems_integration_duration_seconds:p95_5m` | Recording: p95 request and integration latency |

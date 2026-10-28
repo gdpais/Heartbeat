@@ -29,9 +29,10 @@ const (
 	TargetBlocked TargetState = "blocked"
 	// TargetDegraded is a target with probes that failed or back off on their
 	// own while its other probes succeeded: only the failing probes are
-	// missing.  The target does not back off and heartbeat_collector_target_up
-	// stays 1; Probes lists the failing probes.  A target is failed, and
-	// backs off as a whole, only when every probe that ran failed.
+	// missing.  The target does not back off, heartbeat_collector_target_up
+	// stays 1 and its last success advances; Probes lists the failing probes.
+	// A target is failed, and backs off as a whole, only when every probe
+	// that ran failed.
 	TargetDegraded TargetState = "degraded"
 )
 
@@ -65,7 +66,9 @@ type TargetResult struct {
 	// Err joins every probe error for the target in this cycle when State is
 	// TargetFailed, and in its last failed cycle when State is TargetBackoff;
 	// when State is TargetBlocked it joins the [ErrBlocked] errors of the
-	// probes that wait; nil when State is TargetOK. It is for logs and in-process decisions only
+	// probes that wait; when State is TargetDegraded it joins the errors of
+	// its failing probes and those [ErrBlocked] errors; nil when State is
+	// TargetOK. It is for logs and in-process decisions only
 	// and must not be served on unauthenticated endpoints.
 	Err                 error
 	ConsecutiveFailures int
