@@ -353,8 +353,8 @@ and collector contracts are prerequisites, and its decisions are recorded
 (ADRs 0013–0017). Deep links [4.9] need YAML templates and datasources [8.1,
 9.3], which exist.
 
-Remaining work, in order, one pull request each: API bootstrap [4.1] →
-PostgreSQL and Redis connectivity, migrations and sqlc [4.1] → the API,
+Remaining work, in order, one pull request each: PostgreSQL and Redis
+connectivity, migrations and sqlc [4.1] → the API,
 PostgreSQL and Valkey in the chart [4.1] → audit output [4.10], so every later
 mutation is audited → login and sessions [4.2] → users and roles [4.2] →
 inventory [4.3] → telemetry sources [4.4] → database targets and probe
@@ -376,10 +376,11 @@ queue tests alone.
 - [ ] Validate this stage: auth/ownership/secret refs, CRUD persistence, audit redaction and collector onboarding, with PatientZero registered through the API on kind and its database target's probes applied by the collector [16.1–16.2, 16.5]
 
 ### 4.1 Service bootstrap
-- [ ] Create Go service entrypoint `apps/api/cmd/api/`
-- [ ] Create idiomatic Go package layout under `apps/api/internal/`
-- [ ] Add config loading, logging, health endpoints, metrics, graceful shutdown
-- [ ] OpenAPI 3.1 spec with oapi-codegen server types and sqlc queries; CI fails when generated code is stale ([ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
+- [x] Create Go service entrypoint `apps/api/cmd/api/`
+- [x] Create idiomatic Go package layout under `apps/api/internal/`
+- [x] Add config loading, logging, health endpoints, metrics, graceful shutdown
+- [x] OpenAPI 3.1 spec with oapi-codegen server types; CI fails when the generated code is stale ([ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
+- [ ] sqlc queries; CI fails when the generated code is stale ([ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
 - [ ] Add PostgreSQL and Redis connectivity
 - [ ] Apply `db/migrations` with golang-migrate from an init container before the API starts ([ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
 - [ ] Add PostgreSQL and Redis to the Helm chart once the API consumes them; keep monitored databases and test fixtures external (templates on `postgres` and `valkey/valkey`, off in production: [ADR 0015](docs/architecture/decisions/0015-postgresql-and-redis-delivery.md))

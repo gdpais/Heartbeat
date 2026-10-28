@@ -72,6 +72,7 @@ How the chart, images and cluster fit together, and how to debug them:
 | Go code in a service | `make kind-images kind-deploy` |
 | Chart templates or values | `make kind-deploy` |
 | Prometheus rules or dashboards (`infra/helm/heartbeat/files/`) | `make kind-deploy` (rules reload in place; run `make rules-check` first) |
+| The API's contract (`apps/api/openapi.yaml`) | `make generate`, and commit the regenerated code with it ([below](#change-the-api-contract)) |
 
 Images are tagged by content (`dev-<image id>`), so a code change always rolls
 out a new pod and a stale image cannot hide behind a reused tag. Every deploy
@@ -139,7 +140,7 @@ make patientzero-down       # remove it, its databases and its login
 
 | Command | What it runs | Needs |
 | --- | --- | --- |
-| `make test` | All Go unit and repository contract tests, including the docs generator's and PatientZero's modules | Go |
+| `make test` | First `make generate-check`: fails when the API's generated code differs from what its OpenAPI spec generates. Then all Go unit and repository contract tests, including the docs generator's and PatientZero's modules | Go, network access the first time (the generator is fetched by `go run`) |
 | `make test-race` | The same suite with the race detector | Go |
 | `make vet` | Go static checks | Go |
 | `make vulncheck` | `govulncheck` on all three Go modules; fails on a known vulnerability the code can reach, standard library included | Go, network access |
@@ -234,6 +235,26 @@ curl -X POST -H "Authorization: Bearer local-admin-token" http://localhost:8082/
 Credentials need no restart either: the collector reads the mounted
 credentials Secret on every connection, and the kubelet updates it within
 about a minute. See the [configuration reference](../reference/configuration.md#credential-resolution).
+
+## Change the API contract
+
+The API is not deployed yet; run it with `go run ./apps/api/cmd/api` (it
+listens on `:8081`, see the
+[endpoints](../reference/metrics-and-endpoints.md#api-8081)). Its contract
+is [`apps/api/openapi.yaml`](../../apps/api/openapi.yaml), written by hand
+([ADR 0013](../architecture/decisions/0013-api-design-and-subsystem-boundaries.md)).
+After editing it, regenerate the server types and commit them with the spec:
+
+```bash
+make generate   # writes apps/api/internal/openapi/openapi.gen.go
+```
+
+`make test`, and so CI, fails when the committed code differs from what the
+spec generates. The generator, oapi-codegen, is pinned in the Makefile
+(`OAPI_CODEGEN_VERSION`) and fetched by `go run`, so there is nothing to
+install. The handlers in `apps/api/internal/httpapi` implement the generated
+`StrictServerInterface`: a new operation does not compile until it has one,
+and a handler can only return the responses the spec declares.
 
 ## Troubleshooting
 

@@ -26,7 +26,8 @@ Early MVP construction. See the [roadmap](docs/product/roadmap.md) and
 | Kubernetes delivery | `infra/helm`, `infra/kind` | One Helm chart for kind, CI and production: the DB collector plus pinned Prometheus, Alertmanager, Grafana, Loki and OTel Collector; kind workflow and acceptance tests |
 | Metadata schema | `db/migrations` | Migrated and tested; no service uses it yet |
 | Shared contracts | `packages/` | JSON schemas for config and telemetry payloads |
-| API, web UI | `apps/api`, `apps/web` | Not started |
+| API | `apps/api` | Bootstrap: health, readiness, metrics and the OpenAPI spec; no database yet, not deployed |
+| Web UI | `apps/web` | Not started |
 | Session analyzer, reporting | `services/session-analyzer`, `services/reporting` | Not started |
 
 ## Quick start
@@ -81,7 +82,7 @@ and the [changelog](CHANGELOG.md).
 
 ```text
 apps/
-  api/                 control-plane API (scaffold)
+  api/                 control-plane API: OpenAPI spec, HTTP service (bootstrap)
   web/                 operator UI (scaffold)
 services/
   db-collector/        SQL Server collector

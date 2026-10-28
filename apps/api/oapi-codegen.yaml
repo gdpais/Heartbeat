@@ -1,0 +1,10 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/oapi-codegen/oapi-codegen/v2.8.1/configuration-schema.json
+# oapi-codegen's settings for openapi.yaml (ADR 0013): the models and a
+# strict, typed server for the standard library's ServeMux. No output path:
+# `make generate` passes it, and `make generate-check` writes elsewhere to
+# compare.
+package: openapi
+generate:
+  models: true
+  std-http-server: true
+  strict-server: true

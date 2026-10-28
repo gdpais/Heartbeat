@@ -128,7 +128,7 @@ Heartbeat is organized into four planes, the same four groups as the
 | --- | --- | --- | --- |
 | Telemetry | Collection (DB collector, OpenTelemetry Collector), storage and evaluation (Prometheus, Loki), alert routing (Alertmanager) | Implemented, including OutSystems derived metrics and SLO alerts | [Current runtime](#current-runtime), [database observability](database-observability.md), [metrics and endpoints](../reference/metrics-and-endpoints.md) |
 | Analysis jobs | Session analyzer (correlation, adaptive baselines), reporting, report storage | Planned | [Operator workflows](workflows.md) |
-| Control plane | Go API, PostgreSQL (durable metadata), Redis (queues, locks, retries), YAML/Kubernetes config | Schema and config manager implemented; API planned | [Data model](data-model.md), [configuration](../reference/configuration.md), [decisions](decisions/README.md) |
+| Control plane | Go API, PostgreSQL (durable metadata), Redis (queues, locks, retries), YAML/Kubernetes config | Schema and config manager implemented; API bootstrapped (health, metrics, OpenAPI spec), not yet connected to PostgreSQL or deployed | [Data model](data-model.md), [configuration](../reference/configuration.md), [decisions](decisions/README.md) |
 | Presentation | Grafana dashboards, React web UI with Grafana deep links | Grafana implemented; UI planned | [Operator workflows](workflows.md) |
 
 ## Architectural guardrails
