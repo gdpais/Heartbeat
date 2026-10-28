@@ -517,6 +517,8 @@ spec:
   ttlSecondsAfterFinished: 86400
   template:
     metadata:
+      # PatientZero's NetworkPolicy admits port 8080 from pods with this name
+      # only (tools/patientzero/chart/templates/networkpolicy.yaml).
       labels:
         app.kubernetes.io/name: $LOAD_JOB
         app.kubernetes.io/part-of: patientzero

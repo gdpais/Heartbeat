@@ -54,6 +54,34 @@ the same `KIND_CLUSTER`, `SQLSERVER_CONTAINER` and `SQLSERVER_ENV_FILE` as
 A later `make kind-deploy` drops that collector; run `make patientzero-up`
 again to restore it.
 
+### Who can reach it
+
+PatientZero believes the identity its request headers claim
+([entry points](#entry-points)), so anything that reaches port 8080 can
+write rows as any user, session and client IP into its logging database
+and, through the collector, into Loki. The chart keeps the callers to the
+known ones:
+
+- The Service is `ClusterIP`, never a NodePort or LoadBalancer.
+- One NetworkPolicy denies ingress to every pod in the `patientzero`
+  namespace, and another admits port 8080 only from the k6 load Job's pods
+  (`app.kubernetes.io/name: patientzero-load`), which `make patientzero-load`
+  and `make patientzero-scenario` start
+  ([`templates/networkpolicy.yaml`](chart/templates/networkpolicy.yaml)).
+- `kubectl port-forward` connects from inside the pod, so NetworkPolicy does
+  not see it: the `curl` above, k6 on the host ([load](#load)), and the admin
+  calls of `make patientzero-scenario`, locally and in the scenarios
+  workflow, go that way. Kubelet probes come from the node, which
+  NetworkPolicy does not filter either.
+- Nothing else is admitted: a pod in another namespace, or another pod in
+  this one, times out on port 8080. Prometheus does not scrape PatientZero,
+  which has no metrics endpoint.
+
+A new caller inside the cluster needs its own peer in that policy. The peer
+matches a pod label, so whoever may create pods in the namespace can claim
+it: RBAC on the namespace is part of the control. kind's kindnet enforces
+NetworkPolicy; a CNI that does not ignores it.
+
 ## Entry points
 
 The caller's identity comes from headers, so a load generator can give each
@@ -76,6 +104,14 @@ slow-query row, a `general` row with `Module_Name` `SLOWSQL`
 ([scenarios](scenarios/README.md#fault-registry)). An unknown product or a quantity below 1
 fails `PlaceOrder` with HTTP 400. Every user is a `Customer` row in the
 business database, created on first use; its id is the `User_Id` in the logs.
+
+Every response of the order list, its errors and `503`s included, carries
+`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and a
+Content-Security-Policy under which the page loads nothing and cannot be
+framed (`default-src 'none'; base-uri 'none'; form-action 'none';
+frame-ancestors 'none'`): the page has no script, style, image or form of
+its own. Every entry point answers a failure with a generic message; the
+detail is only in the `error` row.
 
 `GET /healthz` reports that the process runs; `GET /readyz` that both
 databases answer and the schemas are in place. A pool whose every

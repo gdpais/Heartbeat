@@ -100,6 +100,9 @@ func TestLimiterShedsExcessWith503(t *testing.T) {
 		if shed.Header().Get("Retry-After") == "" {
 			t.Errorf("%s %s: shed response has no Retry-After header", r.method, r.path)
 		}
+		if r.path == PathOrderList {
+			checkScreenHeaders(t, shed)
+		}
 	}
 	// The health and admin endpoints still answer.
 	for path, want := range map[string]int{"/healthz": http.StatusOK, "/readyz": http.StatusOK, "/admin/runs": http.StatusNoContent} {

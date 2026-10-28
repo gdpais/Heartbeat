@@ -54,6 +54,9 @@ signals:
 journal:
   sizeLimit: 128Mi
 
+# Always ClusterIP. Port 8080 admits only the k6 load Job's pods
+# (templates/networkpolicy.yaml); reach it from the host with
+# kubectl port-forward.
 service:
   port: 8080
 
