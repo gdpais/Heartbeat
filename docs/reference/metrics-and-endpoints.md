@@ -69,6 +69,23 @@ Operators reach the admin endpoints with
 `kubectl -n heartbeat port-forward pod/db-collector-0 8082`, which
 NetworkPolicy does not apply to, or from a listed peer such as a VPN range.
 
+## API (`:8081`)
+
+The control plane
+([ADR 0013](../architecture/decisions/0013-api-design-and-subsystem-boundaries.md)).
+Not deployed yet: the chart adds it with PostgreSQL and Valkey [4.1]. Its
+contract is [`apps/api/openapi.yaml`](../../apps/api/openapi.yaml); `/metrics`
+is served beside it.
+
+| Endpoint | Auth | Behavior |
+| --- | --- | --- |
+| `GET /metrics` | none | Prometheus exposition: [request metrics](#api-requests), Go runtime and process metrics |
+| `GET /healthz` | none | Liveness only; 200 `ok` while the process serves HTTP. It checks no dependency, so a PostgreSQL or Redis outage never restarts the pod |
+| `GET /readyz` | none | 200 when every readiness check passes, 503 otherwise. The checks run concurrently on each call, 2s at most in all; a check without an answer by then fails. There are none yet: PostgreSQL and Redis join when the API connects to them. The body is only `{"status":"ready"}` or `{"status":"not_ready"}`; the failing checks and their errors are logged when the status changes |
+
+On `SIGTERM` or `SIGINT` the API stops accepting connections, waits up to 10s
+for the requests in flight, then closes the rest.
+
 ## Metrics
 
 ### SQL Server probe metrics
@@ -305,6 +322,23 @@ They are deleted with their collector. Per application, each operation adds
 outcome 13 histogram series (11 buckets, sum, count); `operation` and `module`
 are capped at 100 values per application (and log type), so the worst case
 is bounded.
+
+### API requests
+
+The API records every request it serves, `/metrics` and the health endpoints
+included. Not scraped yet: the API is not deployed.
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `heartbeat_api_http_requests_total` | counter | `method`, `route`, `code` | Requests served, by status code |
+| `heartbeat_api_http_request_duration_seconds` | histogram | `method`, `route` | Time from receiving a request to its handler returning; the Prometheus client's default buckets, 5ms to 10s |
+
+`route` is the pattern that served the request, without the method
+(`/readyz`; later `/api/v1/applications/{id}`, never the ID itself), or
+`unmatched` when none did: a 404, a 405 or a redirect. `method` is the
+request's method, or `other` outside GET, HEAD, POST, PUT, PATCH, DELETE and
+OPTIONS. A scan of made-up paths and methods therefore lands in the
+`unmatched` and `other` series instead of adding new ones.
 
 ### Prometheus scrape jobs and rules
 

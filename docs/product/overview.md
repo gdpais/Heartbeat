@@ -83,7 +83,8 @@ phase-by-phase status and [TODO.md](../../TODO.md) for the task list.
 | SQL Server DB collector (probes, hot reload, failure isolation, readiness) | Done for phase 1: secured endpoints, least-privilege login, counters and self-metrics, CPU, buffer cache and file I/O signals |
 | OTel Collector pipeline, Prometheus/Loki/Grafana/Alertmanager provisioning | Configured; alerts reach Alertmanager (with a Watchdog), chat receivers only in the production example |
 | OutSystems 11 log extraction (`outsystems_logs` collector kind) | In progress: extraction to Loki, derived metrics and dashboards built; real-database survey done; query review pending |
-| API, web UI, session analyzer, reporting | Not started |
+| API | Started: service bootstrap with health, readiness, metrics and the OpenAPI spec; no database or deployment yet |
+| Web UI, session analyzer, reporting | Not started |
 
 ## Risks
 

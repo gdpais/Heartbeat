@@ -368,6 +368,14 @@ into a pod.
 | `HEARTBEAT_CREDENTIAL_<REF>` | — | Target credentials, see [credential resolution](#credential-resolution) |
 | `GOMEMLIMIT` | unset | Go's soft memory limit, such as `200MiB`. The chart sets 80% of `dbCollector.resources.limits.memory` (`204MiB` for the default `256Mi`), so the garbage collector works harder before the pod is OOM-killed; `dbCollector.goMemLimit` overrides it, `off` disables it |
 
+### API
+
+Not deployed yet ([local development](../guides/local-development.md#change-the-api-contract)).
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `HEARTBEAT_API_LISTEN_ADDR` | `:8081` | HTTP listen address, `host:port`. A value that is not one stops startup instead of falling back to the default |
+
 ### Local development files
 
 | File | Tracked | Purpose |
