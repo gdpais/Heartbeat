@@ -82,6 +82,20 @@ out a new pod and a stale image cannot hide behind a reused tag. Every deploy
 rebuilds first when the Go sources changed since the last build, for example
 after a pull ([Images](kubernetes-local.md#images)).
 
+The loop has a memory budget: the full profile holds at most 2.5 GiB of RAM
+in the kind node. To check it, watch `docker stats heartbeat-control-plane`
+(`<cluster>-control-plane` for another `KIND_CLUSTER`), take the peak over
+30 minutes of `make patientzero-load`, and subtract PatientZero and its k6
+Job, which run in the same node (`docker exec heartbeat-control-plane crictl
+stats --label io.kubernetes.pod.namespace=patientzero`). A second cluster,
+such as `make kind-e2e`, fits next to a sandbox that has run for hours only
+while the profile stays near today's 2.0 GiB; at the budget it does not fit
+in a 7.6 GiB Docker host. Run it in CI, or
+`docker restart heartbeat-sqlserver-dev` first: that frees the sandbox's
+memory and keeps its databases. A change that would exceed the budget is
+trimmed first, or asks for a new one
+([ADR 0003](../architecture/decisions/0003-helm-on-kind-and-production.md)).
+
 ## SQL Server sandbox
 
 A throwaway SQL Server runs as a Docker container on the kind network,
