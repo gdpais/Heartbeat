@@ -108,8 +108,8 @@ connects, off by default and on in `kind.yaml` and the production example:
 | Destination | Ports | Why |
 | --- | --- | --- |
 | `egress.dns` (kube-dns in `kube-system` by default) | UDP and TCP 53 | Name resolution |
-| The bundled OTel Collector, while it is on | 4318 | OTLP/HTTP logs |
-| `egress.targets` | each `port` of `integrations`' targets (1433 when none) | The monitored SQL Servers and logging databases |
+| The bundled OTel Collector, while it is on | its OTLP/HTTP container port, 4318 by default | OTLP/HTTP logs |
+| `egress.targets` | each `port` of the enabled collectors' targets (1433 while there are none) | The monitored SQL Servers and logging databases |
 | `egress.extraRules` | as given | An OTel Collector outside the chart, a proxy |
 
 NetworkPolicy matches addresses, not host names, so `egress.targets` are
@@ -119,6 +119,12 @@ collector off its databases. On kind they are everything outside the pod
 subnet, since the sandbox SQL Server is a container on the Docker `kind`
 network: the collector can reach it, DNS and the OTel Collector, and times
 out on any other pod or Service, which `make kind-e2e` checks.
+
+`egress.dns` takes peers and allows port 53 only. Where cluster DNS is
+something else, set `dns: []` and allow it in `egress.extraRules`: with
+NodeLocal DNSCache, ipBlocks for its address (`169.254.20.10/32` by default)
+and for the kube-dns Service IP; on OpenShift, the `openshift-dns` pods on
+port 5353.
 
 **Keep the collector's Service ClusterIP in production.** `/metrics` and
 `/healthz` are unauthenticated and name the collectors, targets and

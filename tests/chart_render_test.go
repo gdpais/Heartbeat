@@ -4,6 +4,7 @@ package tests
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -182,8 +183,8 @@ var chartProfiles = []chartProfile{
 		backendPolicies: withPairs(kindBackendPolicies, nil, "otel-collector", "loki"),
 	},
 	{
-		name:           "kind-sqlserver-dev",
-		values:         []string{"kind.yaml", "sqlserver-dev.yaml"},
+		name:            "kind-sqlserver-dev",
+		values:          []string{"kind.yaml", "sqlserver-dev.yaml"},
 		present:         []string{"StatefulSet/db-collector", "NetworkPolicy/db-collector"},
 		collectorPeers:  []string{bundledPrometheusPeer, "ip 0.0.0.0/0 except 10.244.0.0/16"},
 		collectorEgress: kindCollectorEgress,
@@ -431,8 +432,9 @@ var chartProfiles = []chartProfile{
 		wantError: "dbCollector.networkPolicy.egress.enabled needs egress.targets",
 	},
 	{
-		// The databases' ports come from integrations' targets, each once;
-		// extra rules are kept as given.
+		// The databases' ports come from the enabled collectors' targets, each
+		// once, never from a disabled collector's; extra rules are kept as
+		// given, one without ports allowing every port.
 		name: "collector-egress-ports-and-extra-rules",
 		inline: "dbCollector:\n" +
 			"  networkPolicy:\n" +
@@ -440,7 +442,9 @@ var chartProfiles = []chartProfile{
 			"      enabled: true\n" +
 			"      targets: [{ipBlock: {cidr: 10.20.0.0/16}}]\n" +
 			"      dns: []\n" +
-			"      extraRules: [{to: [{ipBlock: {cidr: 10.30.0.1/32}}], ports: [{protocol: TCP, port: 3128}]}]\n" +
+			"      extraRules:\n" +
+			"        - {to: [{ipBlock: {cidr: 10.30.0.1/32}}], ports: [{protocol: TCP, port: 3128}]}\n" +
+			"        - {to: [{ipBlock: {cidr: 10.30.0.2/32}}]}\n" +
 			"integrations:\n" +
 			"  collectors:\n" +
 			"    - id: sql\n" +
@@ -452,10 +456,48 @@ var chartProfiles = []chartProfile{
 			"        targets:\n" +
 			"          - {name: a, host: a.example.internal, port: 1433, database_name: master, credential_ref: env/a}\n" +
 			"          - {name: b, host: b.example.internal, port: 14330, database_name: master, credential_ref: env/a}\n" +
-			"          - {name: c, host: c.example.internal, port: 1433, database_name: master, credential_ref: env/a}\n",
+			"          - {name: c, host: c.example.internal, port: 1433, database_name: master, credential_ref: env/a}\n" +
+			"    - id: old\n" +
+			"      kind: sqlserver\n" +
+			"      enabled: false\n" +
+			"      config:\n" +
+			"        environment: prod\n" +
+			"        probes: [{name: waits}]\n" +
+			"        targets:\n" +
+			"          - {name: d, host: d.example.internal, port: 15000, database_name: master, credential_ref: env/a}\n",
+		present:        []string{"NetworkPolicy/db-collector"},
+		collectorPeers: []string{bundledPrometheusPeer},
+		collectorEgress: []string{
+			"TCP/4318 -> " + otelCollectorPeer, "TCP/1433 -> ip 10.20.0.0/16", "TCP/14330 -> ip 10.20.0.0/16",
+			"TCP/3128 -> ip 10.30.0.1/32", "any -> ip 10.30.0.2/32",
+		},
+	},
+	{
+		// The OTel Collector rule follows its OTLP/HTTP container port, as its
+		// own policy does. Only a disabled collector has targets, so no target
+		// peers are needed.
+		name: "collector-egress-otlp-port-and-disabled-collector",
+		inline: "otelCollector: {ports: {otlp-http: {containerPort: 14318}}}\n" +
+			"dbCollector: {networkPolicy: {egress: {enabled: true}}}\n" +
+			"integrations:\n" +
+			"  collectors:\n" +
+			"    - id: old\n" +
+			"      kind: sqlserver\n" +
+			"      enabled: false\n" +
+			"      config:\n" +
+			"        environment: prod\n" +
+			"        probes: [{name: waits}]\n" +
+			"        targets:\n" +
+			"          - {name: d, host: d.example.internal, port: 1433, database_name: master, credential_ref: env/a}\n",
 		present:         []string{"NetworkPolicy/db-collector"},
 		collectorPeers:  []string{bundledPrometheusPeer},
-		collectorEgress: []string{"TCP/4318 -> " + otelCollectorPeer, "TCP/1433 -> ip 10.20.0.0/16", "TCP/14330 -> ip 10.20.0.0/16", "TCP/3128 -> ip 10.30.0.1/32"},
+		collectorEgress: []string{"UDP/53 -> " + kubeDNSPeer, "TCP/53 -> " + kubeDNSPeer, "TCP/14318 -> " + otelCollectorPeer},
+	},
+	{
+		// A misspelt port key would be dropped, widening the rule to every port.
+		name:      "collector-egress-extra-rule-port-typo",
+		inline:    "dbCollector: {networkPolicy: {egress: {enabled: true, extraRules: [{to: [{ipBlock: {cidr: 10.30.0.1/32}}], ports: [{protocol: TCP, portt: 3128}]}]}}}\n",
+		wantError: "values don't meet the specifications of the schema",
 	},
 	{
 		// A misspelt key inside a component fails too: v0.1.0 ignored
@@ -1510,15 +1552,11 @@ func checkGrafanaGzip(t *testing.T, objects map[string]object) {
 	t.Error("Grafana grafana.ini does not set server.enable_gzip = false; Grafana 13 gzips by default")
 }
 
-// The db-collector NetworkPolicy must select exactly the collector pod, admit
-// only the expected peers to TCP 8082 and never render an empty `from`
-// (which admits every source). The bundled Prometheus peer must match the
-// rendered Prometheus Deployment's selector, so a subchart label change cannot
-// silently cut off scraping.
 // checkCollectorEgress checks what the db-collector NetworkPolicy lets the
 // collector reach: nothing limited when want is nil, else exactly want, in
 // "TCP/1433 -> peerString" form, and never an empty `to`, which would allow
-// every destination.
+// every destination. A port entry without a port is "TCP/any", and a rule
+// without ports "any", since both allow every port.
 func checkCollectorEgress(t *testing.T, objects map[string]object, want []string) {
 	t.Helper()
 	policy, ok := objects["NetworkPolicy/db-collector"]
@@ -1530,7 +1568,8 @@ func checkCollectorEgress(t *testing.T, objects map[string]object, want []string
 		Egress      *[]struct {
 			Ports []struct {
 				Protocol string `yaml:"protocol"`
-				Port     int    `yaml:"port"`
+				// A number or a named port.
+				Port string `yaml:"port"`
 			} `yaml:"ports"`
 			To []networkPolicyPeer `yaml:"to"`
 		} `yaml:"egress"`
@@ -1553,9 +1592,16 @@ func checkCollectorEgress(t *testing.T, objects map[string]object, want []string
 		if len(rule.To) == 0 {
 			t.Fatal("db-collector NetworkPolicy egress rule has an empty to, which allows every destination")
 		}
-		for _, port := range rule.Ports {
+		ports := []string{"any"}
+		if len(rule.Ports) > 0 {
+			ports = nil
+			for _, port := range rule.Ports {
+				ports = append(ports, cmp.Or(port.Protocol, "TCP")+"/"+cmp.Or(port.Port, "any"))
+			}
+		}
+		for _, port := range ports {
 			for _, peer := range rule.To {
-				got = append(got, fmt.Sprintf("%s/%d -> %s", port.Protocol, port.Port, peerString(peer)))
+				got = append(got, port+" -> "+peerString(peer))
 			}
 		}
 	}
@@ -1566,6 +1612,11 @@ func checkCollectorEgress(t *testing.T, objects map[string]object, want []string
 	}
 }
 
+// The db-collector NetworkPolicy must select exactly the collector pod, admit
+// only the expected peers to TCP 8082 and never render an empty `from`
+// (which admits every source). The bundled Prometheus peer must match the
+// rendered Prometheus Deployment's selector, so a subchart label change cannot
+// silently cut off scraping.
 func checkCollectorNetworkPolicy(t *testing.T, objects map[string]object, wantPeers []string) {
 	t.Helper()
 	policy, ok := objects["NetworkPolicy/db-collector"]

@@ -199,9 +199,40 @@
                         }
                       },
                       "ports": {
+                        "description": "NetworkPolicyPort objects; a rule without ports allows every port to its peers.",
                         "type": "array",
                         "items": {
-                          "type": "object"
+                          "type": "object",
+                          "additionalProperties": false,
+                          "minProperties": 1,
+                          "properties": {
+                            "protocol": {
+                              "type": "string",
+                              "enum": [
+                                "TCP",
+                                "UDP",
+                                "SCTP"
+                              ]
+                            },
+                            "port": {
+                              "oneOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 65535
+                                },
+                                {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "endPort": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 65535
+                            }
+                          }
                         }
                       }
                     }

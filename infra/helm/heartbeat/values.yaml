@@ -90,10 +90,11 @@ dbCollector:
     # an ipBlock for the VPN or bastion range.
     operators: []
     # Egress, off by default. On, the collector may connect only to DNS, the
-    # bundled OTel Collector's OTLP/HTTP port (4318) when otelCollector is
-    # on, the monitored databases on the ports integrations' targets name
-    # (1433 when they name none), and extraRules; anything else it tries,
-    # another pod or the internet, times out. NetworkPolicy matches
+    # bundled OTel Collector's OTLP/HTTP container port (4318 unless
+    # otelCollector.ports changes it) when otelCollector is on, the monitored
+    # databases on the ports the enabled collectors' targets name (1433
+    # while no target is configured), and extraRules; anything else it
+    # tries, another pod or the internet, times out. NetworkPolicy matches
     # addresses, not host names, so the databases are given as peers,
     # usually ipBlock CIDRs: with egress on and a target configured, an
     # empty targets list fails the install instead of cutting the collector
@@ -105,7 +106,11 @@ dbCollector:
       # cluster.
       targets: []
       # Where the collector resolves names: kube-dns in kube-system on most
-      # clusters (kind, EKS). Both UDP and TCP 53.
+      # clusters (kind, EKS, AKS). Both UDP and TCP 53. Where DNS is not
+      # those pods on port 53, set dns: [] and allow it in extraRules: with
+      # NodeLocal DNSCache, an ipBlock for its address (169.254.20.10/32 by
+      # default) and one for the kube-dns Service IP; on OpenShift, the
+      # openshift-dns pods on port 5353.
       dns:
         - namespaceSelector:
             matchLabels:
