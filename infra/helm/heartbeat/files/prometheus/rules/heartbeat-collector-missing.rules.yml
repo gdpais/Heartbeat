@@ -9,7 +9,10 @@ groups:
       # (values.yaml, prometheus.scrapeConfigs.db-collector). With no pod,
       # scaled to 0 or never scheduled, there is no target and no up series,
       # so the up == 0 rule in heartbeat.rules.yml cannot fire. Same alert and
-      # labels: a missing collector is a collector down.
+      # labels: a missing collector is a collector down. (Where a name on
+      # Prometheus' DNS search path fails instead of answering NXDOMAIN,
+      # Prometheus keeps the target it last found, which fails: then the
+      # up == 0 rule fires, and this one does not.)
       - alert: HeartbeatServiceDown
         expr: absent(up{job="db-collector"})
         for: 2m
