@@ -350,7 +350,8 @@ Rules:
 
 ## Credential resolution
 
-The DB collector looks up a `credential_ref` under one name:
+The DB collector looks up a `credential_ref`, and the API its PostgreSQL and
+Redis credential references, under one name:
 
 ```text
 HEARTBEAT_CREDENTIAL_<REF>
@@ -371,10 +372,11 @@ It is looked up, in order:
    trailing line break is ignored.
 2. An environment variable of that name.
 
-The collector reads the file every time it opens a connection, never caches
-it, so a new or changed credential needs no restart. A file that exists but
-cannot be read, or holds no `:`, fails that target; it never falls back to
-the environment variable.
+Both read the file every time they open a connection, never cache it, so a
+new or changed credential needs no restart. A file that exists but cannot be
+read, or holds no `:`, fails that connection (a collector target, or the
+API's readiness); it never falls back to the environment variable. The
+lookup is [`internal/credentials`](../../internal/credentials/credentials.go).
 
 In Kubernetes the chart mounts the Secret named by
 `dbCollector.credentials.existingSecret` as that directory
@@ -385,6 +387,9 @@ target whose credential is missing fails on its own, and the others keep
 running. The Secret is not loaded into the environment, so a
 `HEARTBEAT_CREDENTIAL_*` variable reaches the container only through
 `dbCollector.extraEnv`.
+
+The API is not deployed yet; the chart mounts its credentials the same way
+when it does [4.1].
 
 Outside Kubernetes (`go run`, tests), leave `HEARTBEAT_CREDENTIALS_DIR` unset
 and export the variables; exporting them in your host shell does not pass them
@@ -408,11 +413,42 @@ into a pod.
 
 ### API
 
-Not deployed yet ([local development](../guides/local-development.md#change-the-api-contract)).
+Not deployed yet ([run it locally](../guides/local-development.md#run-the-api)).
+A value that cannot work stops startup with an error naming the variable,
+instead of falling back to the default.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `HEARTBEAT_API_LISTEN_ADDR` | `:8081` | HTTP listen address, `host:port`. A value that is not one stops startup instead of falling back to the default |
+| `HEARTBEAT_API_LISTEN_ADDR` | `:8081` | HTTP listen address, `host:port` |
+| `HEARTBEAT_API_POSTGRES_HOST` | required | PostgreSQL server: a host name or IP address, without a port |
+| `HEARTBEAT_API_POSTGRES_PORT` | `5432` | PostgreSQL port |
+| `HEARTBEAT_API_POSTGRES_DATABASE` | `heartbeat` | Database name |
+| `HEARTBEAT_API_POSTGRES_SSLMODE` | `verify-full` | `disable`, `require`, `verify-ca` or `verify-full`, with libpq's meaning. `allow` and `prefer` are rejected: they fall back to plaintext without saying so. `disable` is for a server without TLS on a trusted network: kind, a local container |
+| `HEARTBEAT_API_POSTGRES_SSLROOTCERT` | unset (the system's CAs) | PEM file of the CA certificates `verify-ca` and `verify-full` trust. Amazon RDS needs its CA bundle here |
+| `HEARTBEAT_API_POSTGRES_CREDENTIAL_REF` | `secret/api-postgres` | Credential reference of the login, `username:password` ([credential resolution](#credential-resolution)): by default `HEARTBEAT_CREDENTIAL_SECRET_API_POSTGRES`. `api migrate up` uses it too; give that command another reference to migrate as a different role, such as the schema's owner |
+| `HEARTBEAT_API_REDIS_ADDR` | required | Redis (Valkey) server, `host:port` |
+| `HEARTBEAT_API_REDIS_TLS` | `true` | TLS, verified against the system's CAs and the host name, as ElastiCache's in-transit encryption needs. `false` for a server without TLS on a trusted network: kind, a local container |
+| `HEARTBEAT_API_REDIS_CREDENTIAL_REF` | `secret/api-redis` | Credential reference of the login, `username:password`: by default `HEARTBEAT_CREDENTIAL_SECRET_API_REDIS`. For Valkey's `requirepass` or an ElastiCache AUTH token, the username is `default`, or empty to send the password alone |
+| `HEARTBEAT_CREDENTIALS_DIR` | unset | As for the DB collector: a directory of `HEARTBEAT_CREDENTIAL_<REF>` files, read on every new connection |
+| `HEARTBEAT_CREDENTIAL_<REF>` | — | A credential without a file, see [credential resolution](#credential-resolution) |
+
+The settings above win over libpq's `PG*` environment variables, which the
+PostgreSQL driver also reads. Each replica keeps at most 8 PostgreSQL
+connections (`application_name` `heartbeat-api`); a connection attempt gives
+up after 5s.
+
+The API connects lazily: it starts while PostgreSQL or Redis is down or its
+credential is missing, and `GET /readyz` answers 503 until both work
+([endpoints](metrics-and-endpoints.md#api-8081)).
+
+The same binary applies the migrations ([ADR 0013](../architecture/decisions/0013-api-design-and-subsystem-boundaries.md)).
+These commands read only the PostgreSQL settings and the credential lookup,
+then exit:
+
+| Command | Does |
+| --- | --- |
+| `api migrate up` | Applies, in order, each migration of [`db/migrations`](../../db/migrations) newer than the database's version, and records it in `schema_migrations`. Replicas may run it at once: a PostgreSQL advisory lock makes the others wait and each migration runs once. Each wait for the lock ends after 5 minutes, or on SIGTERM, and fails the command. A database already past the newest migration it embeds (after rolling the API back) is left alone, and the command succeeds. A dirty version fails it ([repair](../guides/local-development.md#change-a-query-or-a-migration)) |
+| `api migrate version` | Prints the schema version, `0` when never migrated, with ` (dirty)` while a migration runs or after one failed partway. It only reads `schema_migrations`: it creates nothing and does not wait for a migration in progress |
 
 ### Local development files
 

@@ -353,9 +353,9 @@ and collector contracts are prerequisites, and its decisions are recorded
 (ADRs 0013–0017). Deep links [4.9] need YAML templates and datasources [8.1,
 9.3], which exist.
 
-Remaining work, in order, one pull request each: PostgreSQL and Redis
-connectivity, migrations and sqlc [4.1] → the API,
-PostgreSQL and Valkey in the chart [4.1] → audit output [4.10], so every later
+Remaining work, in order, one pull request each: the API, PostgreSQL and
+Valkey in the chart, with the init container that migrates [4.1] → audit
+output [4.10], so every later
 mutation is audited → login and sessions [4.2] → users and roles [4.2] →
 inventory [4.3] → telemetry sources [4.4] → database targets and probe
 definitions [4.5] → probe assignments, rendered to `managedCollectors` and
@@ -379,9 +379,9 @@ queue tests alone.
 - [x] Create idiomatic Go package layout under `apps/api/internal/`
 - [x] Add config loading, logging, health endpoints, metrics, graceful shutdown
 - [x] OpenAPI 3.1 spec with oapi-codegen server types; CI fails when the generated code is stale ([ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
-- [ ] sqlc queries; CI fails when the generated code is stale ([ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
-- [ ] Add PostgreSQL and Redis connectivity
-- [ ] Apply `db/migrations` with golang-migrate from an init container before the API starts ([ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
+- [x] sqlc queries; CI fails when the generated code is stale ([ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md))
+- [x] Add PostgreSQL and Redis connectivity: credentials from mounted Secret files like the collector's, readiness on both, and the API starts while either is down
+- [ ] Apply `db/migrations` with golang-migrate from an init container before the API starts ([ADR 0013](docs/architecture/decisions/0013-api-design-and-subsystem-boundaries.md)). `api migrate up` applies the embedded migrations and readiness waits for the newest; left for the chart pull request: the init container that runs it
 - [ ] Add PostgreSQL and Redis to the Helm chart once the API consumes them; keep monitored databases and test fixtures external (templates on `postgres` and `valkey/valkey`, off in production: [ADR 0015](docs/architecture/decisions/0015-postgresql-and-redis-delivery.md))
 
 ### 4.2 Identity and access

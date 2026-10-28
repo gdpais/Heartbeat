@@ -112,7 +112,7 @@ jobs:
         run: make rules-check
       - name: Build the HTML docs site (fails on broken links, images or anchors)
         run: make docs-site
-      - name: Run isolated PostgreSQL integration tests
+      - name: Run isolated PostgreSQL and Valkey integration tests
         run: make test-integration
 
   sqlserver:

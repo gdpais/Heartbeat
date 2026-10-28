@@ -11,7 +11,7 @@ shared validation inventory [16] throughout rather than as a final stage.
 | 0 | Foundations, including kind + Helm delivery | Done |
 | 1 | DB collector (SQL Server) | Done |
 | 2 | OutSystems ingest (OutSystems 11 log extraction) | At its exit: everything it builds is done ([ADR 0008](../architecture/decisions/0008-outsystems-11-log-extraction.md)), including the signal gaps PatientZero's scenarios found and a nightly CI run of every scenario. Left: the first green nightly run, the stage validation and the release |
-| 3 | API / control plane | In progress: the API's bootstrap and OpenAPI spec are built [4.1]; next PostgreSQL and Redis connectivity, migrations and sqlc. Planned into pull-request-sized slices [4]; decisions recorded in ADRs [0013](../architecture/decisions/0013-api-design-and-subsystem-boundaries.md)–[0017](../architecture/decisions/0017-outsystems-sources-map-application-identity.md); runs without waiting for phase 2's release |
+| 3 | API / control plane | In progress: the API's bootstrap, OpenAPI spec, PostgreSQL and Redis connectivity, migrations (`api migrate up`) and sqlc are built [4.1]; next the API, PostgreSQL and Valkey in the chart. Planned into pull-request-sized slices [4]; decisions recorded in ADRs [0013](../architecture/decisions/0013-api-design-and-subsystem-boundaries.md)–[0017](../architecture/decisions/0017-outsystems-sources-map-application-identity.md); runs without waiting for phase 2's release |
 | 4 | Web UI | Not started |
 | 5 | Production delivery (EKS + Argo CD) | Not started; decisions recorded |
 | 6 | Complete application and database product workflows | Not started |
